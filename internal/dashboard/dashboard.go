@@ -17,280 +17,334 @@ const dashboardHTML = `<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CLI Proxy Dashboard</title>
-<script src="https://cdn.tailwindcss.com"></script>
+<title>CLI Proxy</title>
 <style>
-  body { background: #0f172a; color: #e2e8f0; font-family: -apple-system, system-ui, sans-serif; }
-  .card { background: #1e293b; border: 1px solid #334155; border-radius: 12px; }
-  .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .status-active { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
-  .status-expired { background: #eab308; box-shadow: 0 0 6px #eab308; }
-  .status-inactive { background: #64748b; }
-  .btn { padding: 6px 16px; border-radius: 8px; font-size: 14px; cursor: pointer; transition: all 0.15s; }
-  .btn-primary { background: #3b82f6; color: white; }
-  .btn-primary:hover { background: #2563eb; }
-  .btn-green { background: #22c55e; color: white; }
-  .btn-green:hover { background: #16a34a; }
-  #chat-output { min-height: 120px; max-height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-word; }
-  table { width: 100%; border-collapse: collapse; }
-  th { text-align: left; padding: 8px 12px; color: #94a3b8; font-weight: 500; font-size: 13px; border-bottom: 1px solid #334155; }
-  td { padding: 8px 12px; font-size: 13px; border-bottom: 1px solid #1e293b; }
-  tr:hover td { background: #1e293b; }
-  select, textarea { background: #0f172a; border: 1px solid #334155; color: #e2e8f0; border-radius: 8px; padding: 8px 12px; }
-  select:focus, textarea:focus { outline: none; border-color: #3b82f6; }
-  .tab { padding: 8px 20px; cursor: pointer; border-bottom: 2px solid transparent; color: #94a3b8; }
-  .tab.active { border-color: #3b82f6; color: #e2e8f0; }
-  .tab:hover { color: #e2e8f0; }
+  :root {
+    --bg-0: #0a0a0f;
+    --bg-1: #12121a;
+    --bg-2: #1a1a26;
+    --bg-3: #24243a;
+    --border: #2a2a3e;
+    --border-hover: #3a3a55;
+    --text-0: #eeeef2;
+    --text-1: #b0b0c0;
+    --text-2: #707088;
+    --accent: #5b8aff;
+    --accent-dim: #3a5ccc;
+    --green: #34d399;
+    --green-bg: rgba(52,211,153,0.1);
+    --red: #f87171;
+    --red-bg: rgba(248,113,113,0.1);
+    --yellow: #fbbf24;
+    --yellow-bg: rgba(251,191,36,0.1);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg-0); color:var(--text-0); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; font-size:14px; line-height:1.5; }
+  .container { max-width:1120px; margin:0 auto; padding:24px 20px; }
+
+  /* Header */
+  .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid var(--border); }
+  .header h1 { font-size:18px; font-weight:600; letter-spacing:-0.3px; }
+  .header-stats { display:flex; gap:16px; }
+  .header-stat { text-align:right; }
+  .header-stat-value { font-size:20px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .header-stat-label { font-size:11px; color:var(--text-2); text-transform:uppercase; letter-spacing:0.5px; }
+
+  /* Backend Grid */
+  .backends { display:grid; grid-template-columns:repeat(auto-fit,minmax(300px,1fr)); gap:12px; margin-bottom:24px; }
+  .backend-card { background:var(--bg-1); border:1px solid var(--border); border-radius:8px; padding:16px; transition:border-color 0.15s; }
+  .backend-card:hover { border-color:var(--border-hover); }
+  .backend-header { display:flex; align-items:center; gap:8px; margin-bottom:10px; }
+  .backend-name { font-weight:600; font-size:14px; }
+  .backend-badge { font-size:11px; padding:2px 8px; border-radius:10px; font-weight:500; margin-left:auto; }
+  .badge-active { background:var(--green-bg); color:var(--green); }
+  .badge-expired { background:var(--yellow-bg); color:var(--yellow); }
+  .badge-inactive { background:var(--bg-3); color:var(--text-2); }
+  .backend-info { font-size:12px; color:var(--text-2); margin-bottom:8px; }
+  .backend-models { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:10px; }
+  .model-tag { font-size:11px; padding:2px 7px; background:var(--bg-3); border-radius:4px; color:var(--text-1); font-family:'SF Mono',Menlo,monospace; }
+  .account-row { display:flex; align-items:center; gap:6px; font-size:12px; padding:5px 8px; background:var(--bg-0); border-radius:5px; margin-bottom:4px; }
+  .account-row .email { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text-1); }
+  .account-row .exp { color:var(--text-2); }
+  .dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+  .dot-green { background:var(--green); }
+  .dot-yellow { background:var(--yellow); }
+  .dot-gray { background:var(--text-2); }
+  .btn-delete { background:none; border:none; color:var(--text-2); cursor:pointer; font-size:14px; padding:0 2px; line-height:1; }
+  .btn-delete:hover { color:var(--red); }
+  .btn-add { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--accent); background:none; border:1px solid var(--accent-dim); border-radius:5px; padding:4px 10px; cursor:pointer; text-decoration:none; margin-top:4px; transition:background 0.15s; }
+  .btn-add:hover { background:rgba(91,138,255,0.1); }
+
+  /* Tabs */
+  .tabs { display:flex; gap:0; border-bottom:1px solid var(--border); margin-bottom:16px; }
+  .tab { padding:8px 16px; font-size:13px; color:var(--text-2); cursor:pointer; border-bottom:2px solid transparent; transition:all 0.15s; user-select:none; }
+  .tab:hover { color:var(--text-1); }
+  .tab.active { color:var(--text-0); border-color:var(--accent); }
+
+  /* Chat Panel */
+  .chat-panel { background:var(--bg-1); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .chat-toolbar { display:flex; gap:8px; padding:12px; border-bottom:1px solid var(--border); align-items:center; }
+  .model-select { flex:1; appearance:none; background:var(--bg-2) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%23707088'%3E%3Cpath d='M2 4l4 4 4-4'/%3E%3C/svg%3E") no-repeat right 10px center; border:1px solid var(--border); color:var(--text-0); border-radius:6px; padding:7px 28px 7px 10px; font-size:13px; font-family:inherit; cursor:pointer; }
+  .model-select:focus { outline:none; border-color:var(--accent); }
+  .model-select optgroup { color:var(--text-2); font-style:normal; font-size:11px; }
+  .model-select option { color:var(--text-0); background:var(--bg-2); padding:4px 8px; }
+  .model-select option:disabled { color:var(--text-2); }
+  .btn { padding:7px 14px; border-radius:6px; font-size:13px; font-weight:500; cursor:pointer; border:none; transition:background 0.15s; }
+  .btn-primary { background:var(--accent); color:#fff; }
+  .btn-primary:hover { background:var(--accent-dim); }
+  .btn-secondary { background:var(--bg-3); color:var(--text-1); }
+  .btn-secondary:hover { background:var(--border); }
+  .chat-input { display:block; width:100%; background:transparent; border:none; border-bottom:1px solid var(--border); color:var(--text-0); padding:12px; font-size:13px; font-family:inherit; resize:vertical; min-height:48px; }
+  .chat-input:focus { outline:none; border-color:var(--accent); }
+  .chat-input::placeholder { color:var(--text-2); }
+  .chat-output { padding:12px; min-height:100px; max-height:400px; overflow-y:auto; font-size:13px; line-height:1.6; white-space:pre-wrap; word-break:break-word; color:var(--text-1); font-family:'SF Mono',Menlo,Consolas,monospace; }
+  .chat-output:empty::before { content:'Response will appear here...'; color:var(--text-2); font-style:italic; font-family:inherit; }
+
+  /* Tables */
+  .panel { background:var(--bg-1); border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .panel-header { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--border); }
+  .panel-header span { font-size:12px; color:var(--text-2); }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:left; padding:8px 16px; font-size:11px; font-weight:500; color:var(--text-2); text-transform:uppercase; letter-spacing:0.5px; border-bottom:1px solid var(--border); }
+  td { padding:7px 16px; font-size:13px; border-bottom:1px solid rgba(42,42,62,0.5); font-variant-numeric:tabular-nums; }
+  tr:hover td { background:rgba(255,255,255,0.02); }
+  .text-green { color:var(--green); }
+  .text-red { color:var(--red); }
+  .text-muted { color:var(--text-2); }
+  .text-mono { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+
+  /* Stats */
+  .stats-toolbar { display:flex; gap:4px; margin-bottom:12px; }
+  .stats-btn { padding:5px 12px; font-size:12px; border-radius:5px; border:1px solid var(--border); background:transparent; color:var(--text-1); cursor:pointer; }
+  .stats-btn.active { background:var(--accent); border-color:var(--accent); color:#fff; }
+  .stats-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+
+  /* Pagination */
+  .pagination { display:flex; align-items:center; justify-content:center; gap:8px; padding:10px 16px; }
+  .page-btn { padding:4px 10px; font-size:12px; border-radius:4px; border:1px solid var(--border); background:transparent; color:var(--text-1); cursor:pointer; }
+  .page-btn:hover { background:var(--bg-3); }
+  .page-info { font-size:12px; color:var(--text-2); }
+
+  /* Config */
+  .config-display { padding:16px; font-size:12px; font-family:'SF Mono',Menlo,monospace; color:var(--text-1); white-space:pre-wrap; line-height:1.7; }
+
+  .hidden { display:none; }
+  @media(max-width:768px) {
+    .backends { grid-template-columns:1fr; }
+    .stats-grid { grid-template-columns:1fr; }
+    .header { flex-direction:column; align-items:flex-start; gap:12px; }
+    .header-stats { align-self:flex-end; }
+  }
 </style>
 </head>
-<body class="p-6">
-<div class="max-w-6xl mx-auto">
-  <!-- Header -->
-  <div class="flex items-center justify-between mb-6">
-    <div>
-      <h1 class="text-2xl font-bold">CLI Proxy</h1>
-      <p class="text-sm text-slate-400 mt-1">AI API Proxy Dashboard</p>
-    </div>
-    <div class="text-right text-sm text-slate-400">
-      <span id="total-requests">-</span> requests &middot; <span id="total-tokens">-</span> tokens
+<body>
+<div class="container">
+  <div class="header">
+    <h1>CLI Proxy</h1>
+    <div class="header-stats">
+      <div class="header-stat">
+        <div class="header-stat-value" id="total-requests">-</div>
+        <div class="header-stat-label">Requests</div>
+      </div>
+      <div class="header-stat">
+        <div class="header-stat-value" id="total-tokens">-</div>
+        <div class="header-stat-label">Tokens</div>
+      </div>
     </div>
   </div>
 
-  <!-- Backend Status Cards -->
-  <div id="backends" class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6"></div>
+  <div class="backends" id="backends"></div>
 
-  <!-- Tabs -->
-  <div class="flex gap-1 mb-4 border-b border-slate-700">
-    <div class="tab active" onclick="switchTab('chat')">Test Chat</div>
-    <div class="tab" onclick="switchTab('logs')">Request Logs</div>
-    <div class="tab" onclick="switchTab('stats')">Usage Stats</div>
-    <div class="tab" onclick="switchTab('config')">Config</div>
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('chat',this)">Chat</div>
+    <div class="tab" onclick="switchTab('logs',this)">Logs</div>
+    <div class="tab" onclick="switchTab('stats',this)">Stats</div>
+    <div class="tab" onclick="switchTab('config',this)">Config</div>
   </div>
 
-  <!-- Chat Tab -->
   <div id="tab-chat">
-    <div class="card p-4">
-      <div class="flex gap-3 mb-3">
-        <select id="chat-model" class="flex-1"></select>
+    <div class="chat-panel">
+      <div class="chat-toolbar">
+        <select id="chat-model" class="model-select"></select>
         <button class="btn btn-primary" onclick="sendChat()">Send</button>
-        <button class="btn" style="background:#334155" onclick="clearChat()">Clear</button>
+        <button class="btn btn-secondary" onclick="clearChat()">Clear</button>
       </div>
-      <textarea id="chat-input" rows="2" class="w-full mb-3" placeholder="Enter your message..."></textarea>
-      <div id="chat-output" class="card p-3 text-sm font-mono text-slate-300 bg-slate-900"></div>
+      <textarea id="chat-input" class="chat-input" rows="2" placeholder="Type a message..."></textarea>
+      <div id="chat-output" class="chat-output"></div>
     </div>
   </div>
 
-  <!-- Logs Tab -->
   <div id="tab-logs" class="hidden">
-    <div class="card overflow-hidden">
-      <div class="flex items-center justify-between p-3 border-b border-slate-700">
-        <span class="text-sm text-slate-400"><span id="log-total">0</span> total requests</span>
-        <button class="btn btn-primary text-xs" onclick="loadLogs()">Refresh</button>
+    <div class="panel">
+      <div class="panel-header">
+        <span><strong id="log-total">0</strong> total</span>
+        <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadLogs()">Refresh</button>
       </div>
-      <div class="overflow-x-auto">
-        <table>
-          <thead><tr>
-            <th>Time</th><th>Model</th><th>Backend</th><th>Latency</th><th>Tokens</th><th>Status</th>
-          </tr></thead>
-          <tbody id="log-body"></tbody>
-        </table>
-      </div>
-      <div class="flex justify-center gap-2 p-3">
-        <button class="btn text-xs" style="background:#334155" onclick="prevPage()">Prev</button>
-        <span id="page-info" class="text-sm text-slate-400 py-1"></span>
-        <button class="btn text-xs" style="background:#334155" onclick="nextPage()">Next</button>
+      <table>
+        <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
+        <tbody id="log-body"></tbody>
+      </table>
+      <div class="pagination">
+        <button class="page-btn" onclick="prevPage()">&larr;</button>
+        <span class="page-info" id="page-info">1 / 1</span>
+        <button class="page-btn" onclick="nextPage()">&rarr;</button>
       </div>
     </div>
   </div>
 
-  <!-- Stats Tab -->
   <div id="tab-stats" class="hidden">
-    <div class="flex gap-2 mb-4">
-      <button class="btn text-xs btn-primary" onclick="loadStats('today')">Today</button>
-      <button class="btn text-xs" style="background:#334155" onclick="loadStats('7d')">7 Days</button>
-      <button class="btn text-xs" style="background:#334155" onclick="loadStats('30d')">30 Days</button>
-      <button class="btn text-xs" style="background:#334155" onclick="loadStats('all')">All</button>
+    <div class="stats-toolbar" id="stats-toolbar">
+      <button class="stats-btn" onclick="loadStats('today',this)">Today</button>
+      <button class="stats-btn active" onclick="loadStats('7d',this)">7d</button>
+      <button class="stats-btn" onclick="loadStats('30d',this)">30d</button>
+      <button class="stats-btn" onclick="loadStats('all',this)">All</button>
     </div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-      <div class="card p-4">
-        <h3 class="text-sm font-medium text-slate-400 mb-3">By Model</h3>
+    <div class="stats-grid">
+      <div class="panel">
+        <div class="panel-header"><span>By Model</span></div>
         <table>
-          <thead><tr><th>Model</th><th>Requests</th><th>Tokens</th><th>Avg Latency</th><th>Errors</th></tr></thead>
+          <thead><tr><th>Model</th><th>Reqs</th><th>Tokens</th><th>Avg ms</th><th>Err</th></tr></thead>
           <tbody id="stats-model-body"></tbody>
         </table>
       </div>
-      <div class="card p-4">
-        <h3 class="text-sm font-medium text-slate-400 mb-3">By Day</h3>
+      <div class="panel">
+        <div class="panel-header"><span>By Day</span></div>
         <table>
-          <thead><tr><th>Date</th><th>Requests</th><th>Tokens</th><th>Errors</th></tr></thead>
+          <thead><tr><th>Date</th><th>Reqs</th><th>Tokens</th><th>Err</th></tr></thead>
           <tbody id="stats-day-body"></tbody>
         </table>
       </div>
     </div>
   </div>
 
-  <!-- Config Tab -->
   <div id="tab-config" class="hidden">
-    <div class="card p-4">
-      <pre id="config-display" class="text-sm font-mono text-slate-300 whitespace-pre-wrap"></pre>
+    <div class="panel">
+      <pre class="config-display" id="config-display"></pre>
     </div>
   </div>
 </div>
 
 <script>
-let logPage = 0;
-const logLimit = 30;
+let logPage=0;const logLimit=30;
 
-async function loadStatus() {
-  const r = await fetch('/api/status');
-  const d = await r.json();
-  document.getElementById('total-requests').textContent = d.total_requests?.toLocaleString() || '0';
-  document.getElementById('total-tokens').textContent = d.total_tokens?.toLocaleString() || '0';
+async function loadStatus(){
+  const r=await fetch('/api/status');const d=await r.json();
+  document.getElementById('total-requests').textContent=(d.total_requests||0).toLocaleString();
+  document.getElementById('total-tokens').textContent=(d.total_tokens||0).toLocaleString();
 
-  const container = document.getElementById('backends');
-  container.innerHTML = d.backends.map(b => {
-    const dot = b.status === 'active' ? 'status-active' : b.status === 'expired' ? 'status-expired' : 'status-inactive';
-    const label = b.status === 'active' ? 'Active' : b.status === 'expired' ? 'Expired' : 'Not Connected';
-    const isOAuth = b.name === 'claude' || b.name === 'codex';
-    const addBtn = isOAuth ? '<a href="/auth/' + b.name + '" class="btn btn-green text-xs">+ Add Account</a>' : '';
-    let accountsHTML = '';
-    if (b.accounts && b.accounts.length > 0) {
-      accountsHTML = '<div class="mt-2 space-y-1">' + b.accounts.map(a => {
-        const aDot = a.status === 'active' ? 'status-active' : 'status-expired';
-        const exp = a.expires ? ' exp ' + a.expires : '';
-        return '<div class="flex items-center gap-2 text-xs py-1 px-2 rounded" style="background:#0f172a">'
-          + '<span class="status-dot ' + aDot + '"></span>'
-          + '<span class="flex-1 truncate">' + a.email + exp + '</span>'
-          + '<button onclick="removeAccount(\'' + b.name + '\',\'' + a.id + '\')" class="text-red-400 hover:text-red-300 text-xs">x</button>'
-          + '</div>';
-      }).join('') + '</div>';
+  const el=document.getElementById('backends');
+  el.innerHTML=d.backends.map(b=>{
+    const bc=b.status==='active'?'badge-active':b.status==='expired'?'badge-expired':'badge-inactive';
+    const bl=b.status==='active'?'Active':b.status==='expired'?'Expired':'Offline';
+    const dc=b.status==='active'?'dot-green':b.status==='expired'?'dot-yellow':'dot-gray';
+    const isOAuth=b.name==='claude'||b.name==='codex';
+    let accts='';
+    if(b.accounts&&b.accounts.length){
+      accts=b.accounts.map(a=>{
+        const ad=a.status==='active'?'dot-green':'dot-yellow';
+        return '<div class="account-row"><span class="dot '+ad+'"></span><span class="email">'+a.email+'</span>'
+          +(a.expires?'<span class="exp">'+a.expires+'</span>':'')
+          +'<button class="btn-delete" onclick="removeAccount(\''+b.name+"','"+a.id+"')\">&times;</button></div>";
+      }).join('');
     }
-    return '<div class="card p-4"><div class="flex items-center gap-2 mb-2"><span class="status-dot ' + dot + '"></span>'
-      + '<span class="font-medium capitalize">' + b.name + '</span>'
-      + '<span class="text-xs text-slate-400 ml-auto">' + label + '</span></div>'
-      + '<div class="text-xs text-slate-400 mb-1">' + (b.info || '') + '</div>'
-      + '<div class="text-xs text-slate-500 mb-1">' + (b.models || []).join(', ') + '</div>'
-      + accountsHTML
-      + (isOAuth ? '<div class="mt-2">' + addBtn + '</div>' : '')
-      + '</div>';
+    const addBtn=isOAuth?'<a href="/auth/'+b.name+'" class="btn-add"><span>+</span> Add Account</a>':'';
+    return '<div class="backend-card"><div class="backend-header"><span class="dot '+dc+'"></span><span class="backend-name" style="text-transform:capitalize">'+b.name+'</span><span class="backend-badge '+bc+'">'+bl+'</span></div>'
+      +'<div class="backend-info">'+(b.info||'')+'</div>'
+      +'<div class="backend-models">'+(b.models||[]).map(m=>'<span class="model-tag">'+m+'</span>').join('')+'</div>'
+      +accts+addBtn+'</div>';
   }).join('');
 
-  const select = document.getElementById('chat-model');
-  const statusLabel = s => s === 'active' ? '✅' : s === 'expired' ? '⚠️' : '🔴';
-  select.innerHTML = d.backends.map(b => {
-    const label = b.name.charAt(0).toUpperCase() + b.name.slice(1) + ' ' + statusLabel(b.status);
-    const opts = (b.models || []).map(m =>
-      '<option value="' + m + '"' + (b.status !== 'active' ? ' disabled' : '') + '>' + m + '</option>'
-    ).join('');
-    return '<optgroup label="' + label + '">' + opts + '</optgroup>';
+  const sel=document.getElementById('chat-model');
+  const statusIcon=s=>s==='active'?'✓':s==='expired'?'!':'✗';
+  sel.innerHTML=d.backends.map(b=>{
+    const lbl=b.name.charAt(0).toUpperCase()+b.name.slice(1)+' ('+statusIcon(b.status)+')';
+    return '<optgroup label="'+lbl+'">'+(b.models||[]).map(m=>
+      '<option value="'+m+'"'+(b.status!=='active'?' disabled':'')+'>'+m+'</option>'
+    ).join('')+'</optgroup>';
   }).join('');
-  // Select first enabled option
-  const firstEnabled = select.querySelector('option:not([disabled])');
-  if (firstEnabled) firstEnabled.selected = true;
+  const first=sel.querySelector('option:not([disabled])');
+  if(first)first.selected=true;
 }
 
-async function sendChat() {
-  const model = document.getElementById('chat-model').value;
-  const input = document.getElementById('chat-input').value.trim();
-  if (!input) return;
-  const output = document.getElementById('chat-output');
-  output.textContent = '';
-
-  const resp = await fetch('/v1/chat/completions', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({model, messages: [{role: 'user', content: input}], stream: true})
+async function sendChat(){
+  const model=document.getElementById('chat-model').value;
+  const input=document.getElementById('chat-input').value.trim();
+  if(!input)return;
+  const output=document.getElementById('chat-output');
+  output.textContent='';
+  const resp=await fetch('/v1/chat/completions',{
+    method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({model,messages:[{role:'user',content:input}],stream:true})
   });
-
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buf = '';
-  while (true) {
-    const {done, value} = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, {stream: true});
-    const lines = buf.split('\n');
-    buf = lines.pop();
-    for (const line of lines) {
-      if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-      try {
-        const chunk = JSON.parse(line.slice(6));
-        const content = chunk.choices?.[0]?.delta?.content;
-        if (content) output.textContent += content;
-      } catch {}
+  const reader=resp.body.getReader();const dec=new TextDecoder();let buf='';
+  while(true){
+    const{done,value}=await reader.read();if(done)break;
+    buf+=dec.decode(value,{stream:true});
+    const lines=buf.split('\n');buf=lines.pop();
+    for(const line of lines){
+      if(!line.startsWith('data: ')||line==='data: [DONE]')continue;
+      try{const c=JSON.parse(line.slice(6));const t=c.choices?.[0]?.delta?.content;if(t)output.textContent+=t;}catch{}
     }
   }
-  loadLogs();
+  loadLogs();loadStatus();
+}
+
+function clearChat(){document.getElementById('chat-output').textContent='';document.getElementById('chat-input').value='';}
+
+async function loadLogs(){
+  const r=await fetch('/api/logs?limit='+logLimit+'&offset='+(logPage*logLimit));const d=await r.json();
+  document.getElementById('log-total').textContent=d.total;
+  document.getElementById('page-info').textContent=(logPage+1)+' / '+Math.max(1,Math.ceil(d.total/logLimit));
+  document.getElementById('log-body').innerHTML=(d.logs||[]).map(l=>{
+    const t=new Date(l.time).toLocaleString('en-GB',{hour:'2-digit',minute:'2-digit',second:'2-digit',day:'2-digit',month:'short'});
+    const tok=(l.prompt_tokens||0)+(l.completion_tokens||0);
+    const sc=l.status<400?'text-green':'text-red';
+    return '<tr><td class="text-muted text-mono">'+t+'</td><td class="text-mono">'+l.model+'</td><td class="text-muted">'+l.backend
+      +'</td><td>'+l.latency_ms+'ms</td><td>'+tok+'</td><td class="'+sc+'">'+l.status+'</td></tr>';
+  }).join('')||'<tr><td colspan="6" class="text-muted" style="text-align:center;padding:24px">No requests yet</td></tr>';
+}
+
+function prevPage(){if(logPage>0){logPage--;loadLogs();}}
+function nextPage(){logPage++;loadLogs();}
+
+async function loadStats(range,btn){
+  if(btn){document.querySelectorAll('.stats-btn').forEach(b=>b.classList.remove('active'));btn.classList.add('active');}
+  const r=await fetch('/api/stats?range='+(range||'7d'));const d=await r.json();
+  const empty='<tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No data</td></tr>';
+  document.getElementById('stats-model-body').innerHTML=(d.by_model||[]).map(s=>
+    '<tr><td class="text-mono">'+s.model+'</td><td>'+s.request_count+'</td><td>'
+    +(s.total_prompt_tokens+s.total_completion_tokens).toLocaleString()
+    +'</td><td>'+Math.round(s.avg_latency_ms)+'</td><td class="'+(s.error_count?'text-red':'')+'">'+s.error_count+'</td></tr>'
+  ).join('')||empty;
+  document.getElementById('stats-day-body').innerHTML=(d.by_day||[]).map(s=>
+    '<tr><td class="text-mono">'+s.date+'</td><td>'+s.request_count+'</td><td>'
+    +(s.total_prompt_tokens+s.total_completion_tokens).toLocaleString()
+    +'</td><td class="'+(s.error_count?'text-red':'')+'">'+s.error_count+'</td></tr>'
+  ).join('')||empty.replace('5','4');
+}
+
+async function loadConfig(){
+  const r=await fetch('/api/config');const d=await r.json();
+  document.getElementById('config-display').textContent=JSON.stringify(d,null,2);
+}
+
+function switchTab(name,el){
+  document.querySelectorAll('[id^="tab-"]').forEach(e=>e.classList.add('hidden'));
+  document.querySelectorAll('.tab').forEach(e=>e.classList.remove('active'));
+  document.getElementById('tab-'+name).classList.remove('hidden');
+  if(el)el.classList.add('active');
+  if(name==='logs')loadLogs();
+  if(name==='stats')loadStats('7d');
+  if(name==='config')loadConfig();
+}
+
+async function removeAccount(provider,id){
+  if(!confirm('Remove '+id+'?'))return;
+  await fetch('/api/accounts/'+provider+'/'+encodeURIComponent(id),{method:'DELETE'});
   loadStatus();
 }
 
-function clearChat() {
-  document.getElementById('chat-output').textContent = '';
-  document.getElementById('chat-input').value = '';
-}
-
-async function loadLogs() {
-  const r = await fetch('/api/logs?limit=' + logLimit + '&offset=' + (logPage * logLimit));
-  const d = await r.json();
-  document.getElementById('log-total').textContent = d.total;
-  document.getElementById('page-info').textContent = 'Page ' + (logPage + 1) + ' / ' + Math.max(1, Math.ceil(d.total / logLimit));
-
-  const body = document.getElementById('log-body');
-  body.innerHTML = (d.logs || []).map(l => {
-    const t = new Date(l.time).toLocaleString();
-    const tokens = (l.prompt_tokens || 0) + (l.completion_tokens || 0);
-    const statusColor = l.status < 400 ? 'text-green-400' : 'text-red-400';
-    const latency = l.latency_ms + 'ms';
-    return '<tr><td class="text-slate-400">' + t + '</td><td>' + l.model + '</td><td class="text-slate-400">' + l.backend
-      + '</td><td>' + latency + '</td><td>' + tokens + '</td><td class="' + statusColor + '">' + l.status
-      + (l.error ? ' <span class="text-red-400 text-xs" title="' + l.error.replace(/"/g, '') + '">!</span>' : '') + '</td></tr>';
-  }).join('');
-}
-
-function prevPage() { if (logPage > 0) { logPage--; loadLogs(); } }
-function nextPage() { logPage++; loadLogs(); }
-
-async function loadStats(range) {
-  const r = await fetch('/api/stats?range=' + (range || '7d'));
-  const d = await r.json();
-
-  document.getElementById('stats-model-body').innerHTML = (d.by_model || []).map(s =>
-    '<tr><td>' + s.model + '</td><td>' + s.request_count + '</td><td>'
-    + (s.total_prompt_tokens + s.total_completion_tokens).toLocaleString()
-    + '</td><td>' + Math.round(s.avg_latency_ms) + 'ms</td><td class="' + (s.error_count > 0 ? 'text-red-400' : '') + '">' + s.error_count + '</td></tr>'
-  ).join('') || '<tr><td colspan="5" class="text-slate-500 text-center py-4">No data</td></tr>';
-
-  document.getElementById('stats-day-body').innerHTML = (d.by_day || []).map(s =>
-    '<tr><td>' + s.date + '</td><td>' + s.request_count + '</td><td>'
-    + (s.total_prompt_tokens + s.total_completion_tokens).toLocaleString()
-    + '</td><td class="' + (s.error_count > 0 ? 'text-red-400' : '') + '">' + s.error_count + '</td></tr>'
-  ).join('') || '<tr><td colspan="4" class="text-slate-500 text-center py-4">No data</td></tr>';
-}
-
-async function loadConfig() {
-  const r = await fetch('/api/config');
-  const d = await r.json();
-  document.getElementById('config-display').textContent = JSON.stringify(d, null, 2);
-}
-
-function switchTab(name) {
-  document.querySelectorAll('[id^="tab-"]').forEach(el => el.classList.add('hidden'));
-  document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-  document.getElementById('tab-' + name).classList.remove('hidden');
-  event.target.classList.add('active');
-  if (name === 'logs') loadLogs();
-  if (name === 'stats') loadStats('7d');
-  if (name === 'config') loadConfig();
-}
-
-async function removeAccount(provider, id) {
-  if (!confirm('Remove account ' + id + '?')) return;
-  await fetch('/api/accounts/' + provider + '/' + encodeURIComponent(id), {method: 'DELETE'});
-  loadStatus();
-}
-
-loadStatus();
-setInterval(loadStatus, 30000);
+loadStatus();setInterval(loadStatus,30000);
 </script>
 </body>
 </html>`
