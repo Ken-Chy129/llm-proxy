@@ -1,0 +1,6 @@
+cli-proxy
+*.db
+.idea/
+*.json
+!config.yaml
+config.yaml

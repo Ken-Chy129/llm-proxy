@@ -1,0 +1,29 @@
+server:
+  port: 9090
+  # api_key: "sk-proxy-xxx"  # uncomment to require auth
+
+vertex:
+  project_id: "your-gcp-project-id"
+  region: "us-east5"
+  models:
+    - name: "claude-sonnet-4-6"
+      model: "claude-sonnet-4-6"
+    - name: "claude-opus-4-6"
+      model: "claude-opus-4-6"
+    - name: "claude-haiku-4-5"
+      model: "claude-haiku-4-5-20251001"
+
+claude_oauth:
+  enabled: true
+  models:
+    - "claude-sonnet-4-6-oauth"
+    - "claude-opus-4-6-oauth"
+    - "claude-opus-4-8-oauth"
+
+codex:
+  enabled: true
+  models:
+    - "gpt-5.5"
+    - "gpt-5.4"
+    - "gpt-5.4-mini"
+    - "gpt-5.3-codex"
