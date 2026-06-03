@@ -265,6 +265,50 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 	return err
 }
 
+func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error) {
+	token, err := e.oauth.GetToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	var reqMap map[string]interface{}
+	json.Unmarshal(body, &reqMap)
+	reqMap["stream"] = true
+	reqMap["store"] = false
+	if _, ok := reqMap["instructions"]; !ok {
+		reqMap["instructions"] = ""
+	}
+	patchedBody, _ := json.Marshal(reqMap)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(patchedBody))
+	if err != nil {
+		return nil, err
+	}
+
+	installationID := uuid.New().String()
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", codexUserAgent)
+	httpReq.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+	httpReq.Header.Set("x-openai-internal-codex-residency", "us")
+	httpReq.Header.Set("x-codex-installation-id", installationID)
+	httpReq.Header.Set("x-client-request-id", uuid.New().String())
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("codex request: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		respBody, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("codex error %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return resp.Body, nil
+}
+
 // sseTranslator translates Codex SSE events to OpenAI chat.completion.chunk format on the fly
 type sseTranslator struct {
 	w             io.Writer

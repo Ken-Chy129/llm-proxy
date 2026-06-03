@@ -12,3 +12,7 @@ type Executor interface {
 	ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) error
 	Models() []string
 }
+
+type ResponsesExecutor interface {
+	OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error)
+}

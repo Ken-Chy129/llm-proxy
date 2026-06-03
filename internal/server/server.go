@@ -19,6 +19,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
+	responsesHandler := handler.NewResponsesHandler(r, statsDB)
 	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB)
 
 	// Dashboard
@@ -30,6 +31,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 		api.Use(APIKeyAuth(cfg.Server.APIKey))
 	}
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)
+	api.POST("/v1/responses", responsesHandler.HandleResponses)
 	api.GET("/v1/models", chatHandler.ListModels)
 
 	// Admin API (no api_key needed, local access only)
