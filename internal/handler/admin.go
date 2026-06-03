@@ -103,7 +103,10 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		}
 		// Add quota for codex
 		if p.name == "codex" && h.codexOAuth != nil && activeCount > 0 {
-			if quota, err := h.codexOAuth.FetchQuota(context.Background()); err == nil {
+			quota, err := h.codexOAuth.FetchQuota(context.Background())
+			if err != nil {
+				entry["quota_error"] = err.Error()
+			} else {
 				entry["quota"] = quota
 			}
 		}

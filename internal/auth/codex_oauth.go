@@ -216,6 +216,15 @@ func (o *CodexOAuth) exchangeCode(ctx context.Context, code, codeVerifier string
 
 const codexBaseURL = "https://chatgpt.com/backend-api"
 
+const codexUA = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64)"
+
+func applyCodexHeaders(req *http.Request, token string) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", codexUA)
+	req.Header.Set("Accept-Encoding", "identity")
+}
+
 func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, error) {
 	token, err := o.GetToken(ctx)
 	if err != nil {
@@ -223,8 +232,7 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, error) {
 	}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
+	applyCodexHeaders(req, token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -281,8 +289,7 @@ func (o *CodexOAuth) FetchQuota(ctx context.Context) (*QuotaInfo, error) {
 	}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/usage", nil)
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
+	applyCodexHeaders(req, token)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
