@@ -304,7 +304,7 @@ async function loadStatus(){
     }).join('');
   } else {
     qSection.style.display='none';
-  }).join('');
+  }
 
   const sel=document.getElementById('chat-model');
   const statusIcon=s=>s==='active'?'✓':s==='expired'?'!':'✗';
