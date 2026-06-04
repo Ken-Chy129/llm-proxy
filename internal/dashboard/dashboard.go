@@ -307,7 +307,8 @@ async function loadStatus(){
         rows='<div style="font-size:12px;color:var(--text-2);padding:4px 0">Awaiting data (send a request to update)</div>';
       }
       const refreshBtn='<button class="btn-delete" style="font-size:11px;color:var(--accent)" onclick="refreshQuota(\''+q.account_id+'\')">&#8635;</button>';
-      return '<div class="quota-card"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">Codex</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+displayName+'</span>'+refreshBtn+'</div><div style="margin-bottom:8px"><span class="plan-badge '+planCls+'">'+planLabel+'</span></div>'+rows+'</div>';
+      const fetchedAt=q.fetched_at?'<span style="font-size:10px;color:var(--text-2);margin-left:auto">cached '+q.fetched_at+'</span>':'';
+      return '<div class="quota-card"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">Codex</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+displayName+'</span>'+refreshBtn+'</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge '+planCls+'">'+planLabel+'</span>'+fetchedAt+'</div>'+rows+'</div>';
     }).join('');
   } else {
     qSection.style.display='none';

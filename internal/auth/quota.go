@@ -17,6 +17,7 @@ type QuotaInfo struct {
 	Additional  []AdditionalRL `json:"additional,omitempty"`
 	Credits     *Credits       `json:"credits,omitempty"`
 	FetchedAt   string         `json:"fetched_at,omitempty"`
+	FetchedTime time.Time      `json:"-"`
 	HasRealData bool           `json:"has_real_data"`
 }
 
@@ -61,7 +62,18 @@ func (c *quotaCache) Get(key string) *QuotaInfo {
 func (c *quotaCache) Set(key string, info *QuotaInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	info.FetchedTime = time.Now()
 	c.data[key] = info
+}
+
+func (c *quotaCache) IsStale(key string, maxAge time.Duration) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	info, ok := c.data[key]
+	if !ok || !info.HasRealData {
+		return true
+	}
+	return time.Since(info.FetchedTime) > maxAge
 }
 
 func (c *quotaCache) AllForProvider(provider string) []*QuotaInfo {

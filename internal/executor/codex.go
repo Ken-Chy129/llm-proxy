@@ -234,6 +234,11 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 	}
 	token := tokenData.AccessToken
 
+	// Auto-refresh stale quota (>12h) in background
+	if auth.QuotaCache.IsStale("codex:"+tokenData.ID, 12*time.Hour) {
+		go e.oauth.FetchQuotaForAccountByID(context.Background(), tokenData.ID)
+	}
+
 	cr := e.toCodexRequest(req)
 	body, _ := json.Marshal(cr)
 
