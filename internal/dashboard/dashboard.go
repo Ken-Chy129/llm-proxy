@@ -304,11 +304,11 @@ async function loadStatus(){
         rows=renderRow(q.primary)+renderRow(q.secondary);
         if(q.additional){q.additional.forEach(a=>{if(a.primary)rows+=renderRow(a.primary);});}
       } else {
-        rows='<div style="font-size:12px;color:var(--text-2);padding:4px 0">Awaiting data (send a request to update)</div>';
+        rows='<div style="font-size:12px;color:var(--text-2);padding:4px 0">No quota data yet — click <span style="color:var(--accent);cursor:pointer" onclick="refreshQuota(\''+q.account_id+'\')">↻ refresh</span> to fetch</div>';
       }
       const refreshBtn='<button class="btn-delete" style="font-size:11px;color:var(--accent)" onclick="refreshQuota(\''+q.account_id+'\')">&#8635;</button>';
       const fetchedAt=q.fetched_at?'<span style="font-size:10px;color:var(--text-2);margin-left:auto">cached '+q.fetched_at+'</span>':'';
-      return '<div class="quota-card"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">Codex</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+displayName+'</span>'+refreshBtn+'</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge '+planCls+'">'+planLabel+'</span>'+fetchedAt+'</div>'+rows+'</div>';
+      return '<div class="quota-card" data-account="'+q.account_id+'"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">Codex</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+displayName+'</span>'+refreshBtn+'</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge '+planCls+'">'+planLabel+'</span>'+fetchedAt+'</div>'+rows+'</div>';
     }).join('');
   } else {
     qSection.style.display='none';
@@ -399,8 +399,14 @@ function switchTab(name,el){
 }
 
 async function refreshQuota(accountId){
-  await fetch('/api/refresh-quota/codex/'+encodeURIComponent(accountId),{method:'POST'});
-  loadStatus();
+  const card=document.querySelector('[data-account="'+accountId+'"]');
+  if(card)card.style.opacity='0.5';
+  try{
+    await fetch('/api/refresh-quota/codex/'+encodeURIComponent(accountId),{method:'POST'});
+  }finally{
+    if(card)card.style.opacity='1';
+    loadStatus();
+  }
 }
 
 async function syncModels(){

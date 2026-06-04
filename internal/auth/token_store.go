@@ -17,6 +17,7 @@ type TokenData struct {
 	RefreshToken string `json:"refresh_token"`
 	Email        string `json:"email,omitempty"`
 	ExpiresAt    string `json:"expires_at"`
+	FileName     string `json:"-"` // actual filename on disk, tracked for correct deletion
 }
 
 func (t *TokenData) IsExpired() bool {
@@ -148,8 +149,13 @@ func (s *TokenStore) Remove(provider, id string) error {
 	for i, t := range list {
 		if t.ID == id {
 			s.accounts[provider] = append(list[:i], list[i+1:]...)
-			path := filepath.Join(s.dir, s.filename(provider, id))
-			os.Remove(path)
+			// Delete using tracked filename if available, else try both patterns
+			if t.FileName != "" {
+				os.Remove(filepath.Join(s.dir, t.FileName))
+			} else {
+				os.Remove(filepath.Join(s.dir, s.filename(provider, id)))
+				os.Remove(filepath.Join(s.dir, id)) // legacy format
+			}
 			return nil
 		}
 	}
@@ -219,6 +225,7 @@ func (s *TokenStore) loadAll() {
 				data.ID = e.Name()
 			}
 		}
+		data.FileName = e.Name()
 		s.accounts[data.Provider] = append(s.accounts[data.Provider], &data)
 		count++
 	}
