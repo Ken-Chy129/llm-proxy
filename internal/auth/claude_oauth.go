@@ -41,6 +41,7 @@ type ClaudeOAuth struct {
 	store      *TokenStore
 	httpClient *http.Client
 	mu         sync.Mutex
+	ServerPort int
 }
 
 func NewClaudeOAuth(store *TokenStore) *ClaudeOAuth {
@@ -180,7 +181,7 @@ func (o *ClaudeOAuth) startCallbackServer(pkce *PKCECodes, expectedState string)
 
 		o.store.Add(token)
 		fmt.Printf("claude authenticated: %s\n", token.Email)
-		fmt.Fprintf(w, "<h2>Login Successful</h2><p>You can close this window. Account: %s</p>", token.Email)
+		http.Redirect(w, r, fmt.Sprintf("http://localhost:%d/", o.ServerPort), http.StatusTemporaryRedirect)
 		go func() { time.Sleep(2 * time.Second); srv.Close() }()
 	})
 

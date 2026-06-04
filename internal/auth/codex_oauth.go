@@ -96,10 +96,11 @@ type CodexOAuth struct {
 	store      *TokenStore
 	mu         sync.Mutex
 	httpClient *http.Client
+	ServerPort int
 }
 
 func NewCodexOAuth(store *TokenStore) *CodexOAuth {
-	return &CodexOAuth{store: store, httpClient: internaltls.NewAnthropicHTTPClient()}
+	return &CodexOAuth{store: store, httpClient: internaltls.NewAnthropicHTTPClient(), ServerPort: 9090}
 }
 
 func (o *CodexOAuth) GetTokenData(_ context.Context) *TokenData {
@@ -238,7 +239,7 @@ func (o *CodexOAuth) startCallbackServer(pkce *PKCECodes, expectedState string) 
 			}
 		}(token.ID)
 
-		fmt.Fprintf(w, "<h2>Codex Login Successful</h2><p>Account: %s</p><p>You can close this window.</p>", token.Email)
+		http.Redirect(w, r, fmt.Sprintf("http://localhost:%d/", o.ServerPort), http.StatusTemporaryRedirect)
 		go func() { time.Sleep(2 * time.Second); srv.Close() }()
 	})
 

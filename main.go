@@ -43,6 +43,7 @@ func main() {
 	var claudeExec *executor.ClaudeOAuthExecutor
 	if cfg.ClaudeOAuth.Enabled {
 		claudeOAuth = auth.NewClaudeOAuth(tokenStore)
+		claudeOAuth.ServerPort = cfg.Server.Port
 		models := cfg.ClaudeOAuth.Models
 		if len(models) == 0 {
 			models = []string{"claude-sonnet-4-6", "claude-opus-4-6"}
@@ -57,6 +58,7 @@ func main() {
 	var codexExec *executor.CodexExecutor
 	if cfg.Codex.Enabled {
 		codexOAuth = auth.NewCodexOAuth(tokenStore)
+		codexOAuth.ServerPort = cfg.Server.Port
 		// Start with config models
 		models := cfg.Codex.Models
 		codexExec = executor.NewCodexExecutor(codexOAuth, models)
