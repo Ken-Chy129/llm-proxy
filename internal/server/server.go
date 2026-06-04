@@ -31,7 +31,10 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	if cfg.Server.APIKey != "" {
 		api.Use(APIKeyAuth(cfg.Server.APIKey))
 	}
+	imagesHandler := handler.NewImagesHandler(r, statsDB)
+
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)
+	api.POST("/v1/images/generations", imagesHandler.ImagesGenerations)
 	api.GET("/v1/models", chatHandler.ListModels)
 
 	engine.GET("/api/status", adminHandler.Status)

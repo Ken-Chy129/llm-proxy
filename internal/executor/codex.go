@@ -227,6 +227,42 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, req *types.ChatComple
 	return e.doStream(ctx, req, &sseTranslator{w: w, model: req.Model})
 }
 
+// ExecuteRawStream sends a raw JSON body to Codex /responses and writes SSE output to w.
+func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w io.Writer) error {
+	tokenData := e.oauth.GetTokenData(ctx)
+	if tokenData == nil {
+		return fmt.Errorf("codex not authenticated")
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(rawBody))
+	if err != nil {
+		return err
+	}
+
+	httpReq.Header.Set("Authorization", "Bearer "+tokenData.AccessToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("User-Agent", codexUserAgent)
+	httpReq.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+	httpReq.Header.Set("x-openai-internal-codex-residency", "us")
+	httpReq.Header.Set("x-codex-installation-id", uuid.New().String())
+	httpReq.Header.Set("x-client-request-id", uuid.New().String())
+
+	resp, err := internaltls.NewAnthropicHTTPClient().Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("codex image request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("codex image error %d: %s", resp.StatusCode, string(body))
+	}
+
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
 func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) error {
 	tokenData := e.oauth.GetTokenData(ctx)
 	if tokenData == nil {
