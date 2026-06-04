@@ -420,9 +420,9 @@ async function removeAccount(provider,id){
   loadStatus();
 }
 
-loadStatus();setInterval(loadStatus,120000);
+loadStatus();
 let lastFocusLoad=0;
-window.addEventListener('focus',()=>{if(Date.now()-lastFocusLoad>10000){lastFocusLoad=Date.now();loadStatus();}});
+window.addEventListener('focus',()=>{if(Date.now()-lastFocusLoad>30000){lastFocusLoad=Date.now();loadStatus();}});
 </script>
 </body>
 </html>`
