@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"fmt"
 	"io"
 	"net/http"
@@ -68,6 +69,10 @@ type CodexOAuth struct {
 
 func NewCodexOAuth(store *TokenStore) *CodexOAuth {
 	return &CodexOAuth{store: store, httpClient: internaltls.NewAnthropicHTTPClient()}
+}
+
+func (o *CodexOAuth) GetTokenData(_ context.Context) *TokenData {
+	return o.store.Get("codex")
 }
 
 func (o *CodexOAuth) GetToken(ctx context.Context) (string, error) {
@@ -249,9 +254,9 @@ func (o *CodexOAuth) exchangeCode(ctx context.Context, code, codeVerifier string
 	// Extract plan_type from id_token and seed quota cache
 	if tokenResp.IDToken != "" {
 		if pt := ParseJWTPlanType(tokenResp.IDToken); pt != "" {
-			QuotaCache.Set("codex", &QuotaInfo{
+			QuotaCache.Set("codex:"+td.ID, &QuotaInfo{
+				AccountID: td.ID,
 				PlanType:  pt,
-				RateLimit: &RateLimit{Allowed: true},
 			})
 			fmt.Printf("codex plan: %s\n", pt)
 		}
@@ -336,8 +341,8 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, *http.Client
 	return models, client, nil
 }
 
-// FetchQuotaWithClient fetches quota using a provided http.Client (e.g. one with CF cookies from a prior models fetch).
-func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Client) (*QuotaInfo, error) {
+// FetchQuotaWithClient fetches per-account quota using a provided http.Client with CF cookies.
+func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Client, accountID string) (*QuotaInfo, error) {
 	token, err := o.GetToken(ctx)
 	if err != nil {
 		return nil, err
@@ -363,10 +368,28 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 			Allowed      bool `json:"allowed"`
 			LimitReached bool `json:"limit_reached"`
 			PrimaryWindow *struct {
-				UsedPercent      float64 `json:"used_percent"`
-				ResetAfterSeconds float64 `json:"reset_after_seconds"`
+				UsedPercent       float64 `json:"used_percent"`
+				LimitWindowSecs   float64 `json:"limit_window_seconds"`
+				ResetAfterSecs    float64 `json:"reset_after_seconds"`
+				ResetAt           float64 `json:"reset_at"`
 			} `json:"primary_window"`
+			SecondaryWindow *struct {
+				UsedPercent       float64 `json:"used_percent"`
+				LimitWindowSecs   float64 `json:"limit_window_seconds"`
+				ResetAfterSecs    float64 `json:"reset_after_seconds"`
+				ResetAt           float64 `json:"reset_at"`
+			} `json:"secondary_window"`
 		} `json:"rate_limit"`
+		AdditionalRateLimits []struct {
+			LimitName string `json:"limit_name"`
+			RateLimit *struct {
+				PrimaryWindow *struct {
+					UsedPercent float64 `json:"used_percent"`
+					ResetAt     float64 `json:"reset_at"`
+					LimitWindowSecs float64 `json:"limit_window_seconds"`
+				} `json:"primary_window"`
+			} `json:"rate_limit"`
+		} `json:"additional_rate_limits"`
 		Credits *struct {
 			HasCredits bool   `json:"has_credits"`
 			Unlimited  bool   `json:"unlimited"`
@@ -377,15 +400,45 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 		return nil, err
 	}
 
-	info := &QuotaInfo{PlanType: raw.PlanType}
-	info.RateLimit = &RateLimit{
-		Allowed:      raw.RateLimit.Allowed,
-		LimitReached: raw.RateLimit.LimitReached,
+	info := &QuotaInfo{
+		AccountID: accountID,
+		PlanType:  raw.PlanType,
+		FetchedAt: time.Now().Format("01/02 15:04"),
 	}
-	if raw.RateLimit.PrimaryWindow != nil {
-		info.RateLimit.UsedPercent = raw.RateLimit.PrimaryWindow.UsedPercent
-		info.RateLimit.ResetMinutes = int(raw.RateLimit.PrimaryWindow.ResetAfterSeconds / 60)
+
+	if pw := raw.RateLimit.PrimaryWindow; pw != nil {
+		info.Primary = &RateWindow{
+			Label:        windowLabel(int(pw.LimitWindowSecs / 60)),
+			UsedPercent:  math.Round(pw.UsedPercent*100) / 100,
+			LimitReached: pw.UsedPercent >= 100 || raw.RateLimit.LimitReached,
+			ResetAt:      formatResetAt(pw.ResetAt),
+		}
 	}
+
+	if sw := raw.RateLimit.SecondaryWindow; sw != nil {
+		info.Secondary = &RateWindow{
+			Label:        windowLabel(int(sw.LimitWindowSecs / 60)),
+			UsedPercent:  math.Round(sw.UsedPercent*100) / 100,
+			LimitReached: sw.UsedPercent >= 100,
+			ResetAt:      formatResetAt(sw.ResetAt),
+		}
+	}
+
+	for _, arl := range raw.AdditionalRateLimits {
+		if arl.RateLimit != nil && arl.RateLimit.PrimaryWindow != nil {
+			pw := arl.RateLimit.PrimaryWindow
+			info.Additional = append(info.Additional, AdditionalRL{
+				Name: arl.LimitName,
+				Primary: &RateWindow{
+					Label:        arl.LimitName + " " + windowLabel(int(pw.LimitWindowSecs/60)),
+					UsedPercent:  math.Round(pw.UsedPercent*100) / 100,
+					LimitReached: pw.UsedPercent >= 100,
+					ResetAt:      formatResetAt(pw.ResetAt),
+				},
+			})
+		}
+	}
+
 	if raw.Credits != nil {
 		info.Credits = &Credits{
 			HasCredits: raw.Credits.HasCredits,
@@ -393,5 +446,122 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 			Balance:    raw.Credits.Balance,
 		}
 	}
+
 	return info, nil
+}
+
+// FetchAllQuotas fetches quota for all active Codex accounts.
+func (o *CodexOAuth) FetchAllQuotas(ctx context.Context) {
+	accounts := o.store.AllForProvider("codex")
+	for _, acc := range accounts {
+		if acc.IsExpired() {
+			continue
+		}
+
+		jar, _ := cookiejar.New(nil)
+		client := &http.Client{Jar: jar, Transport: o.httpClient.Transport}
+
+		// Warmup with models endpoint
+		warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
+		warmupReq.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+		warmupReq.Header.Set("Accept", "application/json")
+		warmupReq.Header.Set("User-Agent", codexUA)
+		if warmupResp, err := client.Do(warmupReq); err == nil {
+			io.ReadAll(warmupResp.Body)
+			warmupResp.Body.Close()
+		}
+
+		// Fetch usage
+		usageReq, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/usage", nil)
+		usageReq.Header.Set("Authorization", "Bearer "+acc.AccessToken)
+		usageReq.Header.Set("Accept", "application/json")
+		usageReq.Header.Set("User-Agent", codexUA)
+
+		resp, err := client.Do(usageReq)
+		if err != nil {
+			continue
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			continue
+		}
+
+		// Parse plan_type from JWT
+		planType := ParseJWTPlanType(acc.AccessToken)
+
+		var raw struct {
+			PlanType string `json:"plan_type"`
+		}
+		json.Unmarshal(body, &raw)
+		if raw.PlanType != "" {
+			planType = raw.PlanType
+		}
+
+		// Reparse full quota using FetchQuotaWithClient-style parsing
+		info := &QuotaInfo{AccountID: acc.ID, PlanType: planType, FetchedAt: time.Now().Format("01/02 15:04")}
+		parseUsageBody(body, info)
+		QuotaCache.Set("codex:"+acc.ID, info)
+	}
+}
+
+func parseUsageBody(body []byte, info *QuotaInfo) {
+	var raw struct {
+		RateLimit struct {
+			LimitReached bool `json:"limit_reached"`
+			PrimaryWindow *struct {
+				UsedPercent     float64 `json:"used_percent"`
+				LimitWindowSecs float64 `json:"limit_window_seconds"`
+				ResetAt         float64 `json:"reset_at"`
+			} `json:"primary_window"`
+			SecondaryWindow *struct {
+				UsedPercent     float64 `json:"used_percent"`
+				LimitWindowSecs float64 `json:"limit_window_seconds"`
+				ResetAt         float64 `json:"reset_at"`
+			} `json:"secondary_window"`
+		} `json:"rate_limit"`
+		AdditionalRateLimits []struct {
+			LimitName string `json:"limit_name"`
+			RateLimit *struct {
+				PrimaryWindow *struct {
+					UsedPercent     float64 `json:"used_percent"`
+					ResetAt         float64 `json:"reset_at"`
+					LimitWindowSecs float64 `json:"limit_window_seconds"`
+				} `json:"primary_window"`
+			} `json:"rate_limit"`
+		} `json:"additional_rate_limits"`
+	}
+	if json.Unmarshal(body, &raw) != nil {
+		return
+	}
+	if pw := raw.RateLimit.PrimaryWindow; pw != nil {
+		info.Primary = &RateWindow{
+			Label:        windowLabel(int(pw.LimitWindowSecs / 60)),
+			UsedPercent:  math.Round(pw.UsedPercent*100) / 100,
+			LimitReached: pw.UsedPercent >= 100 || raw.RateLimit.LimitReached,
+			ResetAt:      formatResetAt(pw.ResetAt),
+		}
+	}
+	if sw := raw.RateLimit.SecondaryWindow; sw != nil {
+		info.Secondary = &RateWindow{
+			Label:        windowLabel(int(sw.LimitWindowSecs / 60)),
+			UsedPercent:  math.Round(sw.UsedPercent*100) / 100,
+			LimitReached: sw.UsedPercent >= 100,
+			ResetAt:      formatResetAt(sw.ResetAt),
+		}
+	}
+	for _, arl := range raw.AdditionalRateLimits {
+		if arl.RateLimit != nil && arl.RateLimit.PrimaryWindow != nil {
+			pw := arl.RateLimit.PrimaryWindow
+			info.Additional = append(info.Additional, AdditionalRL{
+				Name: arl.LimitName,
+				Primary: &RateWindow{
+					Label:        arl.LimitName,
+					UsedPercent:  math.Round(pw.UsedPercent*100) / 100,
+					LimitReached: pw.UsedPercent >= 100,
+					ResetAt:      formatResetAt(pw.ResetAt),
+				},
+			})
+		}
+	}
 }

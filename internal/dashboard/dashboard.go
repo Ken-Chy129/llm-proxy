@@ -128,6 +128,24 @@ const dashboardHTML = `<!DOCTYPE html>
   /* Config */
   .config-display { padding:16px; font-size:12px; font-family:'SF Mono',Menlo,monospace; color:var(--text-1); white-space:pre-wrap; line-height:1.7; }
 
+  /* Quota Cards */
+  .quota-section { margin-top:8px; }
+  .quota-section h3 { font-size:13px; font-weight:600; margin-bottom:8px; color:var(--text-1); }
+  .quota-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:10px; }
+  .quota-card { background:var(--bg-1); border:1px solid var(--border); border-radius:8px; padding:14px; }
+  .quota-card-header { display:flex; align-items:center; gap:6px; margin-bottom:10px; font-size:13px; }
+  .quota-card-header .plan-badge { font-size:11px; padding:2px 8px; border-radius:10px; font-weight:500; }
+  .plan-team { background:rgba(91,138,255,0.15); color:var(--accent); }
+  .plan-pro { background:rgba(251,191,36,0.15); color:var(--yellow); }
+  .plan-plus { background:var(--green-bg); color:var(--green); }
+  .quota-row { margin-bottom:8px; }
+  .quota-row-header { display:flex; justify-content:space-between; font-size:12px; margin-bottom:3px; }
+  .quota-row-label { color:var(--text-1); font-weight:500; }
+  .quota-row-value { color:var(--text-2); }
+  .quota-row-value .pct { color:var(--text-0); font-weight:500; margin-right:4px; }
+  .quota-bar { height:4px; background:var(--bg-3); border-radius:2px; overflow:hidden; }
+  .quota-bar-fill { height:100%; border-radius:2px; transition: width 0.3s; }
+
   .hidden { display:none; }
   @media(max-width:768px) {
     .backends { grid-template-columns:1fr; }
@@ -154,6 +172,15 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 
   <div class="backends" id="backends"></div>
+
+  <!-- Quota Cards Section -->
+  <div id="quota-section" class="quota-section" style="display:none;margin-bottom:20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <h3 style="margin:0">Codex Quota</h3>
+      <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
+    </div>
+    <div id="quota-grid" class="quota-grid"></div>
+  </div>
 
   <div class="tabs">
     <div class="tab active" onclick="switchTab('chat',this)">Chat</div>
@@ -248,29 +275,35 @@ async function loadStatus(){
       }).join('');
     }
     const addBtn=isOAuth?'<a href="/auth/'+b.name+'" class="btn-add"><span>+</span> Add Account</a>':'';
-    let quotaHTML='';
-    if(b.quota){
-      const q=b.quota;
-      const plan='<span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">'+q.plan_type+'</span>';
-      let rl='';
-      if(q.rate_limit){
-        const pct=Math.round(q.rate_limit.used_percent||0);
-        const barW=Math.min(pct,100);
-        const barColor=q.rate_limit.limit_reached?'var(--red)':pct>80?'var(--yellow)':'var(--green)';
-        rl='<div style="margin-top:6px"><div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-2);margin-bottom:2px"><span>Rate limit</span><span>'+pct+'%'+(q.rate_limit.limit_reached?' (reached)':'')+'</span></div>'
-          +'<div style="height:4px;background:var(--bg-3);border-radius:2px;overflow:hidden"><div style="width:'+barW+'%;height:100%;background:'+barColor+';border-radius:2px"></div></div></div>';
-      }
-      let credits='';
-      if(q.credits&&q.credits.has_credits){
-        credits='<div style="font-size:11px;color:var(--text-2);margin-top:4px">Credits: '+(q.credits.unlimited?'Unlimited':'$'+q.credits.balance)+'</div>';
-      }
-      quotaHTML='<div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--border)">'+plan+rl+credits+'</div>';
-    }
-    const syncBtn=isOAuth&&b.status==='active'?'<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync Models</button>':'';
+    const syncBtn=isOAuth&&b.status==='active'?'<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>':'';
     return '<div class="backend-card"><div class="backend-header"><span class="dot '+dc+'"></span><span class="backend-name" style="text-transform:capitalize">'+b.name+'</span><span class="backend-badge '+bc+'">'+bl+'</span></div>'
       +'<div class="backend-info">'+(b.info||'')+'</div>'
       +'<div class="backend-models">'+(b.models||[]).map(m=>'<span class="model-tag">'+m+'</span>').join('')+'</div>'
-      +accts+'<div style="display:flex;gap:4px;flex-wrap:wrap">'+addBtn+syncBtn+'</div>'+quotaHTML+'</div>';
+      +accts+'<div style="display:flex;gap:4px;flex-wrap:wrap">'+addBtn+syncBtn+'</div></div>';
+  }).join('');
+
+  // Render per-account quota cards
+  let allQuotas=[];
+  d.backends.forEach(b=>{if(b.quotas)allQuotas=allQuotas.concat(b.quotas);});
+  const qSection=document.getElementById('quota-section');
+  const qGrid=document.getElementById('quota-grid');
+  if(allQuotas.length){
+    qSection.style.display='';
+    qGrid.innerHTML=allQuotas.map(q=>{
+      const planCls=q.plan_type?.toLowerCase().includes('pro')?'plan-pro':q.plan_type?.toLowerCase().includes('plus')?'plan-plus':'plan-team';
+      const planLabel=q.plan_type||'Unknown';
+      const renderRow=(w)=>{
+        if(!w)return '';
+        const pct=Math.round(w.used_percent||0);
+        const barColor=w.limit_reached?'var(--red)':pct>80?'var(--yellow)':'var(--green)';
+        return '<div class="quota-row"><div class="quota-row-header"><span class="quota-row-label">'+w.label+'</span><span class="quota-row-value"><span class="pct">'+pct+'%</span>'+(w.reset_at||'')+'</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:'+Math.min(pct,100)+'%;background:'+barColor+'"></div></div></div>';
+      };
+      let rows=renderRow(q.primary)+renderRow(q.secondary);
+      if(q.additional){q.additional.forEach(a=>{if(a.primary)rows+=renderRow(a.primary);});}
+      return '<div class="quota-card"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">Codex</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+q.account_id+'</span></div><div style="margin-bottom:8px"><span class="quota-card-header plan-badge '+planCls+'">'+planLabel+'</span></div>'+rows+'</div>';
+    }).join('');
+  } else {
+    qSection.style.display='none';
   }).join('');
 
   const sel=document.getElementById('chat-model');

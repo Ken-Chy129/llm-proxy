@@ -100,9 +100,17 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"models":   dynamicModels,
 			"accounts": accountList,
 		}
-		// Add cached quota (populated from response headers)
-		if cached := auth.QuotaCache.Get(p.name); cached != nil {
-			entry["quota"] = cached
+		// Per-account quotas
+		if p.name == "codex" {
+			var quotas []*auth.QuotaInfo
+			for _, a := range accounts {
+				if q := auth.QuotaCache.Get("codex:" + a.ID); q != nil {
+					quotas = append(quotas, q)
+				}
+			}
+			if len(quotas) > 0 {
+				entry["quotas"] = quotas
+			}
 		}
 		backends = append(backends, entry)
 	}
@@ -183,7 +191,7 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 	results := gin.H{}
 
 	if h.codexOAuth != nil {
-		models, client, err := h.codexOAuth.FetchModels(c.Request.Context())
+		models, _, err := h.codexOAuth.FetchModels(c.Request.Context())
 		if err != nil {
 			results["codex"] = gin.H{"error": err.Error()}
 		} else {
@@ -192,14 +200,9 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 				slugs[i] = m.Slug
 			}
 			results["codex"] = gin.H{"models": slugs, "count": len(slugs)}
-			// Also refresh quota
-			if client != nil {
-				if quota, err := h.codexOAuth.FetchQuotaWithClient(c.Request.Context(), client); err == nil {
-					auth.QuotaCache.Set("codex", quota)
-					results["codex_quota"] = quota
-				}
-			}
 		}
+		// Refresh all account quotas
+		h.codexOAuth.FetchAllQuotas(c.Request.Context())
 	}
 
 	c.JSON(http.StatusOK, results)

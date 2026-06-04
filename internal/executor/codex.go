@@ -228,10 +228,11 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, req *types.ChatComple
 }
 
 func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) error {
-	token, err := e.oauth.GetToken(ctx)
-	if err != nil {
-		return err
+	tokenData := e.oauth.GetTokenData(ctx)
+	if tokenData == nil {
+		return fmt.Errorf("codex not authenticated")
 	}
+	token := tokenData.AccessToken
 
 	cr := e.toCodexRequest(req)
 	body, _ := json.Marshal(cr)
@@ -258,9 +259,11 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 	}
 	defer resp.Body.Close()
 
-	// Extract quota from response headers
+	// Extract quota from response headers and store per-account
 	if quota := auth.ParseCodexRateLimitHeaders(resp.Header); quota != nil {
-		auth.QuotaCache.Set("codex", quota)
+		quota.AccountID = tokenData.ID
+		quota.PlanType = auth.ParseJWTPlanType(tokenData.AccessToken)
+		auth.QuotaCache.Set("codex:"+tokenData.ID, quota)
 	}
 
 	if resp.StatusCode != http.StatusOK {

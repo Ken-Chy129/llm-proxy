@@ -65,20 +65,20 @@ func main() {
 		// Try dynamic fetch if already authenticated
 		if tokenStore.ActiveCount("codex") > 0 {
 			syncCodexModels(codexOAuth, codexExec, r)
-		}
-
-		// Seed plan_type from stored tokens if no quota cached yet
-		if auth.QuotaCache.Get("codex") == nil {
+			// Seed plan_type from JWT for each account (quota % comes from API response headers)
 			for _, t := range tokenStore.AllForProvider("codex") {
-				if pt := auth.ParseJWTPlanType(t.AccessToken); pt != "" {
-					auth.QuotaCache.Set("codex", &auth.QuotaInfo{
-						PlanType:  pt,
-						RateLimit: &auth.RateLimit{Allowed: true},
-					})
-					log.Printf("codex plan (from token): %s", pt)
-					break
+				pt := auth.ParseJWTPlanType(t.AccessToken)
+				if pt == "" {
+					pt = "unknown"
 				}
+				auth.QuotaCache.Set("codex:"+t.ID, &auth.QuotaInfo{
+					AccountID: t.ID,
+					PlanType:  pt,
+					Primary:   &auth.RateWindow{Label: "5 小时限额", UsedPercent: 0},
+					Secondary: &auth.RateWindow{Label: "周限额", UsedPercent: 0},
+				})
 			}
+			log.Printf("seeded %d codex account quotas from JWT", len(tokenStore.AllForProvider("codex")))
 		}
 	}
 
@@ -88,7 +88,7 @@ func main() {
 }
 
 func syncCodexModels(oauth *auth.CodexOAuth, exec *executor.CodexExecutor, r *router.Router) {
-	models, client, err := oauth.FetchModels(context.Background())
+	models, _, err := oauth.FetchModels(context.Background())
 	if err != nil {
 		log.Printf("failed to fetch codex models: %v", err)
 		return
@@ -103,14 +103,5 @@ func syncCodexModels(oauth *auth.CodexOAuth, exec *executor.CodexExecutor, r *ro
 	}
 	log.Printf("synced %d codex models: %v", len(models), slugs)
 
-	// Fetch quota using the same warmed client (shares CF cookies)
-	if client != nil {
-		quota, err := oauth.FetchQuotaWithClient(context.Background(), client)
-		if err != nil {
-			log.Printf("failed to fetch codex quota: %v", err)
-		} else {
-			auth.QuotaCache.Set("codex", quota)
-			log.Printf("codex quota: plan=%s used=%.0f%% limit_reached=%v", quota.PlanType, quota.RateLimit.UsedPercent, quota.RateLimit.LimitReached)
-		}
-	}
+	// Quota is fetched separately via FetchAllQuotas
 }
