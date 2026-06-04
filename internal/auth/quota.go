@@ -1,8 +1,11 @@
 package auth
 
 import (
+	"encoding/json"
 	"math"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
@@ -45,12 +48,18 @@ type ModelInfo struct {
 	Description string `json:"description,omitempty"`
 }
 
-// QuotaCache stores per-account quota info.
-var QuotaCache = &quotaCache{data: make(map[string]*QuotaInfo)}
+// QuotaCache stores per-account quota info, persisted to disk.
+var QuotaCache *quotaCache
+
+func InitQuotaCache(dir string) {
+	QuotaCache = &quotaCache{data: make(map[string]*QuotaInfo), dir: dir}
+	QuotaCache.load()
+}
 
 type quotaCache struct {
 	mu   sync.RWMutex
 	data map[string]*QuotaInfo // key: "provider:accountID"
+	dir  string
 }
 
 func (c *quotaCache) Get(key string) *QuotaInfo {
@@ -63,7 +72,9 @@ func (c *quotaCache) Set(key string, info *QuotaInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	info.FetchedTime = time.Now()
+	info.FetchedAt = time.Now().Format("01/02 15:04")
 	c.data[key] = info
+	c.persist()
 }
 
 func (c *quotaCache) IsStale(key string, maxAge time.Duration) bool {
@@ -96,6 +107,48 @@ func (c *quotaCache) All() map[string]*QuotaInfo {
 		cp[k] = v
 	}
 	return cp
+}
+
+func (c *quotaCache) persist() {
+	if c.dir == "" {
+		return
+	}
+	type persistEntry struct {
+		Key  string     `json:"key"`
+		Info *QuotaInfo `json:"info"`
+	}
+	var entries []persistEntry
+	for k, v := range c.data {
+		entries = append(entries, persistEntry{Key: k, Info: v})
+	}
+	raw, _ := json.MarshalIndent(entries, "", "  ")
+	os.WriteFile(filepath.Join(c.dir, "quota_cache.json"), raw, 0600)
+}
+
+func (c *quotaCache) load() {
+	if c.dir == "" {
+		return
+	}
+	raw, err := os.ReadFile(filepath.Join(c.dir, "quota_cache.json"))
+	if err != nil {
+		return
+	}
+	type persistEntry struct {
+		Key  string     `json:"key"`
+		Info *QuotaInfo `json:"info"`
+	}
+	var entries []persistEntry
+	if json.Unmarshal(raw, &entries) != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Info != nil {
+			if e.Info.FetchedAt != "" {
+				e.Info.FetchedTime, _ = time.Parse("01/02 15:04", e.Info.FetchedAt)
+			}
+			c.data[e.Key] = e.Info
+		}
+	}
 }
 
 func formatResetAt(resetAtUnix float64) string {

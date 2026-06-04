@@ -56,6 +56,8 @@ func NewTokenStore(dir string) *TokenStore {
 	return store
 }
 
+func (s *TokenStore) Dir() string { return s.dir }
+
 // Get returns the next active token for a provider using round-robin.
 func (s *TokenStore) Get(provider string) *TokenData {
 	s.mu.RLock()
