@@ -4,3 +4,4 @@ cli-proxy
 *.json
 !config.yaml
 config.yaml
+cli-proxy-linux
