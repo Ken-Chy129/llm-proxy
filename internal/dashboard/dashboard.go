@@ -415,6 +415,7 @@ async function removeAccount(provider,id){
 }
 
 loadStatus();setInterval(loadStatus,30000);
+window.addEventListener('focus',()=>loadStatus());
 </script>
 </body>
 </html>`

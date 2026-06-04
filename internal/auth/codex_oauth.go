@@ -228,8 +228,17 @@ func (o *CodexOAuth) startCallbackServer(pkce *PKCECodes, expectedState string) 
 		}
 
 		o.store.Add(token)
-		fmt.Println("codex authenticated")
-		fmt.Fprintf(w, "<h2>Codex Login Successful</h2><p>You can close this window.</p>")
+		fmt.Printf("codex authenticated: %s\n", token.Email)
+
+		// Fetch quota for the new account in background
+		go func(accID string) {
+			time.Sleep(500 * time.Millisecond)
+			if err := o.FetchQuotaForAccountByID(context.Background(), accID); err != nil {
+				fmt.Printf("quota fetch for new account failed: %v\n", err)
+			}
+		}(token.ID)
+
+		fmt.Fprintf(w, "<h2>Codex Login Successful</h2><p>Account: %s</p><p>You can close this window.</p>", token.Email)
 		go func() { time.Sleep(2 * time.Second); srv.Close() }()
 	})
 
