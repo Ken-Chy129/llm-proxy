@@ -183,7 +183,7 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 	results := gin.H{}
 
 	if h.codexOAuth != nil {
-		models, err := h.codexOAuth.FetchModels(c.Request.Context())
+		models, client, err := h.codexOAuth.FetchModels(c.Request.Context())
 		if err != nil {
 			results["codex"] = gin.H{"error": err.Error()}
 		} else {
@@ -192,6 +192,13 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 				slugs[i] = m.Slug
 			}
 			results["codex"] = gin.H{"models": slugs, "count": len(slugs)}
+			// Also refresh quota
+			if client != nil {
+				if quota, err := h.codexOAuth.FetchQuotaWithClient(c.Request.Context(), client); err == nil {
+					auth.QuotaCache.Set("codex", quota)
+					results["codex_quota"] = quota
+				}
+			}
 		}
 	}
 

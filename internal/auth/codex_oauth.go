@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,6 +30,34 @@ type codexTokenResponse struct {
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int    `json:"expires_in"`
 	IDToken      string `json:"id_token"`
+}
+
+// parseJWTPlanType extracts chatgpt_plan_type from a JWT id_token without signature verification.
+func ParseJWTPlanType(idToken string) string {
+	parts := strings.Split(idToken, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	data, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Auth struct {
+			PlanType string `json:"chatgpt_plan_type"`
+		} `json:"https://api.openai.com/auth"`
+	}
+	if json.Unmarshal(data, &claims) == nil && claims.Auth.PlanType != "" {
+		return claims.Auth.PlanType
+	}
+	return ""
 }
 
 type CodexOAuth struct {
@@ -210,12 +239,25 @@ func (o *CodexOAuth) exchangeCode(ctx context.Context, code, codeVerifier string
 		return nil, err
 	}
 
-	return &TokenData{
+	td := &TokenData{
 		Provider:     "codex",
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
 		ExpiresAt:    time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
-	}, nil
+	}
+
+	// Extract plan_type from id_token and seed quota cache
+	if tokenResp.IDToken != "" {
+		if pt := ParseJWTPlanType(tokenResp.IDToken); pt != "" {
+			QuotaCache.Set("codex", &QuotaInfo{
+				PlanType:  pt,
+				RateLimit: &RateLimit{Allowed: true},
+			})
+			fmt.Printf("codex plan: %s\n", pt)
+		}
+	}
+
+	return td, nil
 }
 
 const codexBaseURL = "https://chatgpt.com/backend-api"
@@ -229,24 +271,33 @@ func applyCodexHeaders(req *http.Request, token string) {
 	req.Header.Set("Accept-Encoding", "identity")
 }
 
-func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, error) {
+// FetchModels fetches available models and returns a cookie-warmed client for subsequent calls.
+func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, *http.Client, error) {
 	token, err := o.GetToken(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, Transport: o.httpClient.Transport}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
 	applyCodexHeaders(req, token)
 
-	resp, err := o.httpClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer resp.Body.Close()
 
+	// Try to extract quota from model response headers
+	if quota := ParseCodexRateLimitHeaders(resp.Header); quota != nil {
+		QuotaCache.Set("codex", quota)
+	}
+
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch codex models: %d %s", resp.StatusCode, string(body))
+		return nil, nil, fmt.Errorf("fetch codex models: %d %s", resp.StatusCode, string(body))
 	}
 
 	var result struct {
@@ -257,7 +308,6 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, error) {
 		} `json:"models"`
 	}
 	if err := json.Unmarshal(body, &result); err != nil {
-		// Try categories format
 		var catResult struct {
 			Categories []struct {
 				Models []struct {
@@ -274,33 +324,23 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, error) {
 					models = append(models, ModelInfo{Slug: m.Slug, DisplayName: m.DisplayName, Description: m.Description})
 				}
 			}
-			return models, nil
+			return models, client, nil
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	models := make([]ModelInfo, len(result.Models))
 	for i, m := range result.Models {
 		models[i] = ModelInfo{Slug: m.Slug, DisplayName: m.DisplayName, Description: m.Description}
 	}
-	return models, nil
+	return models, client, nil
 }
 
-func (o *CodexOAuth) FetchQuota(ctx context.Context) (*QuotaInfo, error) {
+// FetchQuotaWithClient fetches quota using a provided http.Client (e.g. one with CF cookies from a prior models fetch).
+func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Client) (*QuotaInfo, error) {
 	token, err := o.GetToken(ctx)
 	if err != nil {
 		return nil, err
-	}
-
-	// Warmup: hit /codex/models first to establish CF cookies, then /codex/usage
-	jar, _ := cookiejar.New(nil)
-	client := &http.Client{Jar: jar, Transport: o.httpClient.Transport}
-
-	warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
-	applyCodexHeaders(warmupReq, token)
-	if warmupResp, err := client.Do(warmupReq); err == nil {
-		io.ReadAll(warmupResp.Body)
-		warmupResp.Body.Close()
 	}
 
 	req, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/usage", nil)
