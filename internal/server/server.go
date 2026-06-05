@@ -35,7 +35,10 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 
 	// /v1/* API routes (Bearer token protected)
 	api := engine.Group("/", APIKeyAuth(cfg.Server.APIKey))
+	responsesHandler := handler.NewResponsesHandler(r, statsDB)
+
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)
+	api.POST("/v1/responses", responsesHandler.HandleResponses)
 	api.POST("/v1/images/generations", imagesHandler.ImagesGenerations)
 	api.GET("/v1/models", chatHandler.ListModels)
 
