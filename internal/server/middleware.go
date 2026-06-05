@@ -33,22 +33,28 @@ func (s *sessionStore) Valid(token string) bool {
 	return s.tokens[token]
 }
 
-// APIKeyAuth protects /v1/* endpoints with Bearer token.
+// APIKeyAuth protects /v1/* endpoints with Bearer token OR session cookie.
 func APIKeyAuth(apiKey string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if apiKey == "" {
 			c.Next()
 			return
 		}
+		// Check Bearer token first
 		auth := c.GetHeader("Authorization")
 		token := strings.TrimPrefix(auth, "Bearer ")
-		if token == "" || token != apiKey {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"error": gin.H{"message": "invalid api key", "type": "invalid_request_error"},
-			})
+		if token != "" && token == apiKey {
+			c.Next()
 			return
 		}
-		c.Next()
+		// Fall back to session cookie (for dashboard chat test)
+		if cookie, err := c.Cookie("session"); err == nil && sessions.Valid(cookie) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{"message": "invalid api key", "type": "invalid_request_error"},
+		})
 	}
 }
 
