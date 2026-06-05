@@ -188,13 +188,23 @@ func (o *CodexOAuth) refresh(ctx context.Context, token *TokenData) (string, err
 	}
 
 	newToken := &TokenData{
+		ID:           token.ID,
 		Provider:     "codex",
 		AccessToken:  tokenResp.AccessToken,
 		RefreshToken: tokenResp.RefreshToken,
+		Email:        token.Email,
 		ExpiresAt:    time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
+		FileName:     token.FileName,
+	}
+	if newToken.Email == "" {
+		info := ParseJWT(tokenResp.IDToken)
+		newToken.Email = info.Email
+	}
+	if newToken.ID == "" {
+		newToken.ID = newToken.Email
 	}
 	o.store.Add(newToken)
-	fmt.Println("codex token refreshed")
+	fmt.Printf("codex token refreshed for %s\n", newToken.ID)
 	return newToken.AccessToken, nil
 }
 
