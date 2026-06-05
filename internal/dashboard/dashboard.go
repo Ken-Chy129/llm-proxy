@@ -150,6 +150,18 @@ const dashboardHTML = `<!DOCTYPE html>
   .quota-bar { height:4px; background:var(--bg-3); border-radius:2px; overflow:hidden; }
   .quota-bar-fill { height:100%; border-radius:2px; transition: width 0.3s; }
 
+  /* Modal */
+  .modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.6); z-index:100; align-items:center; justify-content:center; }
+  .modal-overlay.show { display:flex; }
+  .modal { background:var(--bg-1); border:1px solid var(--border); border-radius:12px; padding:24px; width:480px; max-width:90vw; }
+  .modal h3 { font-size:16px; margin-bottom:16px; }
+  .modal textarea { width:100%; background:var(--bg-0); border:1px solid var(--border); color:var(--text-0); border-radius:6px; padding:8px 12px; font-size:12px; font-family:'SF Mono',Menlo,monospace; resize:vertical; min-height:60px; }
+  .modal textarea:focus { outline:none; border-color:var(--accent); }
+  .modal-actions { display:flex; gap:8px; margin-top:12px; justify-content:flex-end; }
+  .modal .steps { font-size:12px; color:var(--text-2); line-height:1.8; margin-bottom:12px; }
+  .modal .steps b { color:var(--text-1); }
+  .modal .auth-url { font-size:11px; word-break:break-all; background:var(--bg-0); padding:8px; border-radius:4px; color:var(--accent); margin:8px 0; max-height:60px; overflow-y:auto; cursor:pointer; }
+
   .hidden { display:none; }
   @media(max-width:768px) {
     .backends { grid-template-columns:1fr; }
@@ -255,6 +267,27 @@ const dashboardHTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Add Account Modal -->
+<div class="modal-overlay" id="add-account-modal">
+  <div class="modal">
+    <h3 id="modal-title">Add Codex Account</h3>
+    <div class="steps">
+      <b>Step 1:</b> Click the link below to open OpenAI login (opens in new tab)<br>
+      <b>Step 2:</b> Complete authorization in the browser<br>
+      <b>Step 3:</b> Copy the callback URL from the browser address bar (the page will show "unable to connect")<br>
+      <b>Step 4:</b> Paste the callback URL below and click Submit
+    </div>
+    <div class="auth-url" id="modal-auth-url" onclick="navigator.clipboard.writeText(this.textContent)"></div>
+    <a id="modal-auth-link" href="#" target="_blank" class="btn btn-primary" style="display:inline-block;text-align:center;margin-bottom:12px;text-decoration:none;width:100%">Open Login Page</a>
+    <textarea id="modal-callback-url" placeholder="Paste the callback URL here (starts with http://localhost:1455/auth/callback?code=...)"></textarea>
+    <div id="modal-error" style="color:var(--red);font-size:12px;margin-top:4px"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" id="modal-submit" onclick="submitCallbackURL()">Submit</button>
+    </div>
+  </div>
+</div>
+
 <script>
 let logPage=0;const logLimit=30;
 
@@ -282,7 +315,7 @@ async function loadStatus(){
           +'<button class="btn-delete" onclick="removeAccount(\''+b.name+"','"+a.id+"')\">&times;</button></div>";
       }).join('');
     }
-    const addBtn=isOAuth?'<a href="/auth/'+b.name+'" class="btn-add"><span>+</span> Add Account</a>':'';
+    const addBtn=isOAuth?'<button class="btn-add" onclick="openAddAccount(\''+b.name+'\')"><span>+</span> Add Account</button>':'';
     const syncBtn=isOAuth&&b.status==='active'?'<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>':'';
     return '<div class="backend-card"><div class="backend-header"><span class="dot '+dc+'"></span><span class="backend-name" style="text-transform:capitalize">'+b.name+'</span><span class="backend-badge '+bc+'">'+bl+'</span></div>'
       +'<div class="backend-info">'+(b.info||'')+'</div>'
@@ -411,6 +444,43 @@ function switchTab(name,el){
   if(name==='logs')loadLogs();
   if(name==='stats')loadStats('7d');
   if(name==='config')loadConfig();
+}
+
+let currentProvider='';
+async function openAddAccount(provider){
+  currentProvider=provider;
+  document.getElementById('modal-title').textContent='Add '+provider.charAt(0).toUpperCase()+provider.slice(1)+' Account';
+  document.getElementById('modal-callback-url').value='';
+  document.getElementById('modal-error').textContent='';
+  // Get auth URL from server
+  const r=await apiFetch('/auth/'+provider,{redirect:'manual'});
+  const authURL=r.headers.get('Location')||'';
+  if(authURL){
+    document.getElementById('modal-auth-url').textContent=authURL;
+    document.getElementById('modal-auth-link').href=authURL;
+  }
+  document.getElementById('add-account-modal').classList.add('show');
+}
+function closeModal(){
+  document.getElementById('add-account-modal').classList.remove('show');
+}
+async function submitCallbackURL(){
+  const url=document.getElementById('modal-callback-url').value.trim();
+  if(!url){document.getElementById('modal-error').textContent='Please paste the callback URL';return;}
+  const btn=document.getElementById('modal-submit');
+  btn.disabled=true;btn.textContent='Submitting...';
+  document.getElementById('modal-error').textContent='';
+  try{
+    const r=await apiFetch('/api/auth/'+currentProvider+'/exchange',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({callback_url:url})
+    });
+    const d=await r.json();
+    if(d.error){document.getElementById('modal-error').textContent=d.error;return;}
+    closeModal();
+    loadStatus();
+  }catch(e){document.getElementById('modal-error').textContent=e.message;}
+  finally{btn.disabled=false;btn.textContent='Submit';}
 }
 
 async function refreshQuota(accountId){

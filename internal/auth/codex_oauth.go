@@ -92,11 +92,18 @@ func ParseJWTPlanType(idToken string) string {
 	return ""
 }
 
+type pendingOAuth struct {
+	pkce  *PKCECodes
+	state string
+}
+
 type CodexOAuth struct {
 	store      *TokenStore
 	mu         sync.Mutex
 	httpClient *http.Client
 	ServerPort int
+	pending    *pendingOAuth // current pending OAuth flow
+	pendingMu  sync.Mutex
 }
 
 func NewCodexOAuth(store *TokenStore) *CodexOAuth {
@@ -201,6 +208,11 @@ func (o *CodexOAuth) StartLogin() (authURL string, err error) {
 		return "", err
 	}
 
+	// Save pending state for callback URL exchange
+	o.pendingMu.Lock()
+	o.pending = &pendingOAuth{pkce: pkce, state: state}
+	o.pendingMu.Unlock()
+
 	params := url.Values{
 		"client_id":                  {CodexClientID},
 		"response_type":              {"code"},
@@ -219,6 +231,57 @@ func (o *CodexOAuth) StartLogin() (authURL string, err error) {
 	go o.startCallbackServer(pkce, state)
 
 	return authURL, nil
+}
+
+// ExchangeCallbackURL exchanges a pasted OAuth callback URL for tokens.
+func (o *CodexOAuth) ExchangeCallbackURL(ctx context.Context, callbackURL string) (*TokenData, error) {
+	o.pendingMu.Lock()
+	pending := o.pending
+	o.pendingMu.Unlock()
+
+	if pending == nil {
+		return nil, fmt.Errorf("no pending OAuth flow, click 'Add Account' first to get the auth URL")
+	}
+
+	parsed, err := url.Parse(callbackURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	code := parsed.Query().Get("code")
+	state := parsed.Query().Get("state")
+	errParam := parsed.Query().Get("error")
+
+	if errParam != "" {
+		return nil, fmt.Errorf("OAuth error: %s", errParam)
+	}
+	if code == "" {
+		return nil, fmt.Errorf("no authorization code in URL")
+	}
+
+	// Handle code#state format
+	if idx := strings.Index(code, "#"); idx >= 0 {
+		code = code[:idx]
+	}
+
+	if state != pending.state {
+		return nil, fmt.Errorf("state mismatch: please use the callback URL from the most recent login attempt")
+	}
+
+	token, err := o.exchangeCode(ctx, code, pending.pkce.CodeVerifier)
+	if err != nil {
+		return nil, err
+	}
+
+	o.store.Add(token)
+
+	// Clear pending
+	o.pendingMu.Lock()
+	o.pending = nil
+	o.pendingMu.Unlock()
+
+	fmt.Printf("codex authenticated via callback URL: %s\n", token.Email)
+	return token, nil
 }
 
 func (o *CodexOAuth) startCallbackServer(pkce *PKCECodes, expectedState string) {

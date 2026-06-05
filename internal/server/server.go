@@ -72,6 +72,22 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 			}
 			c.Redirect(http.StatusTemporaryRedirect, authURL)
 		})
+		// Exchange callback URL (paste method)
+		admin.POST("/auth/codex/exchange", func(c *gin.Context) {
+			var req struct {
+				CallbackURL string `json:"callback_url"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil || req.CallbackURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "callback_url is required"})
+				return
+			}
+			token, err := codexOAuth.ExchangeCallbackURL(c.Request.Context(), req.CallbackURL)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"ok": true, "email": token.Email})
+		})
 	}
 
 	// Health (public)
