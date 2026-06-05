@@ -254,21 +254,11 @@ const dashboardHTML = `<!DOCTYPE html>
 <script>
 let logPage=0;const logLimit=30;
 
-// API key from URL ?key=xxx or localStorage
-const urlKey=new URLSearchParams(window.location.search).get('key');
-if(urlKey)localStorage.setItem('cli-proxy-key',urlKey);
-const apiKey=localStorage.getItem('cli-proxy-key')||'';
-const authHeaders={'Authorization':'Bearer '+apiKey};
-
-function apiFetch(url,opts){
-  opts=opts||{};
-  opts.headers=Object.assign({},opts.headers||{},authHeaders);
-  return fetch(url,opts);
-}
+function apiFetch(url,opts){return fetch(url,opts);}
 
 async function loadStatus(){
   const r=await apiFetch('/api/status');
-  if(r.status===401){document.body.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100vh;color:var(--text-2)"><div style="text-align:center"><h2>Authentication Required</h2><p>Add ?key=YOUR_API_KEY to the URL</p></div></div>';return;}
+  if(r.status===401){window.location.href='/login';return;}
   const d=await r.json();
   document.getElementById('total-requests').textContent=(d.total_requests||0).toLocaleString();
   document.getElementById('total-tokens').textContent=(d.total_tokens||0).toLocaleString();
