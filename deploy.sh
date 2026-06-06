@@ -18,12 +18,6 @@ sshpass -e ssh -o StrictHostKeyChecking=no root@$SERVER "pkill -9 -f cli-proxy; 
 echo "=== Uploading binary ==="
 sshpass -e scp -o StrictHostKeyChecking=no cli-proxy-linux root@$SERVER:~/cli-proxy/cli-proxy
 
-echo "=== Syncing tokens ==="
-sshpass -e scp -o StrictHostKeyChecking=no ~/.cli-proxy/codex_*@*.json root@$SERVER:~/.cli-proxy/ 2>/dev/null || true
-
-echo "=== Cleaning duplicates ==="
-sshpass -e ssh -o StrictHostKeyChecking=no root@$SERVER "rm -f ~/.cli-proxy/codex_codex-*.json ~/.cli-proxy/quota_cache.json" 2>/dev/null || true
-
 echo "=== Starting service ==="
 sshpass -e ssh -o StrictHostKeyChecking=no root@$SERVER "chmod +x ~/cli-proxy/cli-proxy; cd ~/cli-proxy && nohup ./cli-proxy -config config.yaml > /var/log/cli-proxy.log 2>&1 &"
 
