@@ -60,6 +60,10 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
+			if c.Query("json") == "1" {
+				c.JSON(http.StatusOK, gin.H{"auth_url": authURL})
+				return
+			}
 			c.Redirect(http.StatusTemporaryRedirect, authURL)
 		})
 	}
@@ -70,9 +74,13 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 				return
 			}
+			// If requested as JSON (from dashboard modal), return URL; otherwise redirect
+			if c.Query("json") == "1" {
+				c.JSON(http.StatusOK, gin.H{"auth_url": authURL})
+				return
+			}
 			c.Redirect(http.StatusTemporaryRedirect, authURL)
 		})
-		// Exchange callback URL (paste method)
 		admin.POST("/auth/codex/exchange", func(c *gin.Context) {
 			var req struct {
 				CallbackURL string `json:"callback_url"`

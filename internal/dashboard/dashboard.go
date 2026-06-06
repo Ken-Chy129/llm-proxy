@@ -453,11 +453,11 @@ async function openAddAccount(provider){
   document.getElementById('modal-callback-url').value='';
   document.getElementById('modal-error').textContent='';
   // Get auth URL from server
-  const r=await apiFetch('/auth/'+provider,{redirect:'manual'});
-  const authURL=r.headers.get('Location')||'';
-  if(authURL){
-    document.getElementById('modal-auth-url').textContent=authURL;
-    document.getElementById('modal-auth-link').href=authURL;
+  const r=await apiFetch('/auth/'+provider+'?json=1');
+  const d=await r.json();
+  if(d.auth_url){
+    document.getElementById('modal-auth-url').textContent=d.auth_url;
+    document.getElementById('modal-auth-link').href=d.auth_url;
   }
   document.getElementById('add-account-modal').classList.add('show');
 }
