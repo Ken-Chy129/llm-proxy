@@ -50,6 +50,11 @@ func APIKeyAuth(apiKey string) gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		// Check x-api-key (Anthropic API style)
+		if xKey := c.GetHeader("x-api-key"); xKey == apiKey {
+			c.Next()
+			return
+		}
 		// Fall back to session cookie (for dashboard chat test)
 		if cookie, err := c.Cookie("session"); err == nil && sessions.Valid(cookie) {
 			c.Next()

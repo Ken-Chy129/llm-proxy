@@ -25,6 +25,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	chatHandler := handler.NewChatHandler(r, statsDB)
 	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB, codexOAuth)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
+	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 
 	// Login page and handler (public)
 	engine.GET("/login", loginPage())
@@ -40,6 +41,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)
 	api.POST("/v1/responses", responsesHandler.HandleResponses)
 	api.POST("/v1/images/generations", imagesHandler.ImagesGenerations)
+	api.POST("/v1/messages", anthropicHandler.Messages)
 	api.GET("/v1/models", chatHandler.ListModels)
 
 	// Admin API (session protected, JSON responses)

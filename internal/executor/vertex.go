@@ -247,3 +247,83 @@ func writeSSEChunk(w io.Writer, chunk types.ChatCompletionChunk) {
 	data, _ := json.Marshal(chunk)
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
+
+func (e *VertexExecutor) prepareAnthropicBody(body []byte) ([]byte, string, error) {
+	var parsed map[string]json.RawMessage
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil, "", fmt.Errorf("parse body: %w", err)
+	}
+
+	var modelName string
+	if raw, ok := parsed["model"]; ok {
+		json.Unmarshal(raw, &modelName)
+	}
+	vertexModel := e.resolveModel(modelName)
+
+	delete(parsed, "model")
+	parsed["anthropic_version"] = json.RawMessage(`"vertex-2023-10-16"`)
+
+	modified, err := json.Marshal(parsed)
+	if err != nil {
+		return nil, "", fmt.Errorf("marshal body: %w", err)
+	}
+	return modified, vertexModel, nil
+}
+
+func (e *VertexExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
+	modified, vertexModel, err := e.prepareAnthropicBody(body)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	token, err := e.getToken(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		e.buildURL(vertexModel, false), bytes.NewReader(modified))
+	if err != nil {
+		return nil, 0, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("vertex request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read response: %w", err)
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+func (e *VertexExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
+	modified, vertexModel, err := e.prepareAnthropicBody(body)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	token, err := e.getToken(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		e.buildURL(vertexModel, true), bytes.NewReader(modified))
+	if err != nil {
+		return nil, 0, err
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("vertex stream request: %w", err)
+	}
+	return resp.Body, resp.StatusCode, nil
+}

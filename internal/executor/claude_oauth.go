@@ -211,3 +211,63 @@ func applyClaudeOAuthHeaders(req *http.Request, token string) {
 	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
 	req.Header.Set("User-Agent", "Claude-Code/1.0")
 }
+
+func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
+	token, err := e.oauth.GetToken(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	applyAnthropicPassthroughHeaders(httpReq, token, clientHeaders)
+
+	resp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("claude oauth request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read response: %w", err)
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
+	token, err := e.oauth.GetToken(ctx)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, err
+	}
+	applyAnthropicPassthroughHeaders(httpReq, token, clientHeaders)
+
+	resp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, 0, fmt.Errorf("claude oauth stream request: %w", err)
+	}
+	return resp.Body, resp.StatusCode, nil
+}
+
+func applyAnthropicPassthroughHeaders(req *http.Request, token string, clientHeaders http.Header) {
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if v := clientHeaders.Get("anthropic-version"); v != "" {
+		req.Header.Set("anthropic-version", v)
+	} else {
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
+	if v := clientHeaders.Get("anthropic-beta"); v != "" {
+		req.Header.Set("anthropic-beta", v)
+	}
+}

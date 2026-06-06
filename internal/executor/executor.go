@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"io"
+	"net/http"
 
 	"github.com/user/cli-proxy/internal/types"
 )
@@ -15,4 +16,9 @@ type Executor interface {
 
 type ResponsesExecutor interface {
 	OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error)
+}
+
+type AnthropicExecutor interface {
+	ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error)
+	OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error)
 }
