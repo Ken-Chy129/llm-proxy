@@ -16,14 +16,15 @@ import (
 
 func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, statsDB *stats.DB,
 	claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth,
-	claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor) error {
+	claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor,
+	vertexExec *executor.VertexExecutor) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
-	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB, codexOAuth)
+	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB, codexOAuth, vertexExec)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 
@@ -54,6 +55,8 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	admin.POST("/sync-models", adminHandler.SyncModels)
 	admin.POST("/refresh-quota/:provider/:id", adminHandler.RefreshQuota)
 	admin.DELETE("/accounts/:provider/:id", adminHandler.DeleteAccount)
+	admin.POST("/vertex/credentials", adminHandler.SetVertexCredentials)
+	admin.DELETE("/vertex/credentials", adminHandler.DeleteVertexCredentials)
 
 	// OAuth login (session protected)
 	if claudeOAuth != nil {

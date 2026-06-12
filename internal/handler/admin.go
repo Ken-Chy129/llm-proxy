@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/user/cli-proxy/internal/auth"
 	"github.com/user/cli-proxy/internal/config"
+	"github.com/user/cli-proxy/internal/executor"
 	"github.com/user/cli-proxy/internal/router"
 	"github.com/user/cli-proxy/internal/stats"
 )
@@ -20,27 +22,35 @@ type AdminHandler struct {
 	tokenStore *auth.TokenStore
 	statsDB    *stats.DB
 	codexOAuth *auth.CodexOAuth
+	vertexExec *executor.VertexExecutor
 }
 
-func NewAdminHandler(cfg *config.Config, r *router.Router, store *auth.TokenStore, db *stats.DB, codexOAuth *auth.CodexOAuth) *AdminHandler {
-	return &AdminHandler{cfg: cfg, router: r, tokenStore: store, statsDB: db, codexOAuth: codexOAuth}
+func NewAdminHandler(cfg *config.Config, r *router.Router, store *auth.TokenStore, db *stats.DB, codexOAuth *auth.CodexOAuth, vertexExec *executor.VertexExecutor) *AdminHandler {
+	return &AdminHandler{cfg: cfg, router: r, tokenStore: store, statsDB: db, codexOAuth: codexOAuth, vertexExec: vertexExec}
 }
 
 func (h *AdminHandler) Status(c *gin.Context) {
 	backends := []gin.H{}
 
-	// Vertex — always "active" if configured
-	if h.cfg.Vertex.ProjectID != "" {
-		models := make([]string, len(h.cfg.Vertex.Models))
-		for i, m := range h.cfg.Vertex.Models {
-			models[i] = m.Name
+	// Vertex — show card even when unconfigured so credentials can be added from the dashboard
+	if h.vertexExec != nil {
+		if h.vertexExec.Configured() {
+			source := h.vertexExec.CredentialSource()
+			backends = append(backends, gin.H{
+				"name":              "vertex",
+				"status":            "active",
+				"info":              h.vertexExec.ProjectID() + " / " + h.vertexExec.Region() + " · " + source,
+				"models":            h.vertexExec.Models(),
+				"credential_source": source,
+			})
+		} else {
+			backends = append(backends, gin.H{
+				"name":   "vertex",
+				"status": "not_authenticated",
+				"info":   "No GCP credentials — upload a service account key",
+				"models": h.vertexExec.Models(),
+			})
 		}
-		backends = append(backends, gin.H{
-			"name":    "vertex",
-			"status":  "active",
-			"info":    h.cfg.Vertex.ProjectID + " / " + h.cfg.Vertex.Region,
-			"models":  models,
-		})
 	}
 
 	// OAuth providers
@@ -221,6 +231,64 @@ func (h *AdminHandler) RefreshQuota(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported provider"})
+}
+
+// SetVertexCredentials accepts an uploaded GCP credential JSON from the
+// dashboard, verifies it by fetching a token, persists it, and (re)registers
+// the vertex backend without a restart.
+func (h *AdminHandler) SetVertexCredentials(c *gin.Context) {
+	if h.vertexExec == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vertex executor not available"})
+		return
+	}
+	var req struct {
+		CredentialsJSON string `json:"credentials_json"`
+		ProjectID       string `json:"project_id"`
+		Region          string `json:"region"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.CredentialsJSON) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "credentials_json is required"})
+		return
+	}
+	credsJSON := []byte(strings.TrimSpace(req.CredentialsJSON))
+	if err := h.vertexExec.ApplyCredentials(c.Request.Context(), req.ProjectID, req.Region, credsJSON, true); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := auth.SaveGCPCredential(h.tokenStore.Dir(), &auth.GCPCredential{
+		ProjectID:   h.vertexExec.ProjectID(),
+		Region:      h.vertexExec.Region(),
+		Credentials: json.RawMessage(credsJSON),
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save credentials: " + err.Error()})
+		return
+	}
+	h.router.UnregisterBackend("vertex")
+	h.router.Register(h.vertexExec, "vertex")
+	c.JSON(http.StatusOK, gin.H{
+		"ok":         true,
+		"project_id": h.vertexExec.ProjectID(),
+		"region":     h.vertexExec.Region(),
+		"models":     h.vertexExec.Models(),
+	})
+}
+
+// DeleteVertexCredentials removes uploaded credentials. Falls back to ADC if
+// the config file still defines a project, otherwise unregisters the backend.
+func (h *AdminHandler) DeleteVertexCredentials(c *gin.Context) {
+	if h.vertexExec == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "vertex executor not available"})
+		return
+	}
+	if err := auth.DeleteGCPCredential(h.tokenStore.Dir()); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	stillConfigured := h.vertexExec.ClearCredentials()
+	if !stillConfigured {
+		h.router.UnregisterBackend("vertex")
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "configured": stillConfigured})
 }
 
 func (h *AdminHandler) DeleteAccount(c *gin.Context) {

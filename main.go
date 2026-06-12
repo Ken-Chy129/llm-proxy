@@ -32,11 +32,19 @@ func main() {
 	}
 	defer statsDB.Close()
 
-	// Vertex: static models from config
-	if cfg.Vertex.ProjectID != "" {
-		vertexExec := executor.NewVertexExecutor(cfg.Vertex)
+	// Vertex: configured via config file (ADC) or dashboard-uploaded credentials
+	vertexExec := executor.NewVertexExecutor(cfg.Vertex)
+	if saved := auth.LoadGCPCredential(tokenStore.Dir()); saved != nil {
+		if err := vertexExec.ApplyCredentials(context.Background(), saved.ProjectID, saved.Region, saved.Credentials, false); err != nil {
+			log.Printf("apply saved gcp credentials: %v", err)
+		} else {
+			log.Printf("loaded uploaded gcp credentials (project=%s)", vertexExec.ProjectID())
+		}
+	}
+	if vertexExec.Configured() {
 		r.Register(vertexExec, "vertex")
-		log.Printf("registered vertex executor: %v", vertexExec.Models())
+		log.Printf("registered vertex executor: %v (project=%s, source=%s)",
+			vertexExec.Models(), vertexExec.ProjectID(), vertexExec.CredentialSource())
 	}
 
 	// Claude OAuth: static models (Claude doesn't expose a model list API)
@@ -75,7 +83,7 @@ func main() {
 		}
 	}
 
-	if err := server.Run(cfg, r, tokenStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec); err != nil {
+	if err := server.Run(cfg, r, tokenStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

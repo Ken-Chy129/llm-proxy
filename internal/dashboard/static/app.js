@@ -27,7 +27,16 @@ async function loadStatus() {
           + `<button class="btn-delete" onclick="removeAccount('${b.name}','${a.id}')">&times;</button></div>`;
       }).join('');
     }
-    const addBtn = isOAuth ? `<button class="btn-add" onclick="openAddAccount('${b.name}')"><span>+</span> Add Account</button>` : '';
+    const isVertex = b.name === 'vertex';
+    let addBtn = '';
+    if (isOAuth) {
+      addBtn = `<button class="btn-add" onclick="openAddAccount('${b.name}')"><span>+</span> Add Account</button>`;
+    } else if (isVertex) {
+      addBtn = `<button class="btn-add" onclick="openVertexModal()"><span>+</span> ${b.status === 'active' ? 'Update' : 'Add'} Credentials</button>`;
+      if (b.credential_source === 'uploaded') {
+        addBtn += `<button class="btn-add" style="margin-left:4px;color:var(--red);border-color:var(--red)" onclick="removeVertexCredentials()">Remove</button>`;
+      }
+    }
     const syncBtn = isOAuth && b.status === 'active' ? `<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>` : '';
     return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
       + `<div class="backend-info">${b.info || ''}</div>`
@@ -197,6 +206,71 @@ async function submitCallbackURL() {
     loadStatus();
   } catch (e) { document.getElementById('modal-error').textContent = e.message; }
   finally { btn.disabled = false; btn.textContent = 'Submit'; }
+}
+
+function openVertexModal() {
+  document.getElementById('vertex-creds').value = '';
+  document.getElementById('vertex-project').value = '';
+  document.getElementById('vertex-file').value = '';
+  document.getElementById('vertex-error').textContent = '';
+  document.getElementById('vertex-modal').classList.add('show');
+}
+
+function closeVertexModal() {
+  document.getElementById('vertex-modal').classList.remove('show');
+}
+
+document.getElementById('vertex-file').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    document.getElementById('vertex-creds').value = reader.result;
+    try {
+      const j = JSON.parse(reader.result);
+      if (j.project_id) document.getElementById('vertex-project').value = j.project_id;
+    } catch {}
+  };
+  reader.readAsText(file);
+});
+
+document.getElementById('vertex-creds').addEventListener('input', (e) => {
+  try {
+    const j = JSON.parse(e.target.value);
+    if (j.project_id && !document.getElementById('vertex-project').value) {
+      document.getElementById('vertex-project').value = j.project_id;
+    }
+  } catch {}
+});
+
+async function submitVertexCredentials() {
+  const creds = document.getElementById('vertex-creds').value.trim();
+  const errEl = document.getElementById('vertex-error');
+  if (!creds) { errEl.textContent = 'Please upload or paste the credentials JSON'; return; }
+  const btn = document.getElementById('vertex-submit');
+  btn.disabled = true; btn.textContent = 'Verifying...';
+  errEl.textContent = '';
+  try {
+    const r = await apiFetch('/api/vertex/credentials', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        credentials_json: creds,
+        project_id: document.getElementById('vertex-project').value.trim(),
+        region: document.getElementById('vertex-region').value.trim()
+      })
+    });
+    const d = await r.json();
+    if (d.error) { errEl.textContent = d.error; return; }
+    closeVertexModal();
+    loadStatus();
+  } catch (e) { errEl.textContent = e.message; }
+  finally { btn.disabled = false; btn.textContent = 'Verify & Save'; }
+}
+
+async function removeVertexCredentials() {
+  if (!confirm('Remove uploaded GCP credentials?')) return;
+  await apiFetch('/api/vertex/credentials', { method: 'DELETE' });
+  loadStatus();
 }
 
 async function refreshQuota(accountId) {
