@@ -221,6 +221,134 @@ async function removeAccount(provider, id) {
   loadStatus();
 }
 
+// Image generation
+let imageMode = 'generate';
+let uploadedImageFile = null;
+
+function switchImageMode(mode, btn) {
+  imageMode = mode;
+  document.querySelectorAll('.image-mode-btn').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const uploadArea = document.getElementById('image-upload-area');
+  const prompt = document.getElementById('image-prompt');
+  if (mode === 'edit') {
+    uploadArea.style.display = '';
+    prompt.placeholder = 'Describe how to modify the image...';
+  } else {
+    uploadArea.style.display = 'none';
+    prompt.placeholder = 'Describe the image you want to generate...';
+  }
+}
+
+function handleImageSelect(input) {
+  if (input.files && input.files[0]) {
+    uploadedImageFile = input.files[0];
+    showImagePreview(uploadedImageFile);
+  }
+}
+
+function handleImageDrop(e) {
+  const files = e.dataTransfer.files;
+  if (files && files[0] && files[0].type.startsWith('image/')) {
+    uploadedImageFile = files[0];
+    showImagePreview(uploadedImageFile);
+  }
+}
+
+function showImagePreview(file) {
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    document.getElementById('image-preview-img').src = e.target.result;
+    document.getElementById('image-upload-placeholder').style.display = 'none';
+    document.getElementById('image-upload-preview').style.display = '';
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearUploadedImage() {
+  uploadedImageFile = null;
+  document.getElementById('image-file-input').value = '';
+  document.getElementById('image-preview-img').src = '';
+  document.getElementById('image-upload-placeholder').style.display = '';
+  document.getElementById('image-upload-preview').style.display = 'none';
+}
+
+async function submitImage() {
+  const prompt = document.getElementById('image-prompt').value.trim();
+  if (!prompt) return;
+  if (imageMode === 'edit' && !uploadedImageFile) {
+    alert('Please upload a reference image first');
+    return;
+  }
+
+  const result = document.getElementById('image-result');
+  const btn = document.getElementById('image-gen-btn');
+  result.innerHTML = '';
+  result.classList.add('loading');
+  btn.disabled = true; btn.textContent = 'Generating...';
+
+  const size = document.getElementById('image-size').value;
+  const quality = document.getElementById('image-quality').value;
+  const background = document.getElementById('image-bg').value;
+
+  try {
+    let resp;
+    if (imageMode === 'edit') {
+      const fd = new FormData();
+      fd.append('image', uploadedImageFile);
+      fd.append('prompt', prompt);
+      fd.append('model', 'gpt-image-2');
+      if (size) fd.append('size', size);
+      if (quality) fd.append('quality', quality);
+      resp = await apiFetch('/v1/images/edits', { method: 'POST', body: fd });
+    } else {
+      resp = await apiFetch('/v1/images/generations', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'gpt-image-2', prompt, size, quality, background, response_format: 'b64_json' })
+      });
+    }
+    result.classList.remove('loading');
+    if (!resp.ok) {
+      const e = await resp.json();
+      result.textContent = 'Error: ' + (e.error?.message || resp.statusText);
+      return;
+    }
+    const data = await resp.json();
+    if (data.data && data.data.length > 0) {
+      result.innerHTML = data.data.map((img, i) => {
+        const src = img.b64_json ? 'data:image/png;base64,' + img.b64_json : img.url;
+        const b64 = img.b64_json || (img.url && img.url.startsWith('data:') ? img.url.split(',')[1] : '');
+        return '<div class="image-result-item">'
+          + '<img src="' + src + '" onclick="window.open(this.src)">'
+          + (img.revised_prompt ? '<div style="font-size:12px;color:var(--text-2);margin-top:8px;text-align:left">' + img.revised_prompt + '</div>' : '')
+          + (b64 ? '<button class="image-download-btn" onclick="downloadImage(\'' + i + '\')">Download PNG</button>' : '')
+          + '</div>';
+      }).join('');
+    } else {
+      result.textContent = 'No image returned';
+    }
+  } catch (e) {
+    result.classList.remove('loading');
+    result.textContent = 'Error: ' + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = 'Generate';
+    loadStatus();
+  }
+}
+
+function downloadImage(index) {
+  const imgs = document.querySelectorAll('#image-result .image-result-item img');
+  if (!imgs[index]) return;
+  const src = imgs[index].src;
+  const a = document.createElement('a');
+  a.href = src;
+  a.download = 'generated-image-' + Date.now() + '.png';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
 loadStatus();
 let lastFocusLoad = 0;
 window.addEventListener('focus', () => {
