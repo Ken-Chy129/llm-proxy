@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/user/cli-proxy/internal/executor"
@@ -54,6 +55,7 @@ func (r *Router) BackendName(model string) string {
 }
 
 func (r *Router) Resolve(model string) (executor.Executor, error) {
+	model = strings.TrimSpace(model)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	exec, ok := r.modelToExecutor[model]

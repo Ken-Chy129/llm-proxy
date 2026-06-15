@@ -40,6 +40,7 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		anthropicError(c, http.StatusBadRequest, "invalid_request_error", "invalid JSON: "+err.Error())
 		return
 	}
+	meta.Model = strings.TrimSpace(meta.Model)
 	if meta.Model == "" {
 		anthropicError(c, http.StatusBadRequest, "invalid_request_error", "model is required")
 		return
