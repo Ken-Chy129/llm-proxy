@@ -3,11 +3,14 @@ package handler
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -103,6 +106,148 @@ func (h *ImagesHandler) ImagesGenerations(c *gin.Context) {
 	log.Printf("image generation success: model=%s images=%d latency=%s", req.Model, len(resp.Data), latency.Round(time.Millisecond))
 	h.recordLog(req.Model, start, nil)
 	c.JSON(http.StatusOK, resp)
+}
+
+func (h *ImagesHandler) ImagesEdits(c *gin.Context) {
+	prompt := c.PostForm("prompt")
+	if prompt == "" {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"message": "prompt is required", "type": "invalid_request_error"},
+		})
+		return
+	}
+
+	file, header, err := c.Request.FormFile("image")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"message": "image file is required: " + err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+	defer file.Close()
+
+	imageBytes, err := io.ReadAll(file)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"message": "failed to read image: " + err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+
+	mimeType := "image/png"
+	if ct := header.Header.Get("Content-Type"); ct != "" {
+		mimeType = ct
+	} else {
+		name := strings.ToLower(header.Filename)
+		switch {
+		case strings.HasSuffix(name, ".jpg"), strings.HasSuffix(name, ".jpeg"):
+			mimeType = "image/jpeg"
+		case strings.HasSuffix(name, ".webp"):
+			mimeType = "image/webp"
+		case strings.HasSuffix(name, ".gif"):
+			mimeType = "image/gif"
+		}
+	}
+
+	imageB64 := base64.StdEncoding.EncodeToString(imageBytes)
+	imageDataURL := "data:" + mimeType + ";base64," + imageB64
+
+	model := c.DefaultPostForm("model", "gpt-image-2")
+	size := c.PostForm("size")
+	quality := c.PostForm("quality")
+
+	exec, err := h.findCodexExecutor()
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": gin.H{"message": err.Error(), "type": "invalid_request_error"},
+		})
+		return
+	}
+
+	promptSnippet := prompt
+	if len(promptSnippet) > 100 {
+		promptSnippet = promptSnippet[:100] + "..."
+	}
+	log.Printf("image edit: model=%s size=%s quality=%s prompt=%q", model, size, quality, promptSnippet)
+
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.Request.Context(), imageGenTimeout)
+	defer cancel()
+
+	codexReq := buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality)
+	body, _ := json.Marshal(codexReq)
+
+	var buf bytes.Buffer
+	if err := exec.ExecuteRawStream(ctx, body, &buf); err != nil {
+		latency := time.Since(start)
+		if errors.Is(err, context.DeadlineExceeded) {
+			log.Printf("image edit timeout after %s: model=%s prompt=%q", latency.Round(time.Second), model, promptSnippet)
+			h.recordLog(model, start, fmt.Errorf("timeout after %s", latency.Round(time.Second)))
+		} else {
+			log.Printf("image edit error after %s: %v", latency.Round(time.Second), err)
+			h.recordLog(model, start, err)
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{"message": err.Error(), "type": "server_error"},
+		})
+		return
+	}
+
+	resp, err := extractImageResponse(&buf, "b64_json")
+	if err != nil {
+		log.Printf("image edit extraction error: %v", err)
+		h.recordLog(model, start, err)
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": gin.H{"message": err.Error(), "type": "server_error"},
+		})
+		return
+	}
+
+	latency := time.Since(start)
+	log.Printf("image edit success: model=%s images=%d latency=%s", model, len(resp.Data), latency.Round(time.Millisecond))
+	h.recordLog(model, start, nil)
+	c.JSON(http.StatusOK, resp)
+}
+
+func buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality string) *codexImageReq {
+	tool := map[string]interface{}{
+		"type":  "image_generation",
+		"model": model,
+	}
+	if size != "" {
+		tool["size"] = size
+	}
+	if quality != "" {
+		tool["quality"] = quality
+	}
+
+	content := []interface{}{
+		map[string]interface{}{
+			"type":      "input_image",
+			"image_url": imageDataURL,
+		},
+		map[string]interface{}{
+			"type": "input_text",
+			"text": prompt,
+		},
+	}
+
+	return &codexImageReq{
+		Model:        "gpt-5.4-mini",
+		Instructions: "",
+		Input: []interface{}{
+			map[string]interface{}{
+				"type": "message",
+				"role": "user",
+				"content": content,
+			},
+		},
+		Tools:             []interface{}{tool},
+		ToolChoice:        map[string]string{"type": "image_generation"},
+		Stream:            true,
+		Store:             false,
+		ParallelToolCalls: true,
+	}
 }
 
 func (h *ImagesHandler) findCodexExecutor() (*executor.CodexExecutor, error) {

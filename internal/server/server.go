@@ -43,6 +43,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)
 	api.POST("/v1/responses", responsesHandler.HandleResponses)
 	api.POST("/v1/images/generations", imagesHandler.ImagesGenerations)
+	api.POST("/v1/images/edits", imagesHandler.ImagesEdits)
 	api.POST("/v1/messages", anthropicHandler.Messages)
 	api.GET("/v1/models", chatHandler.ListModels)
 

@@ -34,6 +34,7 @@
 
   <div class="tabs">
     <div class="tab active" onclick="switchTab('chat',this)">Chat</div>
+    <div class="tab" onclick="switchTab('image',this)">Image</div>
     <div class="tab" onclick="switchTab('logs',this)">Logs</div>
     <div class="tab" onclick="switchTab('stats',this)">Stats</div>
     <div class="tab" onclick="switchTab('config',this)">Config</div>
@@ -48,6 +49,59 @@
       </div>
       <textarea id="chat-input" class="chat-input" rows="2" placeholder="Type a message..."></textarea>
       <div id="chat-output" class="chat-output"></div>
+    </div>
+  </div>
+
+  <div id="tab-image" class="hidden">
+    <div class="image-panel">
+      <div class="image-toolbar">
+        <div class="image-mode-btns">
+          <button class="image-mode-btn active" onclick="switchImageMode('generate',this)">Text to Image</button>
+          <button class="image-mode-btn" onclick="switchImageMode('edit',this)">Image to Image</button>
+        </div>
+      </div>
+      <div id="image-upload-area" class="image-upload" style="display:none" onclick="document.getElementById('image-file-input').click()" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="event.preventDefault();this.classList.remove('dragover');handleImageDrop(event)">
+        <input type="file" id="image-file-input" accept="image/*" style="display:none" onchange="handleImageSelect(this)">
+        <div id="image-upload-placeholder" class="image-upload-placeholder">
+          <div class="upload-icon">+</div>
+          <div>Drop image here or click to upload</div>
+        </div>
+        <div id="image-upload-preview" class="image-upload-preview" style="display:none">
+          <img id="image-preview-img" src="">
+          <button class="btn-delete image-remove-btn" onclick="event.stopPropagation();clearUploadedImage()">&times;</button>
+        </div>
+      </div>
+      <textarea id="image-prompt" class="chat-input" rows="2" placeholder="Describe the image you want to generate..."></textarea>
+      <div class="image-options">
+        <div class="image-option">
+          <label>Size</label>
+          <select id="image-size" class="image-select">
+            <option value="1024x1024">1024x1024</option>
+            <option value="1536x1024">1536x1024</option>
+            <option value="1024x1536">1024x1536</option>
+            <option value="auto" selected>auto</option>
+          </select>
+        </div>
+        <div class="image-option">
+          <label>Quality</label>
+          <select id="image-quality" class="image-select">
+            <option value="auto" selected>auto</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select>
+        </div>
+        <div class="image-option">
+          <label>Background</label>
+          <select id="image-bg" class="image-select">
+            <option value="auto" selected>auto</option>
+            <option value="transparent">transparent</option>
+            <option value="opaque">opaque</option>
+          </select>
+        </div>
+        <button class="btn btn-primary" id="image-gen-btn" onclick="submitImage()">Generate</button>
+      </div>
+      <div id="image-result" class="image-result"></div>
     </div>
   </div>
 
