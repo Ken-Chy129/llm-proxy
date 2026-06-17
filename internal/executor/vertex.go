@@ -371,6 +371,27 @@ func writeSSEChunk(w io.Writer, chunk types.ChatCompletionChunk) {
 	fmt.Fprintf(w, "data: %s\n\n", data)
 }
 
+// vertexAllowedFields lists the top-level request fields accepted by the
+// Vertex AI Anthropic rawPredict / streamRawPredict endpoint.  Any field
+// NOT in this set (e.g. context_management sent by newer Claude Code
+// versions) is stripped before forwarding so that Vertex doesn't reject the
+// request with "Extra inputs are not permitted".
+var vertexAllowedFields = map[string]bool{
+	"anthropic_version": true,
+	"messages":          true,
+	"system":            true,
+	"max_tokens":        true,
+	"stream":            true,
+	"temperature":       true,
+	"top_p":             true,
+	"top_k":             true,
+	"stop_sequences":    true,
+	"tools":             true,
+	"tool_choice":       true,
+	"metadata":          true,
+	"thinking":          true,
+}
+
 func (e *VertexExecutor) prepareAnthropicBody(body []byte) ([]byte, string, error) {
 	var parsed map[string]json.RawMessage
 	if err := json.Unmarshal(body, &parsed); err != nil {
@@ -383,7 +404,11 @@ func (e *VertexExecutor) prepareAnthropicBody(body []byte) ([]byte, string, erro
 	}
 	vertexModel := e.resolveModel(modelName)
 
-	delete(parsed, "model")
+	for key := range parsed {
+		if !vertexAllowedFields[key] {
+			delete(parsed, key)
+		}
+	}
 	parsed["anthropic_version"] = json.RawMessage(`"vertex-2023-10-16"`)
 
 	modified, err := json.Marshal(parsed)
