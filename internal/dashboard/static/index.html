@@ -22,18 +22,9 @@
     </div>
   </div>
 
-  <div class="backends" id="backends"></div>
-
-  <div id="quota-section" class="quota-section" style="display:none;margin-bottom:20px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <h3 style="margin:0">Codex Quota</h3>
-      <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
-    </div>
-    <div id="quota-grid" class="quota-grid"></div>
-  </div>
-
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('chat',this)">Chat</div>
+    <div class="tab active" onclick="switchTab('backends',this)">Backends</div>
+    <div class="tab" onclick="switchTab('chat',this)">Chat</div>
     <div class="tab" onclick="switchTab('image',this)">Image</div>
     <div class="tab" onclick="switchTab('logs',this)">Logs</div>
     <div class="tab" onclick="switchTab('stats',this)">Stats</div>
@@ -41,7 +32,20 @@
     <div class="tab" onclick="switchTab('config',this)">Config</div>
   </div>
 
-  <div id="tab-chat">
+  <!-- Backends Tab -->
+  <div id="tab-backends">
+    <div class="backends" id="backends"></div>
+    <div id="quota-section" class="quota-section" style="display:none;margin-top:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <h3 style="margin:0">Codex Quota</h3>
+        <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
+      </div>
+      <div id="quota-grid" class="quota-grid"></div>
+    </div>
+  </div>
+
+  <!-- Chat Tab -->
+  <div id="tab-chat" class="hidden">
     <div class="chat-panel">
       <div class="chat-toolbar">
         <select id="chat-model" class="model-select"></select>
@@ -53,6 +57,7 @@
     </div>
   </div>
 
+  <!-- Image Tab -->
   <div id="tab-image" class="hidden">
     <div class="image-panel">
       <div class="image-toolbar">
@@ -106,6 +111,7 @@
     </div>
   </div>
 
+  <!-- Logs Tab -->
   <div id="tab-logs" class="hidden">
     <div class="panel">
       <div class="panel-header">
@@ -124,6 +130,7 @@
     </div>
   </div>
 
+  <!-- Stats Tab -->
   <div id="tab-stats" class="hidden">
     <div class="stats-toolbar" id="stats-toolbar">
       <button class="stats-btn" onclick="loadStats('today',this)">Today</button>
@@ -140,6 +147,11 @@
         </table>
       </div>
       <div class="panel">
+        <div class="panel-header"><span>By API Key</span></div>
+        <table><thead><tr><th>Key</th><th>Requests</th><th>Total Tokens</th><th>Tokens Today</th><th>Errors</th></tr></thead>
+          <tbody id="stats-key-body"></tbody></table>
+      </div>
+      <div class="panel">
         <div class="panel-header"><span>By Day</span></div>
         <table>
           <thead><tr><th>Date</th><th>Reqs</th><th>Tokens</th><th>Err</th></tr></thead>
@@ -149,19 +161,20 @@
     </div>
   </div>
 
+  <!-- Keys Tab -->
   <div id="tab-keys" class="hidden">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
       <h3 style="font-size:14px">API Keys</h3>
       <button class="btn-add" onclick="openCreateKey()">+ Create Key</button>
     </div>
-    <table class="log-table"><thead><tr><th>Name</th><th>Key</th><th>Requests</th><th>Tokens Today</th><th>Total Tokens</th><th>Daily Limit</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Name</th><th>Key</th><th>Requests</th><th>Tokens Today</th><th>Total Tokens</th><th>Daily Limit</th><th>Actions</th></tr></thead>
     <tbody id="keys-body"></tbody></table>
     <div id="create-key-form" style="display:none;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:8px">
-      <div style="display:flex;gap:8px;align-items:end">
+      <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
         <div><label style="font-size:11px;color:var(--text-2)">Name</label><input id="key-name" style="width:160px" placeholder="e.g. team-alice"></div>
         <div><label style="font-size:11px;color:var(--text-2)">Daily Token Limit (0=unlimited)</label><input id="key-limit" type="number" style="width:120px" value="0"></div>
         <button class="btn btn-primary" style="padding:6px 16px;font-size:12px" onclick="submitCreateKey()">Create</button>
-        <button class="btn" style="padding:6px 12px;font-size:12px" onclick="document.getElementById('create-key-form').style.display='none'">Cancel</button>
+        <button class="btn btn-secondary" style="padding:6px 12px;font-size:12px" onclick="document.getElementById('create-key-form').style.display='none'">Cancel</button>
       </div>
       <div id="key-created" style="display:none;margin-top:8px;padding:8px;background:var(--bg-0);border-radius:6px;font-size:12px">
         <div style="color:var(--green);margin-bottom:4px">Key created! Copy it now — it won't be shown again in full.</div>
@@ -170,6 +183,7 @@
     </div>
   </div>
 
+  <!-- Config Tab -->
   <div id="tab-config" class="hidden">
     <div class="panel">
       <pre class="config-display" id="config-display"></pre>
@@ -177,9 +191,10 @@
   </div>
 </div>
 
+<!-- Add Account Modal -->
 <div class="modal-overlay" id="add-account-modal">
   <div class="modal">
-    <h3 id="modal-title" style="margin-bottom:20px">Add Codex Account</h3>
+    <h3 id="modal-title" style="margin-bottom:20px">Add Account</h3>
     <div id="modal-step1">
       <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:16px">
         <span style="background:var(--accent);color:#fff;width:22px;height:22px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex-shrink:0">1</span>
@@ -212,7 +227,7 @@
 <div class="modal-overlay" id="vertex-modal">
   <div class="modal">
     <h3>Add Vertex AI Credentials</h3>
-    <div class="steps">Upload a GCP <b>Service Account key</b> (JSON) with the <b>Vertex AI User</b> role, or paste its content below.<br>Create one in GCP Console → IAM → Service Accounts → Keys.</div>
+    <div class="steps">Upload a GCP <b>Service Account key</b> (JSON) with the <b>Vertex AI User</b> role, or paste its content below.<br>Create one in GCP Console &rarr; IAM &rarr; Service Accounts &rarr; Keys.</div>
     <input type="file" id="vertex-file" accept=".json,application/json" style="margin-bottom:10px;font-size:12px;color:var(--text-1)">
     <textarea id="vertex-creds" rows="5" placeholder='{"type":"service_account","project_id":"...","private_key":"..."}'></textarea>
     <div class="modal-fields">

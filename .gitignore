@@ -5,3 +5,4 @@ cli-proxy
 !config.yaml
 config.yaml
 cli-proxy-linux
+cli-proxy-linux-amd64

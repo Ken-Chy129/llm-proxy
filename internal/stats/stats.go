@@ -239,6 +239,23 @@ func (d *DB) TotalStats() (requests int, tokens int, err error) {
 	return
 }
 
+// Cleanup deletes logs older than the given number of days.
+func (d *DB) Cleanup(retainDays int) (int64, error) {
+	if retainDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().AddDate(0, 0, -retainDays).UTC().Format(time.RFC3339)
+	result, err := d.db.Exec("DELETE FROM request_logs WHERE time < ?", cutoff)
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := result.RowsAffected()
+	if deleted > 0 {
+		d.db.Exec("VACUUM")
+	}
+	return deleted, nil
+}
+
 func (d *DB) Close() error {
 	return d.db.Close()
 }

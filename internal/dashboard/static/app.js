@@ -161,6 +161,10 @@ async function loadStats(range, btn) {
   document.getElementById('stats-day-body').innerHTML = (d.by_day || []).map(s =>
     `<tr><td class="text-mono">${s.date}</td><td>${s.request_count}</td><td>${(s.total_prompt_tokens + s.total_completion_tokens).toLocaleString()}</td><td class="${s.error_count ? 'text-red' : ''}">${s.error_count}</td></tr>`
   ).join('') || empty.replace('5', '4');
+  const keyEmpty = '<tr><td colspan="5" class="text-muted" style="text-align:center;padding:20px">No key data</td></tr>';
+  document.getElementById('stats-key-body').innerHTML = (d.by_key || []).map(s =>
+    `<tr><td class="text-mono">${s.key_name}</td><td>${s.request_count}</td><td>${s.total_tokens.toLocaleString()}</td><td>${s.tokens_today.toLocaleString()}</td><td class="${s.error_count ? 'text-red' : ''}">${s.error_count}</td></tr>`
+  ).join('') || keyEmpty;
 }
 
 async function loadConfig() {
@@ -459,7 +463,7 @@ async function loadKeys() {
     const limitColor = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--yellow)' : '';
     return '<tr>'
       + '<td class="text-mono">' + k.name + '</td>'
-      + '<td class="text-muted text-mono" style="font-size:11px">' + k.key + '</td>'
+      + '<td class="text-muted text-mono" style="font-size:11px">' + k.key.slice(0,10) + '...' + k.key.slice(-4) + ' <button class="btn-delete" style="font-size:10px;color:var(--accent)" onclick="navigator.clipboard.writeText(\'' + k.key + '\')">&#x2398;</button></td>'
       + '<td>' + (k.request_count || 0).toLocaleString() + '</td>'
       + '<td style="' + (limitColor ? 'color:'+limitColor : '') + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
       + '<td>' + (k.total_tokens || 0).toLocaleString() + '</td>'

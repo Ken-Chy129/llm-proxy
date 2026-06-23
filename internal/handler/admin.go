@@ -181,11 +181,13 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 
 	byModel, _ := h.statsDB.StatsByModel(days)
 	byDay, _ := h.statsDB.StatsByDay(days)
+	byKey, _ := h.statsDB.StatsByKey()
 
 	c.JSON(http.StatusOK, gin.H{
 		"range":    rangeParam,
 		"by_model": byModel,
 		"by_day":   byDay,
+		"by_key":   byKey,
 	})
 }
 
@@ -343,7 +345,7 @@ func (h *AdminHandler) ListKeys(c *gin.Context) {
 		entry := gin.H{
 			"id":                k.ID,
 			"name":              k.Name,
-			"key":               k.Key[:7] + "..." + k.Key[len(k.Key)-4:],
+			"key":               k.Key,
 			"token_limit_daily": k.TokenLimitDaily,
 			"created_at":        k.CreatedAt,
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"log"
+	"time"
 
 	"github.com/user/cli-proxy/internal/auth"
 	"github.com/user/cli-proxy/internal/config"
@@ -85,6 +86,19 @@ func main() {
 	}
 
 	keyStore := auth.NewKeyStore(tokenStore.Dir())
+
+	// Cleanup old logs (retain 90 days), run at startup and daily
+	if deleted, err := statsDB.Cleanup(90); err == nil && deleted > 0 {
+		log.Printf("cleaned up %d old log entries", deleted)
+	}
+	go func() {
+		for range time.NewTicker(24 * time.Hour).C {
+			if d, err := statsDB.Cleanup(90); err == nil && d > 0 {
+				log.Printf("daily cleanup: removed %d old entries", d)
+			}
+		}
+	}()
+
 	if err := server.Run(cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
