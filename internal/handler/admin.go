@@ -21,12 +21,13 @@ type AdminHandler struct {
 	router     *router.Router
 	tokenStore *auth.TokenStore
 	statsDB    *stats.DB
-	codexOAuth *auth.CodexOAuth
-	vertexExec *executor.VertexExecutor
+	claudeOAuth *auth.ClaudeOAuth
+	codexOAuth  *auth.CodexOAuth
+	vertexExec  *executor.VertexExecutor
 }
 
-func NewAdminHandler(cfg *config.Config, r *router.Router, store *auth.TokenStore, db *stats.DB, codexOAuth *auth.CodexOAuth, vertexExec *executor.VertexExecutor) *AdminHandler {
-	return &AdminHandler{cfg: cfg, router: r, tokenStore: store, statsDB: db, codexOAuth: codexOAuth, vertexExec: vertexExec}
+func NewAdminHandler(cfg *config.Config, r *router.Router, store *auth.TokenStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, vertexExec *executor.VertexExecutor) *AdminHandler {
+	return &AdminHandler{cfg: cfg, router: r, tokenStore: store, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, vertexExec: vertexExec}
 }
 
 func (h *AdminHandler) Status(c *gin.Context) {
@@ -34,11 +35,17 @@ func (h *AdminHandler) Status(c *gin.Context) {
 
 	// Vertex — show card even when unconfigured so credentials can be added from the dashboard
 	if h.vertexExec != nil {
+		vertexDisabled := h.tokenStore.IsBackendDisabled("vertex")
 		if h.vertexExec.Configured() {
 			source := h.vertexExec.CredentialSource()
+			vertexStatus := "active"
+			if vertexDisabled {
+				vertexStatus = "disabled"
+			}
 			backends = append(backends, gin.H{
 				"name":              "vertex",
-				"status":            "active",
+				"status":            vertexStatus,
+				"disabled":          vertexDisabled,
 				"info":              h.vertexExec.ProjectID() + " / " + h.vertexExec.Region() + " · " + source,
 				"models":            h.vertexExec.Models(),
 				"credential_source": source,
@@ -85,11 +92,16 @@ func (h *AdminHandler) Status(c *gin.Context) {
 					expireInfo = exp.Format("15:04")
 				}
 			}
+			accDisabled := h.tokenStore.IsAccountDisabled(p.name, t.ID)
+			if accDisabled {
+				accStatus = "disabled"
+			}
 			accountList = append(accountList, gin.H{
-				"id":      t.ID,
-				"email":   info,
-				"status":  accStatus,
-				"expires": expireInfo,
+				"id":       t.ID,
+				"email":    info,
+				"status":   accStatus,
+				"expires":  expireInfo,
+				"disabled": accDisabled,
 			})
 		}
 		if activeCount > 0 {
@@ -103,12 +115,17 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		if len(dynamicModels) == 0 {
 			dynamicModels = p.models
 		}
+		disabled := h.tokenStore.IsBackendDisabled(p.name)
+		if disabled {
+			status = "disabled"
+		}
 		entry := gin.H{
 			"name":     p.name,
 			"status":   status,
 			"info":     info,
 			"models":   dynamicModels,
 			"accounts": accountList,
+			"disabled": disabled,
 		}
 		// Per-account quotas
 		if p.name == "codex" {
@@ -299,4 +316,27 @@ func (h *AdminHandler) DeleteAccount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *AdminHandler) ToggleBackend(c *gin.Context) {
+	backend := c.Param("backend")
+	if h.tokenStore.IsBackendDisabled(backend) {
+		h.tokenStore.EnableBackend(backend)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "backend": backend, "disabled": false})
+	} else {
+		h.tokenStore.DisableBackend(backend)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "backend": backend, "disabled": true})
+	}
+}
+
+func (h *AdminHandler) ToggleAccount(c *gin.Context) {
+	provider := c.Param("provider")
+	id := c.Param("id")
+	if h.tokenStore.IsAccountDisabled(provider, id) {
+		h.tokenStore.EnableAccount(provider, id)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "disabled": false})
+	} else {
+		h.tokenStore.DisableAccount(provider, id)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "disabled": true})
+	}
 }

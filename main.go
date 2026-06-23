@@ -24,6 +24,7 @@ func main() {
 
 	r := router.New()
 	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir)
+	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())
 
 	statsDB, err := stats.Open(cfg.ClaudeOAuth.TokenDir)

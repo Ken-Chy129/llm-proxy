@@ -28,7 +28,7 @@ func GeneratePKCE() (*PKCECodes, error) {
 }
 
 func GenerateState() (string, error) {
-	buf := make([]byte, 16)
+	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}

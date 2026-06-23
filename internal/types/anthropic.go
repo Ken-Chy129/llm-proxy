@@ -8,12 +8,18 @@ type AnthropicRequest struct {
 	System        string             `json:"system,omitempty"`
 	MaxTokens     int                `json:"max_tokens"`
 	Stream        bool               `json:"stream,omitempty"`
+	Thinking      *ThinkingConfig    `json:"thinking,omitempty"`
 	Temperature   *float64           `json:"temperature,omitempty"`
 	TopP          *float64           `json:"top_p,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
 	Tools         []AnthropicTool    `json:"tools,omitempty"`
 
 	AnthropicVersion string `json:"anthropic_version,omitempty"`
+}
+
+type ThinkingConfig struct {
+	Type         string `json:"type"`
+	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
 type AnthropicMessage struct {

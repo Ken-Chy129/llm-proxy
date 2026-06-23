@@ -26,6 +26,7 @@ const gcpScope = "https://www.googleapis.com/auth/cloud-platform"
 var DefaultVertexModels = []config.ModelConfig{
 	{Name: "claude-sonnet-4-6", Model: "claude-sonnet-4-6"},
 	{Name: "claude-opus-4-6", Model: "claude-opus-4-6"},
+	{Name: "claude-opus-4-6[1m]", Model: "claude-opus-4-6[1m]"},
 	{Name: "claude-haiku-4-5", Model: "claude-haiku-4-5-20251001"},
 }
 

@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	ClaudeAuthURL     = "https://claude.ai/oauth/authorize"
-	ClaudeTokenURL    = "https://api.anthropic.com/v1/oauth/token"
-	ClaudeClientID    = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-	ClaudeRedirectURI = "http://localhost:54545/callback"
+	ClaudeAuthURL      = "https://claude.com/cai/oauth/authorize"
+	ClaudeTokenURL     = "https://platform.claude.com/v1/oauth/token"
+	ClaudeClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+	ClaudeRedirectURI  = "https://platform.claude.com/oauth/code/callback"
 	ClaudeCallbackPort = 54545
 )
 
@@ -37,11 +37,18 @@ type claudeTokenResponse struct {
 	} `json:"account"`
 }
 
+type pendingClaudeOAuth struct {
+	pkce  *PKCECodes
+	state string
+}
+
 type ClaudeOAuth struct {
 	store      *TokenStore
 	httpClient *http.Client
 	mu         sync.Mutex
 	ServerPort int
+	pending    *pendingClaudeOAuth
+	pendingMu  sync.Mutex
 }
 
 func NewClaudeOAuth(store *TokenStore) *ClaudeOAuth {
@@ -133,7 +140,7 @@ func (o *ClaudeOAuth) StartLogin() (authURL string, err error) {
 		"client_id":             {ClaudeClientID},
 		"response_type":         {"code"},
 		"redirect_uri":          {ClaudeRedirectURI},
-		"scope":                 {"user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
+		"scope":                 {"org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"},
 		"code_challenge":        {pkce.CodeChallenge},
 		"code_challenge_method": {"S256"},
 		"state":                 {state},
@@ -141,9 +148,75 @@ func (o *ClaudeOAuth) StartLogin() (authURL string, err error) {
 
 	authURL = fmt.Sprintf("%s?%s", ClaudeAuthURL, params.Encode())
 
+	o.pendingMu.Lock()
+	o.pending = &pendingClaudeOAuth{pkce: pkce, state: state}
+	o.pendingMu.Unlock()
+
 	go o.startCallbackServer(pkce, state)
 
 	return authURL, nil
+}
+
+// ExchangeCallbackURL exchanges a pasted OAuth callback URL or raw code for tokens.
+// Accepts either a full callback URL (https://...?code=...&state=...) or a raw
+// authentication code in "code#state" format as shown on the platform success page.
+func (o *ClaudeOAuth) ExchangeCallbackURL(ctx context.Context, callbackURL string) (*TokenData, error) {
+	o.pendingMu.Lock()
+	pending := o.pending
+	o.pendingMu.Unlock()
+
+	if pending == nil {
+		return nil, fmt.Errorf("no pending OAuth flow, click 'Add Account' first to get the auth URL")
+	}
+
+	var code, state string
+
+	input := strings.TrimSpace(callbackURL)
+	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
+		parsed, err := url.Parse(input)
+		if err != nil {
+			return nil, fmt.Errorf("invalid URL: %w", err)
+		}
+		code = parsed.Query().Get("code")
+		state = parsed.Query().Get("state")
+		errParam := parsed.Query().Get("error")
+		if errParam != "" {
+			return nil, fmt.Errorf("OAuth error: %s", errParam)
+		}
+		if idx := strings.Index(code, "#"); idx >= 0 {
+			code = code[:idx]
+		}
+	} else {
+		if idx := strings.Index(input, "#"); idx >= 0 {
+			code = input[:idx]
+			state = input[idx+1:]
+		} else {
+			code = input
+			state = pending.state
+		}
+	}
+
+	if code == "" {
+		return nil, fmt.Errorf("no authorization code found")
+	}
+
+	if state != pending.state {
+		return nil, fmt.Errorf("state mismatch: please use the code from the most recent login attempt")
+	}
+
+	token, err := o.exchangeCode(ctx, code, pending.pkce.CodeVerifier, state)
+	if err != nil {
+		return nil, err
+	}
+
+	o.store.Add(token)
+
+	o.pendingMu.Lock()
+	o.pending = nil
+	o.pendingMu.Unlock()
+
+	fmt.Printf("claude authenticated via callback URL: %s\n", token.Email)
+	return token, nil
 }
 
 func (o *ClaudeOAuth) startCallbackServer(pkce *PKCECodes, expectedState string) {
@@ -172,7 +245,7 @@ func (o *ClaudeOAuth) startCallbackServer(pkce *PKCECodes, expectedState string)
 			code = code[:idx]
 		}
 
-		token, err := o.exchangeCode(r.Context(), code, pkce.CodeVerifier)
+		token, err := o.exchangeCode(r.Context(), code, pkce.CodeVerifier, expectedState)
 		if err != nil {
 			fmt.Fprintf(w, "<h2>Login Failed</h2><p>%s</p>", err.Error())
 			go func() { time.Sleep(time.Second); srv.Close() }()
@@ -196,13 +269,14 @@ func (o *ClaudeOAuth) startCallbackServer(pkce *PKCECodes, expectedState string)
 	}
 }
 
-func (o *ClaudeOAuth) exchangeCode(ctx context.Context, code, codeVerifier string) (*TokenData, error) {
+func (o *ClaudeOAuth) exchangeCode(ctx context.Context, code, codeVerifier, state string) (*TokenData, error) {
 	reqBody := map[string]interface{}{
 		"code":          code,
 		"grant_type":    "authorization_code",
 		"client_id":     ClaudeClientID,
 		"redirect_uri":  ClaudeRedirectURI,
 		"code_verifier": codeVerifier,
+		"state":         state,
 	}
 	jsonBody, _ := json.Marshal(reqBody)
 

@@ -24,7 +24,7 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
-	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB, codexOAuth, vertexExec)
+	adminHandler := handler.NewAdminHandler(cfg, r, tokenStore, statsDB, claudeOAuth, codexOAuth, vertexExec)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 
@@ -58,6 +58,8 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 	admin.DELETE("/accounts/:provider/:id", adminHandler.DeleteAccount)
 	admin.POST("/vertex/credentials", adminHandler.SetVertexCredentials)
 	admin.DELETE("/vertex/credentials", adminHandler.DeleteVertexCredentials)
+	admin.POST("/backends/:backend/toggle", adminHandler.ToggleBackend)
+	admin.POST("/accounts/:provider/:id/toggle", adminHandler.ToggleAccount)
 
 	// OAuth login (session protected)
 	if claudeOAuth != nil {
@@ -72,6 +74,21 @@ func Run(cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, stat
 				return
 			}
 			c.Redirect(http.StatusTemporaryRedirect, authURL)
+		})
+		admin.POST("/auth/claude/exchange", func(c *gin.Context) {
+			var req struct {
+				CallbackURL string `json:"callback_url"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil || req.CallbackURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "callback_url is required"})
+				return
+			}
+			token, err := claudeOAuth.ExchangeCallbackURL(c.Request.Context(), req.CallbackURL)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				return
+			}
+			c.JSON(http.StatusOK, gin.H{"ok": true, "email": token.Email})
 		})
 	}
 	if codexOAuth != nil {

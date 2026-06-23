@@ -2,6 +2,8 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -106,6 +108,8 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 			log.Printf("stream error: %v", err)
 			logEntry.Status = http.StatusInternalServerError
 			logEntry.Error = err.Error()
+			errJSON, _ := json.Marshal(gin.H{"error": gin.H{"message": err.Error(), "type": "server_error"}})
+			fmt.Fprintf(w, "data: %s\n\n", errJSON)
 		}
 		h.recordLog(logEntry)
 		return false

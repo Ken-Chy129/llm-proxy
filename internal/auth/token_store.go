@@ -38,11 +38,17 @@ func (t *TokenData) StatusLabel() string {
 	return "active"
 }
 
+type DisabledState struct {
+	Backends []string `json:"backends,omitempty"`
+	Accounts []string `json:"accounts,omitempty"` // "provider/id"
+}
+
 type TokenStore struct {
 	mu       sync.RWMutex
 	dir      string
 	accounts map[string][]*TokenData // provider -> accounts
 	counter  atomic.Uint64
+	disabled DisabledState
 }
 
 func NewTokenStore(dir string) *TokenStore {
@@ -53,7 +59,102 @@ func NewTokenStore(dir string) *TokenStore {
 	os.MkdirAll(dir, 0700)
 	store := &TokenStore{dir: dir, accounts: make(map[string][]*TokenData)}
 	store.loadAll()
+	store.loadDisabled()
 	return store
+}
+
+func (s *TokenStore) disabledPath() string {
+	return filepath.Join(s.dir, "disabled.json")
+}
+
+func (s *TokenStore) loadDisabled() {
+	raw, err := os.ReadFile(s.disabledPath())
+	if err != nil {
+		return
+	}
+	json.Unmarshal(raw, &s.disabled)
+}
+
+func (s *TokenStore) saveDisabled() error {
+	raw, _ := json.MarshalIndent(s.disabled, "", "  ")
+	return os.WriteFile(s.disabledPath(), raw, 0600)
+}
+
+func (s *TokenStore) DisableBackend(backend string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, b := range s.disabled.Backends {
+		if b == backend {
+			return nil
+		}
+	}
+	s.disabled.Backends = append(s.disabled.Backends, backend)
+	return s.saveDisabled()
+}
+
+func (s *TokenStore) EnableBackend(backend string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, b := range s.disabled.Backends {
+		if b == backend {
+			s.disabled.Backends = append(s.disabled.Backends[:i], s.disabled.Backends[i+1:]...)
+			return s.saveDisabled()
+		}
+	}
+	return nil
+}
+
+func (s *TokenStore) IsBackendDisabled(backend string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, b := range s.disabled.Backends {
+		if b == backend {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *TokenStore) DisableAccount(provider, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := provider + "/" + id
+	for _, a := range s.disabled.Accounts {
+		if a == key {
+			return nil
+		}
+	}
+	s.disabled.Accounts = append(s.disabled.Accounts, key)
+	return s.saveDisabled()
+}
+
+func (s *TokenStore) EnableAccount(provider, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := provider + "/" + id
+	for i, a := range s.disabled.Accounts {
+		if a == key {
+			s.disabled.Accounts = append(s.disabled.Accounts[:i], s.disabled.Accounts[i+1:]...)
+			return s.saveDisabled()
+		}
+	}
+	return nil
+}
+
+func (s *TokenStore) IsAccountDisabled(provider, id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.isAccountDisabledLocked(provider, id)
+}
+
+func (s *TokenStore) isAccountDisabledLocked(provider, id string) bool {
+	key := provider + "/" + id
+	for _, a := range s.disabled.Accounts {
+		if a == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *TokenStore) Dir() string { return s.dir }
@@ -67,17 +168,22 @@ func (s *TokenStore) Get(provider string) *TokenData {
 		return nil
 	}
 
-	// Round-robin over active accounts
+	// Round-robin over active, non-disabled accounts
 	n := len(list)
 	start := int(s.counter.Add(1)) % n
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
-		if !list[idx].IsExpired() {
+		if !list[idx].IsExpired() && !s.isAccountDisabledLocked(provider, list[idx].ID) {
 			return list[idx]
 		}
 	}
-	// All expired, return first so caller can try refresh
-	return list[0]
+	// All expired/disabled, return first non-disabled so caller can try refresh
+	for _, t := range list {
+		if !s.isAccountDisabledLocked(provider, t.ID) {
+			return t
+		}
+	}
+	return nil
 }
 
 // GetByID returns a specific account by ID.

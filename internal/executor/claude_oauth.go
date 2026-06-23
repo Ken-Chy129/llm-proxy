@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,9 +20,11 @@ import (
 )
 
 type ClaudeOAuthExecutor struct {
-	oauth      *auth.ClaudeOAuth
-	httpClient *http.Client
-	models     []string
+	oauth          *auth.ClaudeOAuth
+	httpClient     *http.Client
+	models         []string
+	lastBetaFlags  string
+	betaMu         sync.RWMutex
 }
 
 func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []string) *ClaudeOAuthExecutor {
@@ -37,6 +41,8 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 	ar := ToAnthropicRequest(req, req.Model)
 	ar.Stream = false
 	ar.AnthropicVersion = ""
+	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
+	ar.MaxTokens = 64000
 
 	token, err := e.oauth.GetToken(ctx)
 	if err != nil {
@@ -44,11 +50,12 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 	}
 
 	body, _ := json.Marshal(ar)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+	body = injectClaudeCodeSystemBlocks(body)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	applyClaudeOAuthHeaders(httpReq, token)
+	e.applyHeaders(httpReq, token)
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
@@ -76,6 +83,8 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	ar := ToAnthropicRequest(req, req.Model)
 	ar.Stream = true
 	ar.AnthropicVersion = ""
+	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
+	ar.MaxTokens = 64000
 
 	token, err := e.oauth.GetToken(ctx)
 	if err != nil {
@@ -83,11 +92,14 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	}
 
 	body, _ := json.Marshal(ar)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+	body = injectClaudeCodeSystemBlocks(body)
+	log.Printf("[DEBUG-CHAT] URL=https://api.anthropic.com/v1/messages body=%s", string(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
-	applyClaudeOAuthHeaders(httpReq, token)
+	e.applyHeaders(httpReq, token)
+	log.Printf("[DEBUG-CHAT] headers: %v", httpReq.Header)
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
@@ -97,6 +109,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		log.Printf("[DEBUG-CHAT] error response headers: %v", resp.Header)
 		return nil, fmt.Errorf("claude oauth error %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -213,13 +226,23 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	return &usage, nil
 }
 
-func applyClaudeOAuthHeaders(req *http.Request, token string) {
+const defaultClaudeBeta = "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24"
+
+func (e *ClaudeOAuthExecutor) getClaudeBeta() string {
+	e.betaMu.RLock()
+	defer e.betaMu.RUnlock()
+	if e.lastBetaFlags != "" {
+		return e.lastBetaFlags
+	}
+	return defaultClaudeBeta
+}
+
+func (e *ClaudeOAuthExecutor) applyHeaders(req *http.Request, token string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", "prompt-caching-2024-07-31")
-	req.Header.Set("User-Agent", "Claude-Code/1.0")
+	req.Header.Set("anthropic-beta", e.getClaudeBeta())
 }
 
 func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
@@ -229,7 +252,7 @@ func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []by
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -255,11 +278,24 @@ func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []by
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		"https://api.anthropic.com/v1/messages?beta=true", bytes.NewReader(body))
+		"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, err
 	}
 	applyAnthropicPassthroughHeaders(httpReq, token, clientHeaders)
+	if beta := clientHeaders.Get("anthropic-beta"); beta != "" {
+		e.betaMu.Lock()
+		e.lastBetaFlags = beta
+		e.betaMu.Unlock()
+	}
+	log.Printf("[DEBUG-PASSTHROUGH] headers: %v", httpReq.Header)
+	var bodyPeek map[string]json.RawMessage
+	json.Unmarshal(body, &bodyPeek)
+	keys := make([]string, 0, len(bodyPeek))
+	for k := range bodyPeek {
+		keys = append(keys, k)
+	}
+	log.Printf("[DEBUG-PASSTHROUGH] body keys=%v model=%s max_tokens=%s thinking=%s", keys, bodyPeek["model"], bodyPeek["max_tokens"], bodyPeek["thinking"])
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {

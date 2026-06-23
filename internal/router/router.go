@@ -8,10 +8,15 @@ import (
 	"github.com/user/cli-proxy/internal/executor"
 )
 
+type BackendChecker interface {
+	IsBackendDisabled(backend string) bool
+}
+
 type Router struct {
 	mu              sync.RWMutex
 	modelToExecutor map[string]executor.Executor
 	modelToBackend  map[string]string
+	checker         BackendChecker
 }
 
 func New() *Router {
@@ -19,6 +24,12 @@ func New() *Router {
 		modelToExecutor: make(map[string]executor.Executor),
 		modelToBackend:  make(map[string]string),
 	}
+}
+
+func (r *Router) SetChecker(c BackendChecker) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.checker = c
 }
 
 func (r *Router) Register(exec executor.Executor, backend string) {
@@ -61,6 +72,9 @@ func (r *Router) Resolve(model string) (executor.Executor, error) {
 	exec, ok := r.modelToExecutor[model]
 	if !ok {
 		return nil, fmt.Errorf("model %q not found, available: %v", model, r.allModelsLocked())
+	}
+	if backend := r.modelToBackend[model]; r.checker != nil && r.checker.IsBackendDisabled(backend) {
+		return nil, fmt.Errorf("backend %q is disabled", backend)
 	}
 	return exec, nil
 }

@@ -22,8 +22,10 @@ async function loadStatus() {
     if (b.accounts && b.accounts.length) {
       accts = b.accounts.map(a => {
         const ad = a.status === 'active' ? 'dot-green' : 'dot-yellow';
-        return `<div class="account-row"><span class="dot ${ad}"></span><span class="email">${a.email}</span>`
+        const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" onclick="toggleAccount('${b.name}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
+        return `<div class="account-row" style="${a.disabled ? 'opacity:0.4' : ''}"><span class="dot ${ad}"></span><span class="email">${a.email}</span>`
           + (a.expires ? `<span class="exp">${a.expires}</span>` : '')
+          + toggleAccBtn
           + `<button class="btn-delete" onclick="removeAccount('${b.name}','${a.id}')">&times;</button></div>`;
       }).join('');
     }
@@ -38,10 +40,11 @@ async function loadStatus() {
       }
     }
     const syncBtn = isOAuth && b.status === 'active' ? `<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>` : '';
-    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
+    const toggleBtn = `<button class="btn-add" style="${b.disabled ? 'color:var(--green);border-color:var(--green)' : 'color:var(--yellow);border-color:var(--yellow)'}" onclick="toggleBackend('${b.name}')">${b.disabled ? 'Enable' : 'Pause'}</button>`;
+    return `<div class="backend-card" style="${b.disabled ? 'opacity:0.5' : ''}"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
       + `<div class="backend-info">${b.info || ''}</div>`
       + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${m}</span>`).join('')}</div>`
-      + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}</div></div>`;
+      + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   }).join('');
 
   // Render per-account quota cards
@@ -77,6 +80,7 @@ async function loadStatus() {
   }
 
   const sel = document.getElementById('chat-model');
+  const prevModel = sel.value;
   const statusIcon = s => s === 'active' ? '✓' : s === 'expired' ? '!' : '✗';
   sel.innerHTML = d.backends.map(b => {
     const lbl = b.name.charAt(0).toUpperCase() + b.name.slice(1) + ' (' + statusIcon(b.status) + ')';
@@ -84,8 +88,9 @@ async function loadStatus() {
       `<option value="${m}"${b.status !== 'active' ? ' disabled' : ''}>${m}</option>`
     ).join('')}</optgroup>`;
   }).join('');
-  const first = sel.querySelector('option:not([disabled])');
-  if (first) first.selected = true;
+  const prev = prevModel && sel.querySelector(`option[value="${prevModel}"]:not([disabled])`);
+  if (prev) prev.selected = true;
+  else { const first = sel.querySelector('option:not([disabled])'); if (first) first.selected = true; }
 }
 
 async function sendChat() {
@@ -111,7 +116,11 @@ async function sendChat() {
       const lines = buf.split('\n'); buf = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
-        try { const c = JSON.parse(line.slice(6)); const t = c.choices?.[0]?.delta?.content; if (t) output.textContent += t; } catch {}
+        try {
+          const c = JSON.parse(line.slice(6));
+          if (c.error) { output.textContent = 'Error: ' + (c.error.message || JSON.stringify(c.error)); return; }
+          const t = c.choices?.[0]?.delta?.content; if (t) output.textContent += t;
+        } catch {}
       }
     }
   } catch (e) { output.classList.remove('loading'); output.textContent = 'Error: ' + e.message; }
@@ -132,7 +141,8 @@ async function loadLogs() {
     const t = new Date(l.time).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' });
     const tok = (l.prompt_tokens || 0) + (l.completion_tokens || 0);
     const sc = l.status < 400 ? 'text-green' : 'text-red';
-    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}</td><td class="text-muted">${l.backend}</td><td>${l.latency_ms}ms</td><td>${tok}</td><td class="${sc}">${l.status}</td></tr>`;
+    const errRow = l.error ? `<tr><td colspan="6" style="padding:2px 12px 8px;font-size:11px;color:var(--red);border:none">${l.error}</td></tr>` : '';
+    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}</td><td class="text-muted">${l.backend}</td><td>${l.latency_ms}ms</td><td>${tok}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
   }).join('') || '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:24px">No requests yet</td></tr>';
 }
 
@@ -191,7 +201,7 @@ function closeModal() {
 
 async function submitCallbackURL() {
   const url = document.getElementById('modal-callback-url').value.trim();
-  if (!url) { document.getElementById('modal-error').textContent = 'Please paste the callback URL'; return; }
+  if (!url) { document.getElementById('modal-error').textContent = 'Please paste the callback URL or authentication code'; return; }
   const btn = document.getElementById('modal-submit');
   btn.disabled = true; btn.textContent = 'Submitting...';
   document.getElementById('modal-error').textContent = '';
@@ -286,6 +296,16 @@ async function refreshQuota(accountId) {
 
 async function syncModels() {
   await apiFetch('/api/sync-models', { method: 'POST' });
+  loadStatus();
+}
+
+async function toggleBackend(backend) {
+  await apiFetch('/api/backends/' + backend + '/toggle', { method: 'POST' });
+  loadStatus();
+}
+
+async function toggleAccount(provider, id) {
+  await apiFetch('/api/accounts/' + provider + '/' + encodeURIComponent(id) + '/toggle', { method: 'POST' });
   loadStatus();
 }
 
