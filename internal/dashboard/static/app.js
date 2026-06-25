@@ -186,12 +186,13 @@ async function loadStats(range, btn) {
   const r = await apiFetch('/api/stats?range=' + statsRange + '&tz=' + tz);
   if (r.status === 401) { window.location.href = '/login'; return; }
   statsData = await r.json();
+  renderCalendar();
   renderTrend();
   renderBreakdown();
 }
 
 function setRange(range, btn) { loadStats(range, btn); }
-function setMetric(metric, btn) { statsMetric = metric; setActive('metric-seg', btn); renderTrend(); renderBreakdown(); }
+function setMetric(metric, btn) { statsMetric = metric; setActive('metric-seg', btn); renderCalendar(); renderTrend(); renderBreakdown(); }
 function setDimension(dim, btn) { statsDim = dim; setActive('dim-seg', btn); renderBreakdown(); }
 
 // --- axis helpers (local time, matching the tz-shifted SQLite bucket keys) ---
@@ -219,6 +220,50 @@ function buildAxis(series) {
 
 const metricVal = p => statsMetric === 'tokens' ? (p.prompt_tokens + p.completion_tokens) : p.request_count;
 const xLabel = b => statsData && statsData.granularity === 'hour' ? b.slice(11, 16) : b.slice(5);
+
+// GitHub-style contribution heatmap over ~53 weeks, colored by the active metric.
+function renderCalendar() {
+  if (!statsData) return;
+  const map = {};
+  (statsData.calendar || []).forEach(c => { map[c.bucket] = c; });
+  const valOf = c => statsMetric === 'tokens' ? (c.prompt_tokens + c.completion_tokens) : c.request_count;
+
+  const cell = 11, gap = 3, stride = cell + gap, topPad = 18, leftPad = 26, WEEKS = 53;
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const end = new Date(today); end.setDate(end.getDate() + (6 - end.getDay()));   // Saturday of this week
+  const start = new Date(end); start.setDate(start.getDate() - (WEEKS * 7 - 1));  // a Sunday
+
+  let max = 0;
+  const days = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const k = dayKey(new Date(d));
+    const c = map[k];
+    const v = c ? valOf(c) : 0;
+    if (v > max) max = v;
+    days.push({ d: new Date(d), k, v, err: c ? c.error_count : 0 });
+  }
+  const lvl = v => v <= 0 ? 0 : max <= 0 ? 0 : v <= max * 0.25 ? 1 : v <= max * 0.5 ? 2 : v <= max * 0.75 ? 3 : 4;
+
+  const W = leftPad + WEEKS * stride + 4, H = topPad + 7 * stride + 2;
+  const MN = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  let cells = '', months = '', prevMonth = -1;
+  days.forEach((day, i) => {
+    const wk = Math.floor(i / 7), dow = i % 7;
+    const x = leftPad + wk * stride, y = topPad + dow * stride;
+    const future = day.d > today;
+    const cls = future ? 'cal-future' : 'cal-l' + lvl(day.v);
+    const title = future ? '' : `<title>${day.k}: ${fmtCompact(day.v)} ${statsMetric}${day.err ? ' · ' + day.err + ' err' : ''}</title>`;
+    cells += `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" rx="2" class="${cls}">${title}</rect>`;
+    if (dow === 0) {
+      const m = day.d.getMonth();
+      if (m !== prevMonth && day.d.getDate() <= 7) { months += `<text x="${x}" y="11" class="cal-axis">${MN[m]}</text>`; prevMonth = m; }
+    }
+  });
+  const wd = [[1, 'Mon'], [3, 'Wed'], [5, 'Fri']]
+    .map(([r, t]) => `<text x="0" y="${topPad + r * stride + cell - 1}" class="cal-axis">${t}</text>`).join('');
+  document.getElementById('calendar').innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" class="cal-svg">${months}${wd}${cells}</svg>`;
+}
 
 function renderTrend() {
   if (!statsData) return;

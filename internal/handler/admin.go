@@ -221,6 +221,9 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 	byKey, _ := h.statsDB.StatsByDimension("key", days)
 	byBackend, _ := h.statsDB.StatsByDimension("backend", days)
 	byAccount, _ := h.statsDB.StatsByDimension("account", days)
+	// Year-long daily buckets for the contribution heatmap (independent of the
+	// selected range; the frontend always renders ~52 weeks).
+	calendar, _ := h.statsDB.StatsByBucket(366, tzMinutes, "day")
 
 	c.JSON(http.StatusOK, gin.H{
 		"range":       rangeParam,
@@ -230,6 +233,7 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 		"by_key":      byKey,
 		"by_backend":  byBackend,
 		"by_account":  byAccount,
+		"calendar":    calendar,
 	})
 }
 
