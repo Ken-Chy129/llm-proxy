@@ -227,10 +227,16 @@ function populateFilter() {
   document.getElementById('filter-panel').innerHTML = html;
 }
 
-function toggleFilterDD(e) { e.stopPropagation(); document.getElementById('filter-panel').classList.toggle('hidden'); }
-function closeFilterDD() { const p = document.getElementById('filter-panel'); if (p) p.classList.add('hidden'); }
-function pickFilter(value) { closeFilterDD(); setFilter(value); }
-document.addEventListener('click', closeFilterDD);
+function closeAllDD() { document.querySelectorAll('.dd-panel').forEach(p => p.classList.add('hidden')); }
+function toggleFilterDD(e) {
+  e.stopPropagation();
+  const p = document.getElementById('filter-panel');
+  const wasOpen = !p.classList.contains('hidden');
+  closeAllDD();
+  if (!wasOpen) p.classList.remove('hidden');
+}
+function pickFilter(value) { closeAllDD(); setFilter(value); }
+document.addEventListener('click', closeAllDD);
 
 // enhanceSelect wraps a native <select> in a themed dropdown, keeping the
 // <select> as the source of truth (options/value/onchange untouched). Reads
@@ -252,8 +258,12 @@ function enhanceSelect(sel) {
   trigger.append(label, caret);
   const panel = document.createElement('div');
   panel.className = 'dd-panel hidden';
-  dd.append(trigger, panel);
+  dd.append(trigger);
   sel.after(dd);
+  // Portal the panel to <body>: image/chat controls live inside panels with
+  // overflow:hidden (and a transform from the entrance animation), which would
+  // otherwise clip a fixed-positioned dropdown.
+  document.body.appendChild(panel);
   const sync = () => { const o = sel.options[sel.selectedIndex]; label.textContent = o ? o.textContent : ''; };
   const addOpt = o => {
     const el = document.createElement('div');
@@ -269,6 +279,9 @@ function enhanceSelect(sel) {
   };
   trigger.onclick = e => {
     e.stopPropagation();
+    const wasOpen = !panel.classList.contains('hidden');
+    closeAllDD();
+    if (wasOpen) return;
     panel.innerHTML = '';
     [...sel.children].forEach(node => {
       if (node.tagName === 'OPTGROUP') {
@@ -277,9 +290,14 @@ function enhanceSelect(sel) {
         [...node.children].forEach(addOpt);
       } else if (node.tagName === 'OPTION') addOpt(node);
     });
-    panel.classList.toggle('hidden');
+    // Fixed positioning escapes the panel's overflow:hidden clipping.
+    const r = trigger.getBoundingClientRect();
+    panel.style.position = 'fixed';
+    panel.style.top = (r.bottom + 4) + 'px';
+    panel.style.left = r.left + 'px';
+    panel.style.minWidth = r.width + 'px';
+    panel.classList.remove('hidden');
   };
-  document.addEventListener('click', () => panel.classList.add('hidden'));
   sel._sync = sync;
   sync();
 }
