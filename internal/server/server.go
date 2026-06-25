@@ -64,6 +64,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.GET("/keys", adminHandler.ListKeys)
 	admin.POST("/keys", adminHandler.CreateKey)
 	admin.PUT("/keys/:id", adminHandler.UpdateKey)
+	admin.POST("/keys/:id/toggle", adminHandler.ToggleKey)
 	admin.DELETE("/keys/:id", adminHandler.DeleteKey)
 
 	// OAuth login (session protected)

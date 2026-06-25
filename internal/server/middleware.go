@@ -57,6 +57,12 @@ func APIKeyAuth(legacyKey string, keyStore *auth.KeyStore) gin.HandlerFunc {
 		if apiKey != "" {
 			// Check managed keys first
 			if kd := keyStore.Validate(apiKey); kd != nil {
+				if kd.Disabled {
+					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+						"error": gin.H{"message": "api key disabled", "type": "invalid_request_error"},
+					})
+					return
+				}
 				c.Set("api_key_name", kd.Name)
 				c.Set("api_key_id", kd.ID)
 				c.Set("api_key_limit", kd.TokenLimitDaily)

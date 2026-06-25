@@ -561,6 +561,7 @@ func (h *AdminHandler) ListKeys(c *gin.Context) {
 			"key":               k.Key,
 			"token_limit_daily": k.TokenLimitDaily,
 			"created_at":        k.CreatedAt,
+			"disabled":          k.Disabled,
 		}
 		if s := statsMap[k.Name]; s != nil {
 			entry["request_count"] = s.RequestCount
@@ -614,6 +615,27 @@ func (h *AdminHandler) DeleteKey(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func (h *AdminHandler) ToggleKey(c *gin.Context) {
+	id := c.Param("id")
+	var cur *auth.KeyData
+	for _, k := range h.keyStore.All() {
+		if k.ID == id {
+			cur = k
+			break
+		}
+	}
+	if cur == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "key not found"})
+		return
+	}
+	target := !cur.Disabled // capture before SetDisabled mutates the shared pointer
+	if err := h.keyStore.SetDisabled(id, target); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "disabled": target})
 }
 
 func (h *AdminHandler) ToggleAccount(c *gin.Context) {

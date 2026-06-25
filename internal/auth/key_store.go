@@ -17,6 +17,7 @@ type KeyData struct {
 	Key             string `json:"key"`
 	TokenLimitDaily int    `json:"token_limit_daily,omitempty"`
 	CreatedAt       string `json:"created_at"`
+	Disabled        bool   `json:"disabled,omitempty"`
 }
 
 type KeyStore struct {
@@ -94,6 +95,20 @@ func (ks *KeyStore) Update(id string, name string, tokenLimitDaily int) error {
 		if k.ID == id {
 			k.Name = name
 			k.TokenLimitDaily = tokenLimitDaily
+			return ks.save()
+		}
+	}
+	return fmt.Errorf("key %s not found", id)
+}
+
+// SetDisabled toggles a key's disabled flag. A disabled key is rejected by the
+// auth middleware but kept (and re-enableable), unlike Delete.
+func (ks *KeyStore) SetDisabled(id string, disabled bool) error {
+	ks.mu.Lock()
+	defer ks.mu.Unlock()
+	for _, k := range ks.keys {
+		if k.ID == id {
+			k.Disabled = disabled
 			return ks.save()
 		}
 	}

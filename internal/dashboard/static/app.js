@@ -980,16 +980,23 @@ async function loadKeys() {
     const limitStr = k.token_limit_daily ? k.token_limit_daily.toLocaleString() : '∞';
     const pct = k.token_limit_daily ? Math.round((k.tokens_today || 0) / k.token_limit_daily * 100) : 0;
     const limitColor = pct > 90 ? 'var(--red)' : pct > 70 ? 'var(--yellow)' : '';
-    return '<tr>'
-      + '<td class="text-mono">' + k.name + '</td>'
+    const dis = k.disabled;
+    const toggleBtn = '<button class="btn-row" style="' + (dis ? 'border-color:var(--accent);color:var(--accent)' : '') + '" onclick="toggleKey(\'' + k.id + '\')">' + (dis ? '▶ Enable' : '⏸ Disable') + '</button>';
+    return '<tr style="' + (dis ? 'opacity:0.5' : '') + '">'
+      + '<td class="text-mono">' + k.name + (dis ? ' <span class="key-badge">disabled</span>' : '') + '</td>'
       + '<td class="text-muted text-mono" style="font-size:11px"><span style="vertical-align:middle">' + k.key.slice(0,10) + '...' + k.key.slice(-4) + '</span> <button class="icon-btn" title="Copy key" onclick="copyKeyInline(this, \'' + k.key + '\')">&#x2398;</button></td>'
       + '<td>' + (k.request_count || 0).toLocaleString() + '</td>'
       + '<td style="' + (limitColor ? 'color:'+limitColor : '') + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
       + '<td>' + (k.total_tokens || 0).toLocaleString() + '</td>'
       + '<td>' + limitStr + '</td>'
-      + '<td><button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'
+      + '<td style="white-space:nowrap">' + toggleBtn + ' <button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'
       + '</tr>';
   }).join('');
+}
+
+async function toggleKey(id) {
+  await apiFetch('/api/keys/' + id + '/toggle', { method: 'POST' });
+  loadKeys();
 }
 
 function openCreateKey() {
