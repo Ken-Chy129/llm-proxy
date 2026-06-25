@@ -148,20 +148,28 @@
 
   <!-- Stats Tab -->
   <div id="tab-stats" class="hidden">
-    <div class="stats-toolbar" id="stats-range">
-      <button class="stats-btn" onclick="setRange('today',this)">Today</button>
-      <button class="stats-btn active" onclick="setRange('7d',this)">7d</button>
-      <button class="stats-btn" onclick="setRange('30d',this)">30d</button>
-      <button class="stats-btn" onclick="setRange('all',this)">All</button>
+    <div class="stats-toolbar">
+      <div class="seg" id="stats-range">
+        <button class="seg-btn" onclick="setRange('today',this)">Today</button>
+        <button class="seg-btn active" onclick="setRange('7d',this)">7d</button>
+        <button class="seg-btn" onclick="setRange('30d',this)">30d</button>
+        <button class="seg-btn" onclick="setRange('all',this)">All</button>
+      </div>
       <div class="stats-spacer"></div>
-      <select id="stats-filter" class="stats-select" onchange="setFilter(this.value)"></select>
       <div class="seg" id="metric-seg">
         <button class="seg-btn active" onclick="setMetric('requests',this)">Requests</button>
         <button class="seg-btn" onclick="setMetric('tokens',this)">Tokens</button>
+        <button class="seg-btn" onclick="setMetric('errors',this)">Errors</button>
       </div>
     </div>
 
-    <div class="stats-summary" id="stats-summary"></div>
+    <div class="stats-context">
+      <div class="dd" id="filter-dd">
+        <button class="dd-trigger" onclick="toggleFilterDD(event)"><span class="dd-dot"></span><span id="filter-label">All traffic</span><span class="dd-caret">▾</span></button>
+        <div class="dd-panel hidden" id="filter-panel"></div>
+      </div>
+      <div class="stats-summary" id="stats-summary"></div>
+    </div>
 
     <div class="panel">
       <div class="panel-header">

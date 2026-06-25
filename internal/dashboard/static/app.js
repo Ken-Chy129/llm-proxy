@@ -207,20 +207,29 @@ function setFilter(value) {
 
 const DIM_LABELS = { model: 'Model', key: 'Key', backend: 'Backend', account: 'Account' };
 
+// Custom themed dropdown (a native <select> popup can't be styled to match).
 function populateFilter() {
-  const sel = document.getElementById('stats-filter');
+  document.getElementById('filter-label').textContent =
+    statsFilter.dim ? `${DIM_LABELS[statsFilter.dim]}: ${statsFilter.val}` : 'All traffic';
   const facets = statsData.facets || {};
-  let html = '<option value="">All traffic</option>';
+  let html = `<div class="dd-opt${statsFilter.dim ? '' : ' sel'}" onclick="pickFilter('')">All traffic</div>`;
   ['model', 'key', 'backend', 'account'].forEach(dim => {
     const rows = facets[dim] || [];
     if (!rows.length) return;
-    html += `<optgroup label="${DIM_LABELS[dim]}">` +
-      rows.map(r => `<option value="${dim}:${escAttr(r.label)}">${DIM_LABELS[dim]}: ${escHtml(r.label)}</option>`).join('') +
-      '</optgroup>';
+    html += `<div class="dd-group">${DIM_LABELS[dim]}</div>`;
+    html += rows.map(r => {
+      const sel = statsFilter.dim === dim && statsFilter.val === r.label;
+      return `<div class="dd-opt${sel ? ' sel' : ''}" onclick="pickFilter('${escAttr(dim + ':' + r.label)}')">` +
+        `<span class="dd-opt-l">${escHtml(r.label)}</span><span class="dd-opt-n">${fmtCompact(r.request_count)}</span></div>`;
+    }).join('');
   });
-  sel.innerHTML = html;
-  sel.value = statsFilter.dim ? statsFilter.dim + ':' + statsFilter.val : '';
+  document.getElementById('filter-panel').innerHTML = html;
 }
+
+function toggleFilterDD(e) { e.stopPropagation(); document.getElementById('filter-panel').classList.toggle('hidden'); }
+function closeFilterDD() { const p = document.getElementById('filter-panel'); if (p) p.classList.add('hidden'); }
+function pickFilter(value) { closeFilterDD(); setFilter(value); }
+document.addEventListener('click', closeFilterDD);
 
 function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
 function escHtml(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -261,7 +270,8 @@ function buildAxis(series) {
   return keys.map(zero);
 }
 
-const metricVal = p => statsMetric === 'tokens' ? (p.prompt_tokens + p.completion_tokens) : p.request_count;
+const metricVal = p => statsMetric === 'tokens' ? (p.prompt_tokens + p.completion_tokens) : statsMetric === 'errors' ? p.error_count : p.request_count;
+const metricLabel = () => statsMetric === 'tokens' ? 'Tokens' : statsMetric === 'errors' ? 'Errors' : 'Requests';
 const xLabel = b => statsData && statsData.granularity === 'hour' ? b.slice(11, 16) : b.slice(5);
 
 // GitHub-style contribution heatmap over ~53 weeks, colored by the active metric.
@@ -269,7 +279,9 @@ function renderCalendar() {
   if (!statsData) return;
   const map = {};
   (statsData.calendar || []).forEach(c => { map[c.bucket] = c; });
-  const valOf = c => statsMetric === 'tokens' ? (c.prompt_tokens + c.completion_tokens) : c.request_count;
+  const valOf = c => statsMetric === 'tokens' ? (c.prompt_tokens + c.completion_tokens) : statsMetric === 'errors' ? c.error_count : c.request_count;
+  const pfx = statsMetric === 'errors' ? 'cal-e' : 'cal-l';
+  document.getElementById('cal-wrap').classList.toggle('errors', statsMetric === 'errors');
 
   const gap = 3, topPad = 18, leftPad = 28, rightPad = 4, WEEKS = 53;
   // Size cells to fill the panel width (keeps squares; re-runs on resize).
@@ -298,7 +310,7 @@ function renderCalendar() {
   days.forEach((day, i) => {
     const wk = Math.floor(i / 7), dow = i % 7;
     const x = leftPad + wk * stride, y = topPad + dow * stride;
-    const cls = day.future ? 'cal-future' : 'cal-l' + lvl(day.v);
+    const cls = day.future ? 'cal-future' : pfx + lvl(day.v);
     cells += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${cell.toFixed(1)}" height="${cell.toFixed(1)}" rx="2" class="${cls}"></rect>`;
     if (dow === 0) {
       const m = day.d.getMonth();
@@ -335,7 +347,7 @@ function calLeave() { document.getElementById('cal-tip').classList.add('hidden')
 
 function renderTrend() {
   if (!statsData) return;
-  document.getElementById('trend-title').textContent = (statsMetric === 'tokens' ? 'Tokens' : 'Requests') + ' over time';
+  document.getElementById('trend-title').textContent = metricLabel() + ' over time';
   const s = statsData.series || [];
   const pts = buildAxis(s);
   const svg = document.getElementById('trend-svg');
@@ -375,15 +387,17 @@ function renderTrend() {
     xlabels += `<text x="${x(i).toFixed(1)}" y="${H - 8}" class="axis-label" text-anchor="middle">${xLabel(pts[i].bucket)}</text>`;
   }
 
+  const err = statsMetric === 'errors';
+  const stroke = err ? 'var(--red)' : 'var(--accent)';
   svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
   svg.innerHTML = `
     <defs><linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="var(--accent)" stop-opacity="0.28"/>
-      <stop offset="100%" stop-color="var(--accent)" stop-opacity="0"/>
+      <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
     </linearGradient></defs>
     ${grid}
     <path d="${area}" fill="url(#trendFill)"/>
-    <path d="${line}" class="trend-line" fill="none"/>
+    <path d="${line}" fill="none" style="stroke:${stroke}" class="trend-line"/>
     ${xlabels}
     <line id="trend-guide" class="trend-guide hidden" y1="${padT}" y2="${padT + innerH}"/>
     <circle id="trend-dot" class="trend-dot hidden" r="3.5"/>`;
@@ -428,7 +442,7 @@ function trendLeave() {
 function renderBreakdown() {
   if (!statsData) return;
   const rows = (statsData['by_' + statsDim] || []).slice()
-    .map(r => ({ label: r.label, val: statsMetric === 'tokens' ? r.total_tokens : r.request_count, err: r.error_count }))
+    .map(r => ({ label: r.label, val: statsMetric === 'tokens' ? r.total_tokens : statsMetric === 'errors' ? r.error_count : r.request_count, err: r.error_count }))
     .filter(r => r.val > 0)
     .sort((a, b) => b.val - a.val)
     .slice(0, 20);
