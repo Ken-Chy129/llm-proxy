@@ -1,4 +1,4 @@
-# CLI Proxy
+# LLM Proxy
 
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -6,15 +6,19 @@
 
 [简体中文](README.md) | **English**
 
-Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth) and OpenAI Codex (OAuth) behind compatible API endpoints with multi-account pooling, quota tracking, and a built-in dashboard.
+Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth) and OpenAI Codex (OAuth) behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
+
+![Dashboard — Stats](docs/dashboard-stats.png)
 
 ## Features
 
 - **Multi-protocol** — OpenAI `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` + Anthropic `/v1/messages` native passthrough
 - **Drop-in compatible** — Works directly with Claude Code, Codex CLI, and OpenAI SDKs
 - **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth — auto-dispatched by model name
-- **Account pooling** — Round-robin load balancing with per-account quota tracking; expired tokens auto-skipped
-- **Web dashboard** — Backend status, quota details, test chat, request logs, usage stats
+- **Account pooling + failover** — Round-robin load balancing; on an upstream 429 the request fails over to the next account, and expired tokens are auto-skipped
+- **Multi API-key management** — Issue per-caller keys with individual daily token limits; create/revoke from the dashboard
+- **Visual analytics** — Time-series trend plus breakdowns by model / key / backend / account (timezone-aware)
+- **Live config** — Edit each backend's model list and admin credentials from the dashboard; model changes apply instantly
 - **Single binary** — Pure Go (including SQLite), no CGO, cross-compile and deploy
 - **Docker ready** — One command to start
 
@@ -63,9 +67,9 @@ model_provider = "llm-proxy"
 model = "gpt-5.5"
 
 [model_providers.llm-proxy]
-name = "CLI Proxy"
+name = "LLM Proxy"
 base_url = "https://your-domain/v1"
-env_key = "CLI_PROXY_API_KEY"
+env_key = "LLM_PROXY_API_KEY"
 wire_api = "responses"
 ```
 
@@ -109,19 +113,28 @@ curl https://your-domain/v1/images/generations \
 
 | Backend | Models | Auth |
 |---------|--------|------|
-| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP ADC |
-| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth | Browser OAuth |
+| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP credentials (ADC / dashboard upload) |
+| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | Browser OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | Browser OAuth |
+
+> Model lists are editable from the dashboard's **Config** tab; Codex auto-fetches its available models after login.
+
+## Auth & API Keys
+
+Callers authenticate with `Authorization: Bearer <key>`, from one of two sources:
+
+- **Multi API-key (recommended)** — Issue a separate key per caller on the dashboard's **Keys** tab, each with its own daily token limit, usage view, and revoke control.
+- **Single key (optional)** — Set one global key via `server.api_key` in `config.yaml` (leave empty to disable auth for trusted networks).
 
 ## Configuration
 
 ```yaml
 server:
   port: 9090
-  api_key: "sk-your-api-key"          # Bearer token for API access
+  # api_key: "sk-proxy-xxx"            # Optional global key; the Keys tab is usually more flexible
   admin_user: "admin"                  # Dashboard login
   admin_password: "password"
-  cert_file: "/path/to/cert.pem"      # Optional: enable HTTPS
+  cert_file: "/path/to/cert.pem"       # Optional: enable HTTPS
   key_file: "/path/to/key.pem"
 
 vertex:
@@ -133,10 +146,11 @@ vertex:
 
 claude_oauth:
   enabled: true
-  token_dir: "/data"                   # Token & DB storage (required for Docker)
+  token_dir: "/data"                   # Token & DB storage (defaults to ~/.llm-proxy; use /data for Docker)
   models:
     - "claude-sonnet-4-6-oauth"
     - "claude-opus-4-6-oauth"
+    - "claude-opus-4-8-oauth"
 
 codex:
   enabled: true
@@ -149,20 +163,21 @@ codex:
 
 Visit `http://your-domain:9090/` and login with admin credentials.
 
-Features:
-- Backend status with connection indicators
-- Per-account quota display (plan type, rate limits, reset times)
-- Test chat with streaming
-- Request logs with pagination
-- Usage stats by model and day
+**Backends** — Backend status, account pools, quota details. Account indicators are operational: 🟢 usable / 🔴 rate-limited upstream / ⚪ paused (an expired OAuth access token auto-refreshes, so it isn't flagged).
+
+![Dashboard — Backends](docs/dashboard-backends.png)
+
+**Stats** — Time-series trend (toggle requests / tokens, timezone-aware), with a breakdown by model / key / backend / account below.
+
+Other tabs: **Chat** (streaming test chat), **Image** (image generation), **Logs** (paginated request logs), **Keys** (API keys & daily limits), **Config** (edit model lists and admin credentials live).
 
 ### Account Management
 
-1. Click **+ Add Account** on a backend card in the dashboard
+1. Click **+ Add Account** on a Backends card
 2. Complete OAuth login in the browser
 3. Tokens are saved and auto-refreshed on startup
 
-Requests are distributed via round-robin; expired tokens are skipped automatically.
+Requests are distributed via round-robin; on an upstream 429 a request fails over to the next account, and expired tokens are skipped automatically.
 
 ## Deployment
 

@@ -1,4 +1,4 @@
-# CLI Proxy
+# LLM Proxy
 
 [![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -6,15 +6,19 @@
 
 **简体中文** | [English](README_EN.md)
 
-为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）和 OpenAI Codex（OAuth）统一暴露为兼容 API，支持多账号池、配额追踪和管理仪表板。
+为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）和 OpenAI Codex（OAuth）统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
+
+![Dashboard — Stats](docs/dashboard-stats.png)
 
 ## 功能特性
 
 - **多协议兼容** — OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations` + Anthropic `/v1/messages` 原生透传
 - **开箱即用** — Claude Code、Codex CLI、OpenAI SDK 均可直连，零适配成本
 - **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth，按模型名自动分发
-- **多账号轮转** — Round-robin 负载均衡，独立配额追踪，过期 Token 自动跳过
-- **管理仪表板** — 后端状态、配额详情、测试对话、请求日志、用量统计
+- **多账号轮转 + 故障转移** — Round-robin 负载均衡；某账号被上游 429 限流时自动切换到下一个账号，过期 Token 自动跳过
+- **多 API Key 管理** — 为不同调用方签发独立密钥，每个密钥可设每日 Token 限额，仪表板增删改
+- **可视化统计** — 时间趋势图 + 按模型 / 密钥 / 后端 / 账号的多维度拆分（自适应时区）
+- **在线配置** — 仪表板直接编辑各后端模型列表与管理员账号，模型改动即时生效
 - **单二进制** — 纯 Go 实现（含 SQLite），无 CGO、无外部依赖，交叉编译即部署
 - **Docker 支持** — 一条命令启动
 
@@ -63,9 +67,9 @@ model_provider = "llm-proxy"
 model = "gpt-5.5"
 
 [model_providers.llm-proxy]
-name = "CLI Proxy"
+name = "LLM Proxy"
 base_url = "https://your-domain/v1"
-env_key = "CLI_PROXY_API_KEY"
+env_key = "LLM_PROXY_API_KEY"
 wire_api = "responses"
 ```
 
@@ -109,34 +113,44 @@ curl https://your-domain/v1/images/generations \
 
 | 后端 | 模型 | 认证方式 |
 |------|------|---------|
-| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP 应用默认凭证 |
-| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth | 浏览器 OAuth |
+| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP 凭证（应用默认凭证 / 仪表板上传） |
+| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | 浏览器 OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | 浏览器 OAuth |
+
+> 模型列表可在仪表板的 **Config** 页在线编辑；Codex 登录后会自动从上游拉取可用模型。
+
+## 鉴权与 API Key
+
+调用方通过 `Authorization: Bearer <key>` 鉴权，支持两种来源：
+
+- **多 API Key（推荐）** — 在仪表板 **Keys** 页为每个调用方签发独立密钥，可单独设置每日 Token 限额、查看用量、随时吊销。
+- **单一密钥（可选）** — 在 `config.yaml` 的 `server.api_key` 设置一个全局密钥（留空则不校验，适合内网）。
 
 ## 配置说明
 
 ```yaml
 server:
   port: 9090
-  api_key: "sk-your-api-key"          # API 调用的 Bearer Token
+  # api_key: "sk-proxy-xxx"            # 可选全局密钥；多数情况用 Keys 页签发更灵活
   admin_user: "admin"                  # 仪表板登录用户名
   admin_password: "password"           # 仪表板登录密码
-  cert_file: "/path/to/cert.pem"      # 可选：启用 HTTPS
+  cert_file: "/path/to/cert.pem"       # 可选：启用 HTTPS
   key_file: "/path/to/key.pem"
 
 vertex:
   project_id: "your-gcp-project-id"
   region: "us-east5"
   models:
-    - name: "claude-sonnet-4-6"       # 客户端请求的模型名
-      model: "claude-sonnet-4-6"      # Vertex AI 实际模型名
+    - name: "claude-sonnet-4-6"        # 客户端请求的模型名
+      model: "claude-sonnet-4-6"       # Vertex AI 实际模型名
 
 claude_oauth:
   enabled: true
-  token_dir: "/data"                   # Token 和数据库存储路径（Docker 场景必填）
+  token_dir: "/data"                   # Token 和数据库存储路径（默认 ~/.llm-proxy；Docker 场景填 /data）
   models:
     - "claude-sonnet-4-6-oauth"
     - "claude-opus-4-6-oauth"
+    - "claude-opus-4-8-oauth"
 
 codex:
   enabled: true
@@ -149,20 +163,21 @@ codex:
 
 访问 `http://your-domain:9090/` 并使用管理员账号登录。
 
-功能：
-- 各后端状态与连接指示
-- 每个账号独立的配额展示（套餐类型、速率限额、重置时间）
-- 测试对话（支持流式输出）
-- 请求日志（分页浏览）
-- 用量统计（按模型 / 按天聚合）
+**Backends** — 各后端状态、账号池、配额详情。账号指示灯为运维语义：🟢 可用 / 🔴 被上游限流 / ⚪ 已暂停（OAuth 访问令牌过期会自动续期，不视为告警）。
+
+![Dashboard — Backends](docs/dashboard-backends.png)
+
+**Stats** — 时间趋势图（请求数 / Token 可切换，自适应时区），下方按模型 / 密钥 / 后端 / 账号拆分。
+
+其余页签：**Chat**（流式测试对话）、**Image**（图片生成）、**Logs**（请求日志分页）、**Keys**（API 密钥与每日限额）、**Config**（在线编辑模型列表与管理员账号）。
 
 ### 账号管理
 
-1. 在仪表板点击对应后端卡片的 **+ Add Account**
+1. 在 Backends 卡片点击 **+ Add Account**
 2. 在浏览器中完成 OAuth 授权
 3. Token 自动保存并在启动时自动刷新
 
-请求通过 Round-robin 在多个账号间分配，过期 Token 自动跳过。
+请求通过 Round-robin 在多个账号间分配；某账号被上游 429 限流时自动切到下一个，过期 Token 自动跳过。
 
 ## 部署
 
