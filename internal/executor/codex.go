@@ -261,7 +261,7 @@ func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w 
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("codex image error %d: %s", resp.StatusCode, string(body))
+		return &HTTPError{Backend: "codex image", Status: resp.StatusCode, Body: string(body)}
 	}
 
 	_, err = io.Copy(w, resp.Body)
@@ -342,7 +342,7 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 		if resp.StatusCode != http.StatusOK {
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			return fmt.Errorf("codex error %d: %s", resp.StatusCode, string(respBody))
+			return &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
 		}
 
 		_, err = io.Copy(w, resp.Body)
@@ -393,7 +393,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("codex error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	return resp.Body, nil

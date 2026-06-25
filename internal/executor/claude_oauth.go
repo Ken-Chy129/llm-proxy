@@ -126,7 +126,7 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("claude oauth error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var anthropicResp types.AnthropicResponse
@@ -165,7 +165,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		log.Printf("[DEBUG-CHAT] error response headers: %v", resp.Header)
-		return nil, fmt.Errorf("claude oauth error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	chunkID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])

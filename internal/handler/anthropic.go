@@ -68,13 +68,22 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 	}
 }
 
+// anthropicErrStatus resolves a connection/setup error to the upstream status
+// when known, else 502 (what the client receives for these failures).
+func anthropicErrStatus(err error) int {
+	if st := executor.StatusFromError(err); st != 0 {
+		return st
+	}
+	return http.StatusBadGateway
+}
+
 func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.AnthropicExecutor, model string, body []byte, start time.Time) {
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
 	stream, statusCode, err := ae.OpenAnthropicStream(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	if err != nil {
 		log.Printf("anthropic stream open error: %v", err)
-		h.recordAnthropicLog(c, model, start, true, nil, err, account, failedOver)
+		h.recordAnthropicLog(c, model, start, true, nil, err, anthropicErrStatus(err), account, failedOver)
 		anthropicError(c, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
@@ -82,7 +91,7 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 
 	if statusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(stream)
-		h.recordAnthropicLog(c, model, start, true, nil, fmt.Errorf("upstream error %d", statusCode), account, failedOver)
+		h.recordAnthropicLog(c, model, start, true, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver)
 		c.Data(statusCode, "application/json", errBody)
 		return
 	}
@@ -93,7 +102,7 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 	c.Writer.Flush()
 
 	usage, copyErr := copyStreamAndExtractUsage(stream, c.Writer)
-	h.recordAnthropicLog(c, model, start, true, usage, copyErr, account, failedOver)
+	h.recordAnthropicLog(c, model, start, true, usage, copyErr, http.StatusOK, account, failedOver)
 	if copyErr != nil {
 		log.Printf("anthropic stream copy error: %v", copyErr)
 	}
@@ -104,13 +113,18 @@ func (h *AnthropicHandler) handleAnthropicRaw(c *gin.Context, ae executor.Anthro
 	respBody, statusCode, err := ae.ExecuteAnthropicRaw(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	if err != nil {
-		h.recordAnthropicLog(c, model, start, false, nil, err, account, failedOver)
+		h.recordAnthropicLog(c, model, start, false, nil, err, anthropicErrStatus(err), account, failedOver)
 		log.Printf("anthropic error: %v", err)
 		anthropicError(c, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
+	if statusCode >= 400 {
+		h.recordAnthropicLog(c, model, start, false, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver)
+		c.Data(statusCode, "application/json", respBody)
+		return
+	}
 	usage := extractUsageFromResponse(respBody)
-	h.recordAnthropicLog(c, model, start, false, usage, nil, account, failedOver)
+	h.recordAnthropicLog(c, model, start, false, usage, nil, statusCode, account, failedOver)
 	c.Data(statusCode, "application/json", respBody)
 }
 
@@ -190,7 +204,7 @@ func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*anthropicUsage, e
 	return &usage, nil
 }
 
-func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *anthropicUsage, err error, account string, failedOver []string) {
+func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *anthropicUsage, err error, status int, account string, failedOver []string) {
 	if h.statsDB == nil {
 		return
 	}
@@ -200,7 +214,7 @@ func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, star
 		Backend:      h.router.BackendName(model),
 		LatencyMs:    time.Since(start).Milliseconds(),
 		Stream:       stream,
-		Status:       http.StatusOK,
+		Status:       status,
 		APIKeyName:   apiKeyName(c),
 		Account:      account,
 		FailoverFrom: strings.Join(failedOver, ","),
@@ -210,7 +224,6 @@ func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, star
 		entry.CompletionTokens = usage.OutputTokens
 	}
 	if err != nil {
-		entry.Status = http.StatusInternalServerError
 		entry.Error = err.Error()
 	}
 	if recordErr := h.statsDB.Record(entry); recordErr != nil {

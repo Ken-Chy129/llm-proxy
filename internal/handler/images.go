@@ -439,7 +439,7 @@ func (h *ImagesHandler) recordLog(model string, start time.Time, err error) {
 		Status:    http.StatusOK,
 	}
 	if err != nil {
-		entry.Status = http.StatusInternalServerError
+		entry.Status = errStatus(err)
 		entry.Error = err.Error()
 	}
 	h.statsDB.Record(entry)

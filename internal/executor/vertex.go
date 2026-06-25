@@ -230,7 +230,7 @@ func (e *VertexExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("vertex error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPError{Backend: "vertex", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	var anthropicResp types.AnthropicResponse
@@ -268,7 +268,7 @@ func (e *VertexExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompl
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("vertex error %d: %s", resp.StatusCode, string(respBody))
+		return nil, &HTTPError{Backend: "vertex", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	chunkID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])

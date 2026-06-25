@@ -67,7 +67,7 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 
 	if err != nil {
 		log.Printf("execute error: %v", err)
-		logEntry.Status = http.StatusInternalServerError
+		logEntry.Status = errStatus(err)
 		logEntry.LatencyMs = latency.Milliseconds()
 		logEntry.Error = err.Error()
 		h.recordLog(logEntry)
@@ -118,7 +118,7 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 		}
 		if err != nil {
 			log.Printf("stream error: %v", err)
-			logEntry.Status = http.StatusInternalServerError
+			logEntry.Status = errStatus(err)
 			logEntry.Error = err.Error()
 			errJSON, _ := json.Marshal(gin.H{"error": gin.H{"message": err.Error(), "type": "server_error"}})
 			fmt.Fprintf(w, "data: %s\n\n", errJSON)
@@ -126,6 +126,15 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 		h.recordLog(logEntry)
 		return false
 	})
+}
+
+// errStatus maps an executor error to the upstream HTTP status when known,
+// falling back to 500 for connection/internal failures.
+func errStatus(err error) int {
+	if s := executor.StatusFromError(err); s != 0 {
+		return s
+	}
+	return http.StatusInternalServerError
 }
 
 func (h *ChatHandler) recordLog(entry *stats.RequestLog) {
