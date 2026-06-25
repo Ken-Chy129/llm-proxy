@@ -34,6 +34,17 @@ func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, st
 	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec}
 }
 
+// formatLocalTime renders a timestamp as HH:MM, prefixing the date (MM-DD) when
+// it isn't today, so a rate-limit reset that crosses midnight isn't ambiguous.
+func formatLocalTime(t time.Time) string {
+	t = t.Local()
+	now := time.Now()
+	if t.Year() == now.Year() && t.YearDay() == now.YearDay() {
+		return t.Format("15:04")
+	}
+	return t.Format("01-02 15:04")
+}
+
 func (h *AdminHandler) Status(c *gin.Context) {
 	backends := []gin.H{}
 
@@ -101,11 +112,12 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				accStatus = "disabled"
 			}
 			acc := gin.H{
-				"id":       t.ID,
-				"email":    info,
-				"status":   accStatus,
-				"expires":  expireInfo,
-				"disabled": accDisabled,
+				"id":            t.ID,
+				"email":         info,
+				"status":        accStatus,
+				"expires":       expireInfo,
+				"token_expired": t.IsExpired(),
+				"disabled":      accDisabled,
 			}
 			if until, estimated, active := h.tokenStore.RateLimitInfo(p.name, t.ID); active {
 				if !accDisabled {
@@ -113,7 +125,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 					acc["status"] = accStatus
 				}
 				acc["rate_limited"] = true
-				acc["rate_limited_until"] = until.Format("15:04")
+				acc["rate_limited_until"] = formatLocalTime(until)
 				acc["rate_limited_estimated"] = estimated
 			}
 			accountList = append(accountList, acc)

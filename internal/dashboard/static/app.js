@@ -1,5 +1,6 @@
 let logPage = 0;
 const logLimit = 30;
+let statusBooted = false;
 
 function apiFetch(url, opts) {
   return fetch(url, opts);
@@ -13,6 +14,10 @@ async function loadStatus() {
   document.getElementById('total-tokens').textContent = (d.total_tokens || 0).toLocaleString();
 
   const el = document.getElementById('backends');
+  // Entrance animation plays once; later refreshes (e.g. on window focus) skip
+  // it so the cards don't visibly flash/re-fade on every re-render.
+  if (statusBooted) el.classList.add('no-anim');
+  statusBooted = true;
   el.innerHTML = d.backends.map(b => {
     const bc = b.status === 'active' ? 'badge-active' : b.status === 'expired' ? 'badge-expired' : 'badge-inactive';
     const bl = b.status === 'active' ? 'Active' : b.status === 'expired' ? 'Expired' : 'Offline';
@@ -21,17 +26,25 @@ async function loadStatus() {
     let accts = '';
     if (b.accounts && b.accounts.length) {
       accts = b.accounts.map(a => {
-        const ad = a.disabled ? 'dot-gray' : a.rate_limited ? '' : a.status === 'active' ? 'dot-green' : 'dot-yellow';
-        const dotStyle = (!a.disabled && a.rate_limited) ? 'background:var(--red)' : '';
-        const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" onclick="toggleAccount('${b.name}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
+        // Operational dot: gray=paused, red=rate-limited, green=usable. An
+        // expired OAuth access token is NOT flagged — it auto-refreshes on next
+        // use, so surfacing it as a warning would be noise.
+        let dotClass = 'dot-green', dotStyle = '', title = 'Active';
+        if (a.disabled) { dotClass = 'dot-gray'; title = 'Paused'; }
+        else if (a.rate_limited) {
+          dotClass = ''; dotStyle = 'background:var(--red)';
+          title = a.rate_limited_estimated ? 'Rate-limited upstream — no reset time, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until;
+        } else {
+          title = a.token_expired ? 'Active — access token refreshes on next use' : (a.expires ? 'Active — access token valid until ' + a.expires : 'Active');
+        }
+        const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" title="${a.disabled ? 'Resume' : 'Pause'}" onclick="toggleAccount('${b.name}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
         const rlBadge = a.rate_limited
-          ? `<span class="exp" style="color:var(--red)" title="${a.rate_limited_estimated ? 'Rate-limited upstream — no reset time provided, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until}">limited${a.rate_limited_estimated ? '' : ' ' + a.rate_limited_until}</span>`
+          ? `<span class="exp" style="color:var(--red)" title="${a.rate_limited_estimated ? 'Rate-limited upstream — no reset time provided, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until}">limited${a.rate_limited_estimated ? '' : ' · until ' + a.rate_limited_until}</span>`
           : '';
-        return `<div class="account-row" style="${a.disabled ? 'opacity:0.4' : ''}"><span class="dot ${ad}" style="${dotStyle}"></span><span class="email">${a.email}</span>`
-          + (a.expires ? `<span class="exp">${a.expires}</span>` : '')
+        return `<div class="account-row" style="${a.disabled ? 'opacity:0.4' : ''}"><span class="dot ${dotClass}" style="${dotStyle}" title="${title}"></span><span class="email">${a.email}</span>`
           + rlBadge
           + toggleAccBtn
-          + `<button class="btn-delete" onclick="removeAccount('${b.name}','${a.id}')">&times;</button></div>`;
+          + `<button class="btn-delete" title="Remove" onclick="removeAccount('${b.name}','${a.id}')">&times;</button></div>`;
       }).join('');
     }
     const isVertex = b.name === 'vertex';
