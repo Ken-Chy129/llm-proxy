@@ -164,7 +164,7 @@ body::after{
 .model-select optgroup{color:var(--text-2);font-style:normal;font-size:11px;background:var(--bg-1);}
 .model-select option{color:var(--text-0);background:var(--bg-1);}
 .model-select option:disabled{color:var(--text-2);}
-.chat-input{display:block;width:100%;background:var(--bg-0);border:none;border-bottom:1px solid var(--border);color:var(--text-0);padding:13px;font-size:13px;font-family:var(--mono);resize:vertical;min-height:50px;}
+.chat-input{display:block;width:100%;background:var(--bg-0);border:none;border-bottom:1px solid var(--border);color:var(--text-0);padding:13px;font-size:13px;font-family:var(--mono);resize:vertical;min-height:90px;line-height:1.6;}
 .chat-input:focus{outline:none;border-color:var(--accent);}
 .chat-input::placeholder{color:var(--text-2);}
 .chat-output{padding:14px;min-height:48vh;max-height:62vh;overflow-y:auto;font-size:13px;line-height:1.7;white-space:pre-wrap;word-break:break-word;color:var(--text-1);font-family:var(--mono);}
@@ -275,6 +275,10 @@ rect.cal-future{fill:transparent;}
 .bar-track{height:14px;background:var(--bg-0);border:1px solid var(--border);border-radius:2px;overflow:hidden;}
 .bar-fill{height:100%;background:linear-gradient(90deg,var(--accent-dim),var(--accent));box-shadow:0 0 10px -3px rgba(var(--accent-rgb),0.6);}
 .key-badge{font-family:var(--display);font-size:9px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--text-2);background:var(--bg-3);padding:2px 6px;border-radius:2px;}
+.log-controls{display:flex;align-items:center;gap:8px;}
+.log-search{background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:5px 10px;font-size:12px;font-family:var(--mono);width:280px;}
+.log-search:focus{outline:none;border-color:var(--accent);}
+.log-search::placeholder{color:var(--text-2);}
 .log-err-row td{padding:2px 12px 8px;border:none;}
 .log-err{font-size:11px;color:var(--red);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;}
 .bars-err .bar-row{grid-template-columns:200px 1fr 80px;}

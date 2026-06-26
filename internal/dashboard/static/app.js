@@ -153,8 +153,28 @@ function clearChat() {
   document.getElementById('chat-input').value = '';
 }
 
+let logErrorsOnly = false, logSearch = '', logSearchTimer = 0;
+
+function toggleLogErrors(btn) {
+  logErrorsOnly = !logErrorsOnly;
+  btn.classList.toggle('active', logErrorsOnly);
+  logPage = 0;
+  loadLogs();
+}
+function onLogSearch() {
+  clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(() => {
+    logSearch = document.getElementById('log-search').value.trim();
+    logPage = 0;
+    loadLogs();
+  }, 300);
+}
+
 async function loadLogs() {
-  const r = await apiFetch('/api/logs?limit=' + logLimit + '&offset=' + (logPage * logLimit));
+  const q = '/api/logs?limit=' + logLimit + '&offset=' + (logPage * logLimit) +
+    (logErrorsOnly ? '&errors=1' : '') +
+    (logSearch ? '&q=' + encodeURIComponent(logSearch) : '');
+  const r = await apiFetch(q);
   const d = await r.json();
   document.getElementById('log-total').textContent = d.total;
   document.getElementById('page-info').textContent = (logPage + 1) + ' / ' + Math.max(1, Math.ceil(d.total / logLimit));
@@ -169,7 +189,7 @@ async function loadLogs() {
       : '';
     const errRow = l.error ? `<tr class="log-err-row"><td colspan="7"><div class="log-err" title="${escAttr(l.error)}">${escHtml(l.error)}</div></td></tr>` : '';
     return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tok}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
-  }).join('') || '<tr><td colspan="6" class="text-muted" style="text-align:center;padding:24px">No requests yet</td></tr>';
+  }).join('') || '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:24px">' + (logErrorsOnly || logSearch ? 'No matching requests' : 'No requests yet') + '</td></tr>';
 }
 
 function prevPage() { if (logPage > 0) { logPage--; loadLogs(); } }
@@ -970,9 +990,11 @@ function copyKeyInline(btn, key) {
   setTimeout(() => { btn.innerHTML = prev; btn.classList.remove('copied'); btn.title = 'Copy key'; }, 1200);
 }
 
+let keysCache = [];
 async function loadKeys() {
   const r = await apiFetch('/api/keys');
   const d = await r.json();
+  keysCache = d.keys || [];
   const body = document.getElementById('keys-body');
   if (!d.keys || !d.keys.length) {
     body.innerHTML = '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:20px">No API keys yet — create one above</td></tr>';
@@ -991,7 +1013,7 @@ async function loadKeys() {
       + '<td style="' + (limitColor ? 'color:'+limitColor : '') + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
       + '<td>' + (k.total_tokens || 0).toLocaleString() + '</td>'
       + '<td>' + limitStr + '</td>'
-      + '<td style="white-space:nowrap">' + toggleBtn + ' <button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'
+      + '<td style="white-space:nowrap"><button class="btn-row" onclick="editKey(\'' + k.id + '\')">&#x270E; Edit</button> ' + toggleBtn + ' <button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'
       + '</tr>';
   }).join('');
 }
@@ -1001,7 +1023,35 @@ async function toggleKey(id) {
   loadKeys();
 }
 
+function editKey(id) {
+  const k = keysCache.find(x => x.id === id);
+  if (!k) return;
+  document.getElementById('key-modal-title').textContent = 'Edit API Key';
+  document.getElementById('key-created').style.display = 'none';
+  document.getElementById('create-key-fields').style.display = '';
+  document.getElementById('key-name').value = k.name;
+  document.getElementById('key-limit').value = k.token_limit_daily || 0;
+  const btn = document.getElementById('create-key-submit');
+  btn.textContent = 'Save';
+  btn.setAttribute('onclick', "submitEditKey('" + id + "')");
+  document.getElementById('create-key-modal').classList.add('show');
+  document.getElementById('key-name').focus();
+}
+
+async function submitEditKey(id) {
+  const name = document.getElementById('key-name').value.trim();
+  if (!name) { document.getElementById('key-name').focus(); return; }
+  const limit = parseInt(document.getElementById('key-limit').value) || 0;
+  await apiFetch('/api/keys/' + id, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, token_limit_daily: limit })
+  });
+  closeCreateKey();
+  loadKeys();
+}
+
 function openCreateKey() {
+  document.getElementById('key-modal-title').textContent = 'Create API Key';
   document.getElementById('key-created').style.display = 'none';
   document.getElementById('create-key-fields').style.display = '';
   document.getElementById('key-name').value = '';

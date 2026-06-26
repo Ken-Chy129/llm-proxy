@@ -181,8 +181,10 @@ func (h *AdminHandler) Status(c *gin.Context) {
 func (h *AdminHandler) Logs(c *gin.Context) {
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
 	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	errorsOnly := c.Query("errors") == "1"
+	search := c.Query("q")
 
-	logs, total, err := h.statsDB.QueryLogs(limit, offset)
+	logs, total, err := h.statsDB.QueryLogs(limit, offset, errorsOnly, search)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

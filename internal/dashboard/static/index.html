@@ -132,7 +132,11 @@
     <div class="panel">
       <div class="panel-header">
         <span><strong id="log-total">0</strong> total</span>
-        <button class="btn btn-secondary" style="padding:4px 10px;font-size:12px" onclick="loadLogs()">Refresh</button>
+        <div class="log-controls">
+          <input id="log-search" class="log-search" placeholder="search model / key / account / error…" oninput="onLogSearch()">
+          <button id="log-errors-btn" class="stats-btn" onclick="toggleLogErrors(this)">Errors only</button>
+          <button class="btn btn-secondary" style="padding:5px 11px;font-size:12px" onclick="loadLogs()">Refresh</button>
+        </div>
       </div>
       <table>
         <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Account</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
@@ -268,7 +272,7 @@
 <!-- Create API Key Modal -->
 <div class="modal-overlay" id="create-key-modal">
   <div class="modal">
-    <h3>Create API Key</h3>
+    <h3 id="key-modal-title">Create API Key</h3>
     <div id="create-key-fields">
       <div class="modal-fields" style="flex-direction:column;gap:14px">
         <div>

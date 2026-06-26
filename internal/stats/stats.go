@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -174,17 +175,29 @@ func (d *DB) Record(log *RequestLog) error {
 	return err
 }
 
-func (d *DB) QueryLogs(limit, offset int) ([]RequestLog, int, error) {
+func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]RequestLog, int, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 
+	// Build the shared WHERE clause for both the count and the page query.
+	where := "WHERE 1=1"
+	var args []any
+	if errorsOnly {
+		where += " AND status >= 400"
+	}
+	if search = strings.TrimSpace(search); search != "" {
+		where += " AND (model LIKE ? OR account LIKE ? OR api_key_name LIKE ? OR error LIKE ?)"
+		like := "%" + search + "%"
+		args = append(args, like, like, like, like)
+	}
+
 	var total int
-	d.db.QueryRow("SELECT COUNT(*) FROM request_logs").Scan(&total)
+	d.db.QueryRow("SELECT COUNT(*) FROM request_logs "+where, args...).Scan(&total)
 
 	rows, err := d.db.Query(`
 		SELECT id, time, model, backend, latency_ms, status, prompt_tokens, completion_tokens, stream, error, api_key_name, account, failover_from
-		FROM request_logs ORDER BY id DESC LIMIT ? OFFSET ?`, limit, offset)
+		FROM request_logs `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
 	}
