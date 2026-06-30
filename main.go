@@ -17,6 +17,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to config file")
 	flag.Parse()
+	log.Println("[deploy-check] redeploy round-trip marker")
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
