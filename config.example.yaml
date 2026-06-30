@@ -1,3 +1,5 @@
+# Copy to config.yaml. For Docker, mount it as /data/config.yaml and set
+# claude_oauth.token_dir: "/data" so all state persists in the data volume.
 server:
   port: 9090
   # admin_user: "admin"
