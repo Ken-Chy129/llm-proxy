@@ -1,6 +1,5 @@
 server:
   port: 9090
-  # api_key: "sk-proxy-xxx"  # uncomment to require auth
   # admin_user: "admin"
   # admin_password: "changeme"
   # cert_file: "/path/to/cert.pem"   # enable HTTPS

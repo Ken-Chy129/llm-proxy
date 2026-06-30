@@ -121,17 +121,15 @@ curl https://your-domain/v1/images/generations \
 
 ## 鉴权与 API Key
 
-调用方通过 `Authorization: Bearer <key>` 鉴权，支持两种来源：
+调用方通过 `Authorization: Bearer <key>` 鉴权：在仪表板 **Keys** 页为每个调用方签发独立密钥，可单独设置每日 Token 限额、查看用量、随时吊销。
 
-- **多 API Key（推荐）** — 在仪表板 **Keys** 页为每个调用方签发独立密钥，可单独设置每日 Token 限额、查看用量、随时吊销。
-- **单一密钥（可选）** — 在 `config.yaml` 的 `server.api_key` 设置一个全局密钥（留空则不校验，适合内网）。
+> 未签发任何密钥时，`/v1/*` 不做校验（适合内网直连）。
 
 ## 配置说明
 
 ```yaml
 server:
   port: 9090
-  # api_key: "sk-proxy-xxx"            # 可选全局密钥；多数情况用 Keys 页签发更灵活
   admin_user: "admin"                  # 仪表板登录用户名
   admin_password: "password"           # 仪表板登录密码
   cert_file: "/path/to/cert.pem"       # 可选：启用 HTTPS

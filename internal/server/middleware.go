@@ -37,10 +37,10 @@ func (s *sessionStore) Valid(token string) bool {
 }
 
 // APIKeyAuth protects /v1/* endpoints with Bearer token OR session cookie.
-// Checks managed keys first, then falls back to the legacy single key from config.
-func APIKeyAuth(legacyKey string, keyStore *auth.KeyStore) gin.HandlerFunc {
+// Validates against managed keys issued from the dashboard Keys page.
+func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if legacyKey == "" && keyStore.Count() == 0 {
+		if keyStore.Count() == 0 {
 			c.Next()
 			return
 		}
@@ -66,12 +66,6 @@ func APIKeyAuth(legacyKey string, keyStore *auth.KeyStore) gin.HandlerFunc {
 				c.Set("api_key_name", kd.Name)
 				c.Set("api_key_id", kd.ID)
 				c.Set("api_key_limit", kd.TokenLimitDaily)
-				c.Next()
-				return
-			}
-			// Check legacy config key
-			if apiKey == legacyKey {
-				c.Set("api_key_name", "default")
 				c.Next()
 				return
 			}

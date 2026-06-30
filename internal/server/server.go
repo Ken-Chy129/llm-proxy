@@ -37,7 +37,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	engine.StaticFS("/static", dashboard.StaticFS())
 
 	// /v1/* API routes (Bearer token protected)
-	api := engine.Group("/", APIKeyAuth(cfg.Server.APIKey, keyStore), TokenLimitCheck(statsDB))
+	api := engine.Group("/", APIKeyAuth(keyStore), TokenLimitCheck(statsDB))
 	responsesHandler := handler.NewResponsesHandler(r, statsDB)
 
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)

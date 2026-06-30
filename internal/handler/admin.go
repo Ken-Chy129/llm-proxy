@@ -273,14 +273,9 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 }
 
 func (h *AdminHandler) Config(c *gin.Context) {
-	apiKey := ""
-	if h.cfg.Server.APIKey != "" {
-		apiKey = h.cfg.Server.APIKey[:4] + strings.Repeat("*", len(h.cfg.Server.APIKey)-4)
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"server": gin.H{
 			"port":       h.cfg.Server.Port,
-			"api_key":    apiKey,
 			"admin_user": h.cfg.Server.AdminUser,
 		},
 		"vertex": gin.H{
@@ -320,7 +315,7 @@ func cleanModelList(in []string) ([]string, error) {
 // UpdateConfig edits the net-new config surface (model lists + server settings)
 // not already controllable from the BACKENDS tab. Model-list edits apply live by
 // re-registering the executors with the router; server settings are persisted to
-// the config file, with port/api_key requiring a restart to take effect (admin
+// the config file, with port requiring a restart to take effect (admin
 // credentials apply live because loginHandler reads cfg on every request).
 func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	var req struct {
@@ -335,7 +330,6 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		} `json:"vertex"`
 		Server struct {
 			Port          int    `json:"port"`
-			APIKey        string `json:"api_key"`
 			AdminUser     string `json:"admin_user"`
 			AdminPassword string `json:"admin_password"`
 		} `json:"server"`
@@ -386,13 +380,6 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	if req.Server.Port != 0 && req.Server.Port != h.cfg.Server.Port {
 		restart = append(restart, "port")
 	}
-	// A new api_key is only accepted when it's non-empty and not the masked value
-	// (the GET endpoint returns "abcd****"), so the form's placeholder never
-	// overwrites the real key.
-	apiKeyChanged := req.Server.APIKey != "" && !strings.Contains(req.Server.APIKey, "*")
-	if apiKeyChanged {
-		restart = append(restart, "api_key")
-	}
 
 	// --- apply live ---
 	if h.claudeExec != nil && h.cfg.ClaudeOAuth.Enabled {
@@ -420,9 +407,6 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	h.cfg.Vertex.Models = vertexModels
 	if req.Server.Port != 0 {
 		h.cfg.Server.Port = req.Server.Port
-	}
-	if apiKeyChanged {
-		h.cfg.Server.APIKey = req.Server.APIKey
 	}
 
 	if err := config.Save(h.configPath, h.cfg); err != nil {
