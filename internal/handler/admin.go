@@ -119,21 +119,34 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"token_expired": t.IsExpired(),
 				"disabled":      accDisabled,
 			}
-			if until, estimated, active := h.tokenStore.RateLimitInfo(p.name, t.ID); active {
+			// An account is shown "limited" when it isn't currently selectable:
+			// either a reactive 429 cooldown is active, or fresh quota shows its
+			// session/weekly window exhausted with the reset still in the future.
+			// "until" is the latest such reset — when the account is usable again.
+			// This keeps the badge consistent with the quota card and with what
+			// account selection actually does (both key off the same signals).
+			now := time.Now()
+			var until time.Time
+			estimated := false
+			if u, est, active := h.tokenStore.RateLimitInfo(p.name, t.ID); active {
+				until, estimated = u, est
+			}
+			if q := auth.QuotaCache.Get(p.name + ":" + t.ID); q != nil && q.HasRealData {
+				for _, w := range []*auth.RateWindow{q.Primary, q.Secondary} {
+					if w.Exhausted(now) && w.ResetUnix > 0 {
+						if r := time.Unix(w.ResetUnix, 0); r.After(until) {
+							until, estimated = r, false
+						}
+					}
+				}
+			}
+			if until.After(now) {
 				if !accDisabled {
 					accStatus = "rate_limited"
 					acc["status"] = accStatus
 				}
 				acc["rate_limited"] = true
-				// Prefer the quota session-window reset (the authoritative window
-				// boundary) so this matches the quota card; the retry-gating time
-				// itself is unchanged. Falls back to the cooldown estimate.
-				displayUntil := until
-				if q := auth.QuotaCache.Get(p.name + ":" + t.ID); q != nil && q.Primary != nil && q.Primary.ResetUnix > 0 {
-					displayUntil = time.Unix(q.Primary.ResetUnix, 0)
-					estimated = false
-				}
-				acc["rate_limited_until"] = formatLocalTime(displayUntil)
+				acc["rate_limited_until"] = formatLocalTime(until)
 				acc["rate_limited_estimated"] = estimated
 			}
 			accountList = append(accountList, acc)

@@ -48,6 +48,26 @@ func TestGetWeeklyExpirySelection(t *testing.T) {
 	}
 }
 
+func TestRateWindowExhausted(t *testing.T) {
+	now := time.Now()
+	cases := []struct {
+		name string
+		w    *RateWindow
+		want bool
+	}{
+		{"nil", nil, false},
+		{"not limited", &RateWindow{LimitReached: false, ResetUnix: now.Add(time.Hour).Unix()}, false},
+		{"limited, reset future", &RateWindow{LimitReached: true, ResetUnix: now.Add(time.Hour).Unix()}, true},
+		{"limited, reset passed (stale)", &RateWindow{LimitReached: true, ResetUnix: now.Add(-time.Hour).Unix()}, false},
+		{"limited, reset unknown", &RateWindow{LimitReached: true, ResetUnix: 0}, true},
+	}
+	for _, c := range cases {
+		if got := c.w.Exhausted(now); got != c.want {
+			t.Errorf("%s: Exhausted=%v want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestGetRoundRobinIgnoresQuota(t *testing.T) {
 	dir := t.TempDir()
 	InitQuotaCache(dir)

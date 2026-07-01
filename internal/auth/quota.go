@@ -34,6 +34,18 @@ type RateWindow struct {
 	ResetUnix int64 `json:"reset_unix,omitempty"`
 }
 
+// Exhausted reports whether this window is currently used up: the limit was
+// reached and its reset time is still in the future (or unknown). Once the
+// reset time has passed, the window is treated as fresh again even if a stale
+// snapshot still says LimitReached — so selection and UI recover at the reset
+// boundary without waiting for the next quota fetch. Nil is never exhausted.
+func (w *RateWindow) Exhausted(now time.Time) bool {
+	if w == nil || !w.LimitReached {
+		return false
+	}
+	return w.ResetUnix <= 0 || time.Unix(w.ResetUnix, 0).After(now)
+}
+
 type AdditionalRL struct {
 	Name    string     `json:"name"`
 	Primary *RateWindow `json:"primary,omitempty"`

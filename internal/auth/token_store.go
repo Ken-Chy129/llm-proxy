@@ -282,6 +282,7 @@ func (s *TokenStore) pickByWeeklyExpiry(provider string, list []*TokenData, notB
 		weeklyRst  int64
 		sessionRst int64
 	}
+	now := time.Now()
 	var cands []cand
 	for _, t := range list {
 		if t.IsExpired() || !notBlocked(t) {
@@ -292,11 +293,9 @@ func (s *TokenStore) pickByWeeklyExpiry(provider string, list []*TokenData, notB
 			continue
 		}
 		// Proactively skip an account whose session or weekly is exhausted, so
-		// we don't spend a request just to collect a 429.
-		if q.Primary != nil && q.Primary.LimitReached {
-			continue
-		}
-		if q.Secondary != nil && q.Secondary.LimitReached {
+		// we don't spend a request just to collect a 429. A window whose reset
+		// has already passed counts as fresh (see RateWindow.Exhausted).
+		if q.Primary.Exhausted(now) || q.Secondary.Exhausted(now) {
 			continue
 		}
 		c := cand{t: t}
