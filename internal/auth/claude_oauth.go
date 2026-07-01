@@ -512,11 +512,13 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 	var windows []*RateWindow
 	if len(usage.Limits) > 0 {
 		for _, l := range usage.Limits {
+			display, unix := parseClaudeReset(l.ResetsAt)
 			windows = append(windows, &RateWindow{
 				Label:            claudeLimitLabel(l.Kind, l.Group),
 				RemainingPercent: remainingPercent(l.Percent),
 				LimitReached:     l.Percent >= 100 || l.Severity == "critical",
-				ResetAt:          parseClaudeReset(l.ResetsAt),
+				ResetAt:          display,
+				ResetUnix:        unix,
 			})
 		}
 	} else {
@@ -532,11 +534,13 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 			if w.win == nil {
 				continue
 			}
+			display, unix := parseClaudeReset(w.win.ResetsAt)
 			windows = append(windows, &RateWindow{
 				Label:            claudeLimitLabel(w.key, ""),
 				RemainingPercent: remainingPercent(w.win.Utilization),
 				LimitReached:     w.win.Utilization >= 100,
-				ResetAt:          parseClaudeReset(w.win.ResetsAt),
+				ResetAt:          display,
+				ResetUnix:        unix,
 			})
 		}
 	}
@@ -595,13 +599,16 @@ func claudeLimitLabel(kind, group string) string {
 	return "Usage limit"
 }
 
-func parseClaudeReset(s string) string {
+// parseClaudeReset returns the display string ("01/02 15:04", local) and the
+// machine-readable unix seconds for a Claude RFC3339 reset timestamp. unix is 0
+// when the input is empty or unparseable.
+func parseClaudeReset(s string) (string, int64) {
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return ""
+		return "", 0
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t.Local().Format("01/02 15:04")
+		return t.Local().Format("01/02 15:04"), t.Unix()
 	}
-	return s
+	return s, 0
 }

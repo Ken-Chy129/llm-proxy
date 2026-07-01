@@ -3,8 +3,10 @@ package auth
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -45,11 +47,18 @@ type DisabledState struct {
 	Accounts []string `json:"accounts,omitempty"` // "provider/id"
 }
 
+// Account-selection strategies for TokenStore.Get.
+const (
+	StrategyWeeklyExpiry = "weekly_expiry" // quota-aware: soonest weekly reset first
+	StrategyRoundRobin   = "round_robin"   // legacy blind rotation
+)
+
 type TokenStore struct {
 	mu       sync.RWMutex
 	dir      string
 	accounts map[string][]*TokenData // provider -> accounts
 	counter  atomic.Uint64
+	strategy string // account-selection strategy (see Strategy* constants)
 	disabled DisabledState
 	// rateLimited tracks accounts cooling down after an upstream 429.
 	// Keyed by "provider/id". In-memory only (not persisted): a restart clears
@@ -65,15 +74,19 @@ type rateLimitEntry struct {
 	Estimated bool
 }
 
-func NewTokenStore(dir string) *TokenStore {
+func NewTokenStore(dir, strategy string) *TokenStore {
 	if dir == "" {
 		home, _ := os.UserHomeDir()
 		dir = filepath.Join(home, ".llm-proxy")
+	}
+	if strategy != StrategyRoundRobin {
+		strategy = StrategyWeeklyExpiry
 	}
 	os.MkdirAll(dir, 0700)
 	store := &TokenStore{
 		dir:         dir,
 		accounts:    make(map[string][]*TokenData),
+		strategy:    strategy,
 		rateLimited: make(map[string]rateLimitEntry),
 	}
 	store.loadAll()
@@ -204,7 +217,12 @@ func (s *TokenStore) isAccountDisabledLocked(provider, id string) bool {
 
 func (s *TokenStore) Dir() string { return s.dir }
 
-// Get returns the next active token for a provider using round-robin.
+// Get returns the next token for a provider according to the configured
+// strategy. Under "weekly_expiry" it prefers the usable account whose weekly
+// window resets soonest (burning perishable weekly budget first); it falls
+// back to round-robin when no quota-backed account qualifies. Under
+// "round_robin" it uses blind rotation. Both share the same fallbacks so a
+// request is always attempted while a token still exists.
 func (s *TokenStore) Get(provider string) *TokenData {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -212,15 +230,24 @@ func (s *TokenStore) Get(provider string) *TokenData {
 	if len(list) == 0 {
 		return nil
 	}
-
-	// Round-robin over active, non-disabled, non-rate-limited accounts
 	n := len(list)
 	start := int(s.counter.Add(1)) % n
+
+	notBlocked := func(t *TokenData) bool {
+		return !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID)
+	}
+
+	// Preferred tier: quota-aware selection by soonest weekly reset.
+	if s.strategy == StrategyWeeklyExpiry {
+		if t := s.pickByWeeklyExpiry(provider, list, notBlocked); t != nil {
+			return t
+		}
+	}
+
+	// Round-robin over active, non-disabled, non-rate-limited accounts.
 	for i := 0; i < n; i++ {
 		idx := (start + i) % n
-		if !list[idx].IsExpired() &&
-			!s.isAccountDisabledLocked(provider, list[idx].ID) &&
-			!s.isRateLimitedLocked(provider, list[idx].ID) {
+		if !list[idx].IsExpired() && notBlocked(list[idx]) {
 			return list[idx]
 		}
 	}
@@ -228,7 +255,7 @@ func (s *TokenStore) Get(provider string) *TokenData {
 	// isn't rate-limited (so the caller can refresh an expired token); fall
 	// back to any non-disabled account so something is always tried.
 	for _, t := range list {
-		if !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID) {
+		if notBlocked(t) {
 			return t
 		}
 	}
@@ -238,6 +265,69 @@ func (s *TokenStore) Get(provider string) *TokenData {
 		}
 	}
 	return nil
+}
+
+// pickByWeeklyExpiry selects the usable account whose weekly window resets
+// soonest, so perishable weekly budget is consumed before it rolls over.
+// "Usable" = not expired/disabled/rate-limited and, per fresh quota, neither
+// the session (primary) nor the weekly (secondary) window is exhausted.
+// Accounts without real quota data are skipped here — they fall through to the
+// round-robin tier. Returns nil when no quota-backed account qualifies.
+//
+// Ordering: soonest known weekly reset first; unknown reset (0) sorts last;
+// ties break on soonest session reset. Callers hold s.mu.
+func (s *TokenStore) pickByWeeklyExpiry(provider string, list []*TokenData, notBlocked func(*TokenData) bool) *TokenData {
+	type cand struct {
+		t          *TokenData
+		weeklyRst  int64
+		sessionRst int64
+	}
+	var cands []cand
+	for _, t := range list {
+		if t.IsExpired() || !notBlocked(t) {
+			continue
+		}
+		q := QuotaCache.Get(provider + ":" + t.ID)
+		if q == nil || !q.HasRealData {
+			continue
+		}
+		// Proactively skip an account whose session or weekly is exhausted, so
+		// we don't spend a request just to collect a 429.
+		if q.Primary != nil && q.Primary.LimitReached {
+			continue
+		}
+		if q.Secondary != nil && q.Secondary.LimitReached {
+			continue
+		}
+		c := cand{t: t}
+		if q.Secondary != nil {
+			c.weeklyRst = q.Secondary.ResetUnix
+		}
+		if q.Primary != nil {
+			c.sessionRst = q.Primary.ResetUnix
+		}
+		cands = append(cands, c)
+	}
+	if len(cands) == 0 {
+		return nil
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		wi, wj := orFuture(cands[i].weeklyRst), orFuture(cands[j].weeklyRst)
+		if wi != wj {
+			return wi < wj
+		}
+		return orFuture(cands[i].sessionRst) < orFuture(cands[j].sessionRst)
+	})
+	return cands[0].t
+}
+
+// orFuture maps an unknown reset time (<=0) to the far future so it sorts after
+// any known reset time.
+func orFuture(unix int64) int64 {
+	if unix <= 0 {
+		return math.MaxInt64
+	}
+	return unix
 }
 
 // GetByID returns a specific account by ID.

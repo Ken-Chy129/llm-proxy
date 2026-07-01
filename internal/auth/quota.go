@@ -29,6 +29,9 @@ type RateWindow struct {
 	RemainingPercent float64 `json:"remaining_percent"`
 	LimitReached     bool    `json:"limit_reached"`
 	ResetAt          string  `json:"reset_at,omitempty"`
+	// ResetUnix is the machine-readable reset time (unix seconds) behind ResetAt.
+	// Used by quota-aware account selection to compare reset times; 0 = unknown.
+	ResetUnix int64 `json:"reset_unix,omitempty"`
 }
 
 type AdditionalRL struct {
@@ -194,9 +197,11 @@ func ParseCodexRateLimitHeaders(h http.Header) *QuotaInfo {
 		}
 	}
 	resetAt := ""
+	var resetUnix int64
 	if v := h.Get("x-codex-primary-reset-at"); v != "" {
 		if n, e := strconv.ParseFloat(v, 64); e == nil {
 			resetAt = formatResetAt(n)
+			resetUnix = int64(n)
 		}
 	}
 	remaining := math.Max(0, math.Round((100-pct)*100)/100)
@@ -205,6 +210,7 @@ func ParseCodexRateLimitHeaders(h http.Header) *QuotaInfo {
 		RemainingPercent: remaining,
 		LimitReached:     pct >= 100,
 		ResetAt:          resetAt,
+		ResetUnix:        resetUnix,
 	}
 
 	if secPctStr := h.Get("x-codex-secondary-used-percent"); secPctStr != "" {
@@ -216,9 +222,11 @@ func ParseCodexRateLimitHeaders(h http.Header) *QuotaInfo {
 				}
 			}
 			secReset := ""
+			var secResetUnix int64
 			if v := h.Get("x-codex-secondary-reset-at"); v != "" {
 				if n, e := strconv.ParseFloat(v, 64); e == nil {
 					secReset = formatResetAt(n)
+					secResetUnix = int64(n)
 				}
 			}
 			secRemaining := math.Max(0, math.Round((100-secPct)*100)/100)
@@ -227,6 +235,7 @@ func ParseCodexRateLimitHeaders(h http.Header) *QuotaInfo {
 				RemainingPercent: secRemaining,
 				LimitReached:     secPct >= 100,
 				ResetAt:          secReset,
+				ResetUnix:        secResetUnix,
 			}
 		}
 	}

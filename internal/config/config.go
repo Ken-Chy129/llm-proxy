@@ -20,6 +20,11 @@ type ServerConfig struct {
 	KeyFile       string `yaml:"key_file"`
 	AdminUser     string `yaml:"admin_user"`
 	AdminPassword string `yaml:"admin_password"`
+	// AccountStrategy selects how a provider's accounts are picked per request:
+	// "weekly_expiry" (default) — quota-aware: prefer the usable account whose
+	// weekly window resets soonest, so perishable weekly budget is burned first;
+	// "round_robin" — the legacy blind rotation.
+	AccountStrategy string `yaml:"account_strategy"`
 }
 
 type VertexConfig struct {

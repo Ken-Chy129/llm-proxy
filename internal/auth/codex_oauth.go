@@ -547,6 +547,7 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 			RemainingPercent: math.Max(0, math.Round((100-pw.UsedPercent)*100)/100),
 			LimitReached: pw.UsedPercent >= 100 || raw.RateLimit.LimitReached,
 			ResetAt:      formatResetAt(pw.ResetAt),
+			ResetUnix:    int64(pw.ResetAt),
 		}
 	}
 
@@ -556,6 +557,7 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 			RemainingPercent: math.Max(0, math.Round((100-sw.UsedPercent)*100)/100),
 			LimitReached: sw.UsedPercent >= 100,
 			ResetAt:      formatResetAt(sw.ResetAt),
+			ResetUnix:    int64(sw.ResetAt),
 		}
 	}
 
@@ -569,6 +571,7 @@ func (o *CodexOAuth) FetchQuotaWithClient(ctx context.Context, client *http.Clie
 					RemainingPercent: math.Max(0, math.Round((100-pw.UsedPercent)*100)/100),
 					LimitReached: pw.UsedPercent >= 100,
 					ResetAt:      formatResetAt(pw.ResetAt),
+					ResetUnix:    int64(pw.ResetAt),
 				},
 			})
 		}
@@ -722,6 +725,7 @@ func parseUsageBody(body []byte, info *QuotaInfo) {
 			RemainingPercent: math.Max(0, math.Round((100-pw.UsedPercent)*100)/100),
 			LimitReached: pw.UsedPercent >= 100 || raw.RateLimit.LimitReached,
 			ResetAt:      formatResetAt(pw.ResetAt),
+			ResetUnix:    int64(pw.ResetAt),
 		}
 	}
 	if sw := raw.RateLimit.SecondaryWindow; sw != nil {
@@ -730,6 +734,7 @@ func parseUsageBody(body []byte, info *QuotaInfo) {
 			RemainingPercent: math.Max(0, math.Round((100-sw.UsedPercent)*100)/100),
 			LimitReached: sw.UsedPercent >= 100,
 			ResetAt:      formatResetAt(sw.ResetAt),
+			ResetUnix:    int64(sw.ResetAt),
 		}
 	}
 	for _, arl := range raw.AdditionalRateLimits {
@@ -742,6 +747,7 @@ func parseUsageBody(body []byte, info *QuotaInfo) {
 					RemainingPercent: math.Max(0, math.Round((100-pw.UsedPercent)*100)/100),
 					LimitReached: pw.UsedPercent >= 100,
 					ResetAt:      formatResetAt(pw.ResetAt),
+					ResetUnix:    int64(pw.ResetAt),
 				},
 			})
 		}

@@ -24,7 +24,7 @@ func main() {
 	}
 
 	r := router.New()
-	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir)
+	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir, cfg.Server.AccountStrategy)
 	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())
 
@@ -102,6 +102,21 @@ func main() {
 			}
 		}
 	}()
+
+	// Periodically refresh OAuth quotas so account selection sees current
+	// reset/limit data (window reset times roll forward over time).
+	if claudeOAuth != nil || codexOAuth != nil {
+		go func() {
+			for range time.NewTicker(5 * time.Minute).C {
+				if claudeOAuth != nil {
+					claudeOAuth.FetchAllQuotas(context.Background())
+				}
+				if codexOAuth != nil {
+					codexOAuth.FetchAllQuotas(context.Background())
+				}
+			}
+		}()
+	}
 
 	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec); err != nil {
 		log.Fatalf("server error: %v", err)

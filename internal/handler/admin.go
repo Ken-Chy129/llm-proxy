@@ -125,7 +125,15 @@ func (h *AdminHandler) Status(c *gin.Context) {
 					acc["status"] = accStatus
 				}
 				acc["rate_limited"] = true
-				acc["rate_limited_until"] = formatLocalTime(until)
+				// Prefer the quota session-window reset (the authoritative window
+				// boundary) so this matches the quota card; the retry-gating time
+				// itself is unchanged. Falls back to the cooldown estimate.
+				displayUntil := until
+				if q := auth.QuotaCache.Get(p.name + ":" + t.ID); q != nil && q.Primary != nil && q.Primary.ResetUnix > 0 {
+					displayUntil = time.Unix(q.Primary.ResetUnix, 0)
+					estimated = false
+				}
+				acc["rate_limited_until"] = formatLocalTime(displayUntil)
 				acc["rate_limited_estimated"] = estimated
 			}
 			accountList = append(accountList, acc)
