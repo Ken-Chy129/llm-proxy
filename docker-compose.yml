@@ -9,6 +9,8 @@ services:
     ports:
       - "127.0.0.1:9090:9090"
     environment:
+      # All server-side timestamps (logs, stats, quota reset times) render in GMT+8.
+      - TZ=Asia/Shanghai
       # Vertex AI ADC credentials live inside the data volume.
       - GOOGLE_APPLICATION_CREDENTIALS=/data/gcp-adc.json
     volumes:
