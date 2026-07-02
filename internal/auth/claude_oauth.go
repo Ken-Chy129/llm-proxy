@@ -516,7 +516,12 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 			windows = append(windows, &RateWindow{
 				Label:            claudeLimitLabel(l.Kind, l.Group),
 				RemainingPercent: remainingPercent(l.Percent),
-				LimitReached:     l.Percent >= 100 || l.Severity == "critical",
+				// Only a full window (percent >= 100) counts as reached. Anthropic
+				// flags severity "critical" while the account is still usable (it's
+				// a near-limit warning, not a refusal), so critical must NOT bench
+				// the account — otherwise the last ~10% of the window is wasted and
+				// the "limited" badge fires early. See RateWindow.Exhausted.
+				LimitReached: l.Percent >= 100,
 				ResetAt:          display,
 				ResetUnix:        unix,
 			})

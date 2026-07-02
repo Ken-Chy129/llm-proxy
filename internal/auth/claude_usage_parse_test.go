@@ -19,3 +19,23 @@ func TestParseClaudeUsageLimitsReal(t *testing.T) {
 	}
 	t.Logf("primary=%+v secondary=%+v reset=%s", *info.Primary, *info.Secondary, info.Primary.ResetAt)
 }
+
+// A "critical" severity below 100% is a near-limit warning, not a refusal: the
+// account is still usable, so LimitReached must stay false (it would otherwise
+// bench the account early via Exhausted). Only percent >= 100 counts as reached.
+func TestParseClaudeUsageLimitsCriticalUnder100(t *testing.T) {
+	body := []byte(`{"limits":[{"kind":"session","group":"session","percent":90,"severity":"critical","resets_at":"2026-07-01T09:30:00Z","is_active":true}]}`)
+	info, err := ParseClaudeUsageLimits(body)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if info.Primary == nil {
+		t.Fatalf("expected primary, got %+v", info)
+	}
+	if info.Primary.LimitReached {
+		t.Errorf("critical @90%% must not be LimitReached: %+v", info.Primary)
+	}
+	if info.Primary.RemainingPercent != 10 {
+		t.Errorf("expected 10%% remaining, got %+v", info.Primary)
+	}
+}
