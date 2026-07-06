@@ -270,7 +270,9 @@ func (s *TokenStore) Get(provider string) *TokenData {
 // pickByWeeklyExpiry selects the usable account whose weekly window resets
 // soonest, so perishable weekly budget is consumed before it rolls over.
 // "Usable" = not expired/disabled/rate-limited and, per fresh quota, neither
-// the session (primary) nor the weekly (secondary) window is exhausted.
+// the session (primary) nor the all-models-weekly (secondary) window is
+// exhausted. Model-specific weekly limits (Opus/Fable) live in Additional and
+// never gate selection here.
 // Accounts without real quota data are skipped here — they fall through to the
 // round-robin tier. Returns nil when no quota-backed account qualifies.
 //

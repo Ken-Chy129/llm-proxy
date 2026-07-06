@@ -554,12 +554,23 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 		return nil, fmt.Errorf("no usage windows in claude usage response")
 	}
 
-	info := &QuotaInfo{Primary: windows[0]}
-	if len(windows) > 1 {
-		info.Secondary = windows[1]
-	}
-	for i := 2; i < len(windows); i++ {
-		info.Additional = append(info.Additional, AdditionalRL{Name: windows[i].Label, Primary: windows[i]})
+	// Assign windows by semantic role, not by the order the API returns them:
+	// Primary = the 5h session window, Secondary = the all-models weekly window.
+	// These two are the only account-wide binding limits, so the "limited" badge
+	// (admin handler) and quota-aware selection (token_store) key off them alone.
+	// Model-specific weekly limits — Opus/Sonnet weekly and the Fable "Weekly
+	// limit" — are informational and go to Additional: hitting one must never
+	// bench the whole account, only the all-models weekly does.
+	info := &QuotaInfo{}
+	for _, w := range windows {
+		switch {
+		case w.Label == labelClaudeSession && info.Primary == nil:
+			info.Primary = w
+		case w.Label == labelClaudeWeeklyAll && info.Secondary == nil:
+			info.Secondary = w
+		default:
+			info.Additional = append(info.Additional, AdditionalRL{Name: w.Label, Primary: w})
+		}
 	}
 	return info, nil
 }
@@ -577,12 +588,21 @@ func remainingPercent(usedPercent float64) float64 {
 	return math.Round(remaining*100) / 100
 }
 
+// labelClaudeSession and labelClaudeWeeklyAll are the canonical labels for the
+// two account-wide binding windows. ParseClaudeUsageLimits matches on these to
+// pin them to Primary/Secondary regardless of API ordering, so keep them in sync
+// with claudeLimitLabel.
+const (
+	labelClaudeSession   = "Current session (5h)"
+	labelClaudeWeeklyAll = "Weekly (all models)"
+)
+
 func claudeLimitLabel(kind, group string) string {
 	switch strings.ToLower(kind) {
 	case "session", "five_hour":
-		return "Current session (5h)"
+		return labelClaudeSession
 	case "weekly_all", "seven_day":
-		return "Weekly (all models)"
+		return labelClaudeWeeklyAll
 	case "weekly_opus", "seven_day_opus":
 		return "Opus weekly"
 	case "weekly_sonnet", "seven_day_sonnet":

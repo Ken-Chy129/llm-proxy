@@ -121,7 +121,9 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			}
 			// An account is shown "limited" when it isn't currently selectable:
 			// either a reactive 429 cooldown is active, or fresh quota shows its
-			// session/weekly window exhausted with the reset still in the future.
+			// session or all-models-weekly window (Primary/Secondary — never a
+			// model-specific limit like Opus/Fable) exhausted with the reset still
+			// in the future.
 			// "until" is the latest such reset — when the account is usable again.
 			// This keeps the badge consistent with the quota card and with what
 			// account selection actually does (both key off the same signals).
