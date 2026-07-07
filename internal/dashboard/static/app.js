@@ -61,7 +61,9 @@ async function loadStatus() {
     }
     const syncBtn = isOAuth && b.status === 'active' ? `<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>` : '';
     const toggleBtn = `<button class="btn-add" style="${b.disabled ? 'color:var(--green);border-color:var(--green)' : 'color:var(--yellow);border-color:var(--yellow)'}" onclick="toggleBackend('${b.name}')">${b.disabled ? 'Enable' : 'Pause'}</button>`;
-    return `<div class="backend-card" style="${b.disabled ? 'opacity:0.5' : ''}"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
+    // No card dimming for paused backends — the top-right badge (Paused/Active/
+    // Expired/Offline) and the header dot already convey state.
+    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
       + `<div class="backend-info">${b.info || ''}</div>`
       + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${m}</span>`).join('')}</div>`
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
@@ -1138,9 +1140,11 @@ window.addEventListener('focus', () => {
 // Keep the dashboard current without manual refocus: poll while the tab is
 // visible so server-side state changes (a backend pausing, an account
 // rate-limiting or recovering at its reset) reflect within the interval
-// instead of only on focus/action. Skipped when hidden to avoid waste.
+// instead of only on focus/action. Skipped when hidden to avoid waste. Must not
+// touch lastFocusLoad — otherwise it suppresses the immediate on-focus refresh,
+// making a returning tab wait a full tick before catching up.
 setInterval(() => {
-  if (document.visibilityState === 'visible') { lastFocusLoad = Date.now(); loadStatus(); }
+  if (document.visibilityState === 'visible') loadStatus();
 }, 15000);
 
 // Width-filling charts re-render on resize while the Stats tab is visible.
