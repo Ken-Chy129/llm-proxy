@@ -114,11 +114,13 @@ func NewCodexOAuth(store *TokenStore) *CodexOAuth {
 func (o *CodexOAuth) Store() *TokenStore { return o.store }
 
 func (o *CodexOAuth) GetTokenData(_ context.Context) *TokenData {
-	return o.store.Get("codex")
+	// Codex 429s are account-wide (all models share one quota), so selection
+	// isn't model-scoped here.
+	return o.store.Get("codex", "")
 }
 
 func (o *CodexOAuth) GetToken(ctx context.Context) (string, error) {
-	token := o.store.Get("codex")
+	token := o.store.Get("codex", "")
 	if token == nil {
 		return "", fmt.Errorf("codex not authenticated (%d accounts), visit /auth/codex to login", len(o.store.AllForProvider("codex")))
 	}

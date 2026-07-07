@@ -70,20 +70,33 @@ func capReactiveCooldown(until time.Time, known bool, now time.Time) (time.Time,
 	return until, known
 }
 
+// modelFromBody extracts the "model" field from an Anthropic request body so a
+// 429 on the passthrough path can be attributed to a single model. Returns ""
+// when absent, which scopes the cooldown account-wide.
+func modelFromBody(body []byte) string {
+	var peek struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &peek)
+	return peek.Model
+}
+
 // doWithFailover acquires a Claude account, builds a request via makeReq, and
-// sends it. On HTTP 429 it marks that account rate-limited (using the upstream
-// reset time, clamped to maxClaudeReactiveCooldown, or a 60s default) and
-// retries with the next account, up to one full pass over the account pool. The
-// 429 from the final attempt is returned to the caller so the client still sees
-// the real upstream error when every account is exhausted.
-func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, makeReq func(token string) (*http.Request, error)) (*http.Response, error) {
+// sends it. On HTTP 429 it marks that account rate-limited for model (using the
+// upstream reset time, clamped to maxClaudeReactiveCooldown, or a 60s default)
+// and retries with the next account, up to one full pass over the account pool.
+// The cooldown is scoped to model so hitting one model's cap (e.g. Fable/Opus
+// weekly) doesn't sideline the account for other models. The 429 from the final
+// attempt is returned so the client still sees the real upstream error when
+// every account is exhausted.
+func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, makeReq func(token string) (*http.Request, error)) (*http.Response, error) {
 	attempts := len(e.oauth.Store().AllForProvider("claude"))
 	if attempts < 1 {
 		attempts = 1
 	}
 	var lastErr error
 	for i := 0; i < attempts; i++ {
-		token, accountID, err := e.oauth.GetTokenWithAccount(ctx)
+		token, accountID, err := e.oauth.GetTokenWithAccount(ctx, model)
 		if err != nil {
 			return nil, err
 		}
@@ -105,7 +118,7 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, makeReq func(t
 			// quota now so a genuine session/all-models-weekly limit shows up right
 			// away instead of at the next 5-min poll.
 			until, known = capReactiveCooldown(until, known, time.Now())
-			e.oauth.Store().MarkRateLimited("claude", accountID, until, !known)
+			e.oauth.Store().MarkRateLimited("claude", accountID, model, until, !known)
 			if auth.QuotaCache != nil && auth.QuotaCache.IsStale("claude:"+accountID, time.Minute) {
 				go func(id string) { _ = e.oauth.FetchQuotaForAccountByID(context.Background(), id) }(accountID)
 			}
@@ -137,7 +150,7 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)
 
-	resp, err := e.doWithFailover(ctx, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, req.Model, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -177,7 +190,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	body = injectClaudeCodeSystemBlocks(body)
 	log.Printf("[DEBUG-CHAT] URL=https://api.anthropic.com/v1/messages body=%s", string(body))
 
-	resp, err := e.doWithFailover(ctx, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, req.Model, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -334,7 +347,7 @@ func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []by
 	// signed body, or Anthropic rejects the request (opaque 429). Idempotent:
 	// requests that already carry the billing header are just re-signed.
 	body = injectClaudeCodeSystemBlocks(body)
-	resp, err := e.doWithFailover(ctx, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, modelFromBody(body), func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
@@ -372,7 +385,7 @@ func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []by
 	// OAuth tokens require the Claude Code identity/billing system blocks and a
 	// signed body, or Anthropic rejects the request (opaque 429). Idempotent.
 	body = injectClaudeCodeSystemBlocks(body)
-	resp, err := e.doWithFailover(ctx, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, modelFromBody(body), func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {

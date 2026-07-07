@@ -1135,6 +1135,14 @@ window.addEventListener('focus', () => {
   if (Date.now() - lastFocusLoad > 30000) { lastFocusLoad = Date.now(); loadStatus(); }
 });
 
+// Keep the dashboard current without manual refocus: poll while the tab is
+// visible so server-side state changes (a backend pausing, an account
+// rate-limiting or recovering at its reset) reflect within the interval
+// instead of only on focus/action. Skipped when hidden to avoid waste.
+setInterval(() => {
+  if (document.visibilityState === 'visible') { lastFocusLoad = Date.now(); loadStatus(); }
+}, 15000);
+
 // Width-filling charts re-render on resize while the Stats tab is visible.
 let resizeTimer = 0;
 window.addEventListener('resize', () => {

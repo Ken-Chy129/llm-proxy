@@ -327,7 +327,8 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
-			e.oauth.Store().MarkRateLimited("codex", tokenData.ID, until, !known)
+			// Codex 429s are account-wide (all models share one quota) → model "".
+			e.oauth.Store().MarkRateLimited("codex", tokenData.ID, "", until, !known)
 			log.Printf("[failover] codex account %s rate-limited until %s (estimated=%t); %d/%d attempts used",
 				tokenData.ID, until.Format(time.RFC3339), !known, i+1, attempts)
 			if i < attempts-1 {

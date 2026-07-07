@@ -94,31 +94,51 @@ func NewTokenStore(dir, strategy string) *TokenStore {
 	return store
 }
 
-// MarkRateLimited records that an account is rate-limited until the given time,
-// so round-robin selection skips it until then. estimated indicates the Until
-// time is a default guess (upstream gave no reset hint).
-func (s *TokenStore) MarkRateLimited(provider, id string, until time.Time, estimated bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.rateLimited[provider+"/"+id] = rateLimitEntry{Until: until, Estimated: estimated}
+// rlKey builds the rateLimited map key. An empty model is an account-wide
+// cooldown (every model unavailable); a non-empty model scopes the cooldown to
+// that one model, e.g. a per-model weekly cap like Fable/Opus.
+func rlKey(provider, id, model string) string {
+	return provider + "/" + id + "/" + model
 }
 
-// RateLimitInfo returns the active cooldown for an account: the time it becomes
-// usable again, whether that time is an estimate, and whether a cooldown is
-// currently active at all.
+// MarkRateLimited records that an account is rate-limited until the given time,
+// so selection skips it until then. Pass model="" for an account-wide limit;
+// pass a model to scope the cooldown to that model only (so a per-model cap
+// doesn't sideline the whole account). estimated indicates the Until time is a
+// default guess (upstream gave no reset hint).
+func (s *TokenStore) MarkRateLimited(provider, id, model string, until time.Time, estimated bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rateLimited[rlKey(provider, id, model)] = rateLimitEntry{Until: until, Estimated: estimated}
+}
+
+// RateLimitInfo returns the active account-wide cooldown for an account: the
+// time it becomes usable again, whether that time is an estimate, and whether a
+// cooldown is currently active at all. Per-model cooldowns are excluded on
+// purpose — they don't make the whole account unavailable, so they must not
+// drive the account-level "limited" badge (which is otherwise quota-driven).
 func (s *TokenStore) RateLimitInfo(provider, id string) (until time.Time, estimated, active bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e, ok := s.rateLimited[provider+"/"+id]
+	e, ok := s.rateLimited[rlKey(provider, id, "")]
 	if !ok || time.Now().After(e.Until) {
 		return time.Time{}, false, false
 	}
 	return e.Until, e.Estimated, true
 }
 
-func (s *TokenStore) isRateLimitedLocked(provider, id string) bool {
-	e, ok := s.rateLimited[provider+"/"+id]
-	return ok && time.Now().Before(e.Until)
+// isRateLimitedLocked reports whether the account is cooling down for the given
+// model — either an account-wide cooldown (model "") or one scoped to this model.
+func (s *TokenStore) isRateLimitedLocked(provider, id, model string) bool {
+	if e, ok := s.rateLimited[rlKey(provider, id, "")]; ok && time.Now().Before(e.Until) {
+		return true
+	}
+	if model != "" {
+		if e, ok := s.rateLimited[rlKey(provider, id, model)]; ok && time.Now().Before(e.Until) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *TokenStore) disabledPath() string {
@@ -218,12 +238,15 @@ func (s *TokenStore) isAccountDisabledLocked(provider, id string) bool {
 func (s *TokenStore) Dir() string { return s.dir }
 
 // Get returns the next token for a provider according to the configured
-// strategy. Under "weekly_expiry" it prefers the usable account whose weekly
-// window resets soonest (burning perishable weekly budget first); it falls
-// back to round-robin when no quota-backed account qualifies. Under
-// "round_robin" it uses blind rotation. Both share the same fallbacks so a
-// request is always attempted while a token still exists.
-func (s *TokenStore) Get(provider string) *TokenData {
+// strategy. model scopes rate-limit filtering: an account cooling down only for
+// a specific model (e.g. a Fable/Opus weekly cap) is still eligible for other
+// models. Pass "" when the caller isn't model-specific. Under "weekly_expiry" it
+// prefers the usable account whose weekly window resets soonest (burning
+// perishable weekly budget first); it falls back to round-robin when no
+// quota-backed account qualifies. Under "round_robin" it uses blind rotation.
+// Both share the same fallbacks so a request is always attempted while a token
+// still exists.
+func (s *TokenStore) Get(provider, model string) *TokenData {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	list := s.accounts[provider]
@@ -234,7 +257,7 @@ func (s *TokenStore) Get(provider string) *TokenData {
 	start := int(s.counter.Add(1)) % n
 
 	notBlocked := func(t *TokenData) bool {
-		return !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID)
+		return !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID, model)
 	}
 
 	// Preferred tier: quota-aware selection by soonest weekly reset.

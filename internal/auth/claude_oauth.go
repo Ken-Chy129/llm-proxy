@@ -63,15 +63,16 @@ func NewClaudeOAuth(store *TokenStore) *ClaudeOAuth {
 func (o *ClaudeOAuth) Store() *TokenStore { return o.store }
 
 func (o *ClaudeOAuth) GetToken(ctx context.Context) (string, error) {
-	token, _, err := o.GetTokenWithAccount(ctx)
+	token, _, err := o.GetTokenWithAccount(ctx, "")
 	return token, err
 }
 
 // GetTokenWithAccount returns an access token together with the ID of the
 // account it belongs to, so callers can attribute rate-limit failures back to a
-// specific account.
-func (o *ClaudeOAuth) GetTokenWithAccount(ctx context.Context) (string, string, error) {
-	token := o.store.Get("claude")
+// specific account. model scopes selection so an account cooling down only for
+// that model is skipped for it but still used for others; pass "" if unknown.
+func (o *ClaudeOAuth) GetTokenWithAccount(ctx context.Context, model string) (string, string, error) {
+	token := o.store.Get("claude", model)
 	if token == nil {
 		return "", "", fmt.Errorf("claude not authenticated (%d accounts), visit /auth/claude to login", len(o.store.AllForProvider("claude")))
 	}
