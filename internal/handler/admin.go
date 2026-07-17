@@ -83,7 +83,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		info := "Missing environment variable " + h.kimiExec.APIKeyEnv()
 		if h.kimiExec.Configured() {
 			status = "active"
-			info = h.kimiExec.BaseURL() + " · key: " + h.kimiExec.APIKeyEnv()
+			info = h.kimiExec.BaseURL() + " · " + h.kimiExec.APIFormat() + " · key: " + h.kimiExec.APIKeyEnv()
 		}
 		if disabled {
 			status = "disabled"
@@ -340,6 +340,7 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"enabled":     h.cfg.Kimi.Enabled,
 			"base_url":    h.cfg.Kimi.BaseURL,
 			"api_key_env": h.cfg.Kimi.APIKeyEnv,
+			"api_format":  h.cfg.Kimi.APIFormat,
 			"models":      h.cfg.Kimi.Models,
 		},
 	})

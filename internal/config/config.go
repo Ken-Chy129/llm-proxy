@@ -57,6 +57,7 @@ type KimiConfig struct {
 	Enabled   bool          `yaml:"enabled"`
 	BaseURL   string        `yaml:"base_url"`
 	APIKeyEnv string        `yaml:"api_key_env"`
+	APIFormat string        `yaml:"api_format"`
 	Models    []ModelConfig `yaml:"models"`
 }
 

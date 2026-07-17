@@ -94,6 +94,20 @@ kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
+  api_format: "openai"
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
+```
+
+Keys created in the **Kimi Code console** are separate from API Platform keys. Use the Kimi Code Anthropic-compatible endpoint instead:
+
+```yaml
+kimi:
+  enabled: true
+  base_url: "https://api.kimi.com/coding"
+  api_key_env: "MOONSHOT_API_KEY"
+  api_format: "anthropic"
   models:
     - name: "kimi-k3"
       model: "kimi-k3"
@@ -192,6 +206,7 @@ kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
+  api_format: "openai"
   models:
     - name: "kimi-k3"
       model: "kimi-k3"

@@ -219,3 +219,131 @@ func TestKimiExecutorTranslatesToolCallStreamToAnthropicSSE(t *testing.T) {
 		}
 	}
 }
+
+func TestKimiExecutorUsesAnthropicCompatibleUpstream(t *testing.T) {
+	t.Setenv("TEST_KIMI_CODE_API_KEY", "kimi-code-secret")
+
+	var gotPath string
+	var gotAPIKey string
+	var gotModel string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAPIKey = r.Header.Get("x-api-key")
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		json.Unmarshal(body["model"], &gotModel)
+		if _, ok := body["anthropic_version"]; ok {
+			t.Fatal("Anthropic-compatible endpoint received Vertex-only anthropic_version body field")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"kimi-k3","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+
+	exec := NewKimiExecutor(config.KimiConfig{
+		Enabled:   true,
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
+		APIFormat: "anthropic",
+		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
+	})
+	content, _ := json.Marshal("hello")
+	resp, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{
+		Model:    "kimi-code",
+		Messages: []types.ChatMessage{{Role: "user", Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if gotPath != "/v1/messages" {
+		t.Fatalf("upstream path = %q", gotPath)
+	}
+	if gotAPIKey != "kimi-code-secret" {
+		t.Fatalf("x-api-key = %q", gotAPIKey)
+	}
+	if gotModel != "kimi-k3" {
+		t.Fatalf("upstream model = %q", gotModel)
+	}
+	if resp.Model != "kimi-code" || resp.Choices[0].Message.Content != "ok" {
+		t.Fatalf("unexpected chat response: %+v", resp)
+	}
+}
+
+func TestKimiExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
+	t.Setenv("TEST_KIMI_CODE_API_KEY", "kimi-code-secret")
+
+	var gotBody map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"kimi-k3","stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":5,"output_tokens":1}}`)
+	}))
+	defer server.Close()
+
+	exec := NewKimiExecutor(config.KimiConfig{
+		Enabled:   true,
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
+		APIFormat: "anthropic",
+		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
+	})
+	body := []byte(`{"model":"kimi-code","max_tokens":32,"context_management":{"edits":[]},"messages":[{"role":"user","content":"hello"}]}`)
+	responseBody, status, err := exec.ExecuteAnthropicRaw(context.Background(), body, http.Header{"anthropic-beta": []string{"test-beta"}})
+	if err != nil {
+		t.Fatalf("ExecuteAnthropicRaw() error: %v", err)
+	}
+	if status != http.StatusOK || !strings.Contains(string(responseBody), `"type":"message"`) {
+		t.Fatalf("status=%d body=%s", status, responseBody)
+	}
+	var model string
+	json.Unmarshal(gotBody["model"], &model)
+	if model != "kimi-k3" {
+		t.Fatalf("upstream model = %q", model)
+	}
+	if _, ok := gotBody["context_management"]; !ok {
+		t.Fatal("Claude Code extension field was dropped")
+	}
+}
+
+func TestKimiExecutorTranslatesAnthropicUpstreamStreamToChatSSE(t *testing.T) {
+	t.Setenv("TEST_KIMI_CODE_API_KEY", "kimi-code-secret")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"kimi-k3\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}\n\n")
+		io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n")
+		io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":2}}\n\n")
+		io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	exec := NewKimiExecutor(config.KimiConfig{
+		Enabled:   true,
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
+		APIFormat: "anthropic",
+		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
+	})
+	content, _ := json.Marshal("hello")
+	var stream strings.Builder
+	usage, err := exec.ExecuteStream(context.Background(), &types.ChatCompletionRequest{
+		Model:    "kimi-code",
+		Messages: []types.ChatMessage{{Role: "user", Content: content}},
+		Stream:   true,
+	}, &stream)
+	if err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+	if !strings.Contains(stream.String(), `"content":"hello"`) || !strings.Contains(stream.String(), `"finish_reason":"stop"`) {
+		t.Fatalf("unexpected chat stream:\n%s", stream.String())
+	}
+	if usage.PromptTokens != 5 || usage.CompletionTokens != 2 {
+		t.Fatalf("usage = %+v", usage)
+	}
+}

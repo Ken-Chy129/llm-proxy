@@ -96,9 +96,23 @@ kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
+  api_format: "openai"
   models:
     - name: "kimi-k3"       # 客户端使用的模型名
       model: "kimi-k3"      # Kimi 上游实际模型名
+```
+
+如果 Key 来自 **Kimi Code 控制台**（Kimi 会员的 Coding Agent 权益），它与开放平台 Key 相互独立，请改用 Anthropic 兼容端点：
+
+```yaml
+kimi:
+  enabled: true
+  base_url: "https://api.kimi.com/coding"
+  api_key_env: "MOONSHOT_API_KEY"
+  api_format: "anthropic"
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
 ```
 
 重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。
@@ -215,6 +229,7 @@ kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"       # 这里只写环境变量名，不写 Key
+  api_format: "openai"                   # Kimi Code Key 使用 anthropic
   models:
     - name: "kimi-k3"
       model: "kimi-k3"

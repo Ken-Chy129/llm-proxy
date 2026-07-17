@@ -97,7 +97,7 @@ func main() {
 	if cfg.Kimi.Enabled {
 		if kimiExec.Configured() {
 			r.Register(kimiExec, "kimi")
-			log.Printf("registered kimi executor: %v (base=%s, key_env=%s)", kimiExec.Models(), kimiExec.BaseURL(), kimiExec.APIKeyEnv())
+			log.Printf("registered kimi executor: %v (base=%s, format=%s, key_env=%s)", kimiExec.Models(), kimiExec.BaseURL(), kimiExec.APIFormat(), kimiExec.APIKeyEnv())
 		} else {
 			log.Printf("kimi enabled but %s is not set; backend not registered", kimiExec.APIKeyEnv())
 		}

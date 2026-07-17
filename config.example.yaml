@@ -40,6 +40,7 @@ kimi:
   enabled: false
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
+  api_format: "openai"  # use "anthropic" with https://api.kimi.com/coding
   models:
     - name: "kimi-k3"
       model: "kimi-k3"

@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
@@ -36,6 +37,7 @@ type KimiExecutor struct {
 	mu         sync.RWMutex
 	baseURL    string
 	apiKeyEnv  string
+	apiFormat  string
 	models     []config.ModelConfig
 	httpClient *http.Client
 }
@@ -49,6 +51,10 @@ func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
 	if apiKeyEnv == "" {
 		apiKeyEnv = defaultKimiAPIKeyEnv
 	}
+	apiFormat := strings.ToLower(strings.TrimSpace(cfg.APIFormat))
+	if apiFormat != "anthropic" {
+		apiFormat = "openai"
+	}
 	models := cfg.Models
 	if len(models) == 0 {
 		models = append([]config.ModelConfig(nil), defaultKimiModels...)
@@ -56,6 +62,7 @@ func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
 	return &KimiExecutor{
 		baseURL:    baseURL,
 		apiKeyEnv:  apiKeyEnv,
+		apiFormat:  apiFormat,
 		models:     models,
 		httpClient: http.DefaultClient,
 	}
@@ -91,6 +98,12 @@ func (e *KimiExecutor) APIKeyEnv() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.apiKeyEnv
+}
+
+func (e *KimiExecutor) APIFormat() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.apiFormat
 }
 
 func (e *KimiExecutor) resolveModel(alias string) string {
@@ -158,6 +171,9 @@ func (e *KimiExecutor) openChat(ctx context.Context, req *types.ChatCompletionRe
 }
 
 func (e *KimiExecutor) Execute(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	if e.APIFormat() == "anthropic" {
+		return e.executeAnthropicChat(ctx, req)
+	}
 	resp, err := e.openChat(ctx, req, false)
 	if err != nil {
 		return nil, err
@@ -181,6 +197,9 @@ func (e *KimiExecutor) Execute(ctx context.Context, req *types.ChatCompletionReq
 }
 
 func (e *KimiExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
+	if e.APIFormat() == "anthropic" {
+		return e.executeAnthropicChatStream(ctx, req, w)
+	}
 	resp, err := e.openChat(ctx, req, true)
 	if err != nil {
 		return nil, err
@@ -213,6 +232,193 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, req *types.ChatComplet
 	if err := scanner.Err(); err != nil {
 		return &usage, err
 	}
+	return &usage, nil
+}
+
+func (e *KimiExecutor) anthropicEndpoint() string {
+	baseURL := e.BaseURL()
+	if strings.HasSuffix(baseURL, "/v1") {
+		return baseURL + "/messages"
+	}
+	return baseURL + "/v1/messages"
+}
+
+func (e *KimiExecutor) openAnthropic(ctx context.Context, body []byte, clientHeaders http.Header, stream bool) (*http.Response, error) {
+	key, err := e.apiKey()
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, e.anthropicEndpoint(), bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("x-api-key", key)
+	httpReq.Header.Set("Content-Type", "application/json")
+	version := "2023-06-01"
+	if clientHeaders != nil && clientHeaders.Get("anthropic-version") != "" {
+		version = clientHeaders.Get("anthropic-version")
+	}
+	httpReq.Header.Set("anthropic-version", version)
+	if clientHeaders != nil && clientHeaders.Get("anthropic-beta") != "" {
+		httpReq.Header.Set("anthropic-beta", clientHeaders.Get("anthropic-beta"))
+	}
+	if stream {
+		httpReq.Header.Set("Accept", "text/event-stream")
+	}
+	resp, err := e.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("kimi anthropic request: %w", err)
+	}
+	return resp, nil
+}
+
+func (e *KimiExecutor) executeAnthropicChat(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	upstreamModel := e.resolveModel(req.Model)
+	anthropicReq := ToAnthropicRequest(req, upstreamModel)
+	anthropicReq.Stream = false
+	anthropicReq.AnthropicVersion = ""
+	body, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal kimi anthropic request: %w", err)
+	}
+	resp, err := e.openAnthropic(ctx, body, nil, false)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read kimi anthropic response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(respBody)}
+	}
+	var anthropicResp types.AnthropicResponse
+	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
+		return nil, fmt.Errorf("parse kimi anthropic response: %w", err)
+	}
+	return FromAnthropicResponse(&anthropicResp, req.Model), nil
+}
+
+func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
+	upstreamModel := e.resolveModel(req.Model)
+	anthropicReq := ToAnthropicRequest(req, upstreamModel)
+	anthropicReq.Stream = true
+	anthropicReq.AnthropicVersion = ""
+	body, err := json.Marshal(anthropicReq)
+	if err != nil {
+		return nil, fmt.Errorf("marshal kimi anthropic request: %w", err)
+	}
+	resp, err := e.openAnthropic(ctx, body, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(respBody)}
+	}
+
+	chunkID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
+	created := time.Now().Unix()
+	writeSSEChunk(w, types.ChatCompletionChunk{
+		ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+		Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{Role: "assistant"}}},
+	})
+
+	var usage types.Usage
+	var hasToolCalls bool
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		data, ok := sseData(scanner.Text())
+		if !ok || data == "[DONE]" {
+			continue
+		}
+		var event types.AnthropicStreamEvent
+		if json.Unmarshal([]byte(data), &event) != nil {
+			continue
+		}
+		switch event.Type {
+		case "message_start":
+			if event.Message != nil {
+				usage.PromptTokens = event.Message.Usage.InputTokens
+			}
+		case "content_block_start":
+			if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
+				hasToolCalls = true
+				writeSSEChunk(w, types.ChatCompletionChunk{
+					ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+					Choices: []types.ChatCompletionChoice{{
+						Index: 0,
+						Delta: &types.ChatResult{ToolCalls: []types.ToolCall{{
+							Index: event.Index,
+							ID:    event.ContentBlock.ID,
+							Type:  "function",
+							Function: types.ToolCallFunction{
+								Name: event.ContentBlock.Name,
+							},
+						}}},
+					}},
+				})
+			}
+		case "content_block_delta":
+			var delta struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+				JSON string `json:"partial_json"`
+			}
+			if json.Unmarshal(event.Delta, &delta) != nil {
+				continue
+			}
+			switch delta.Type {
+			case "text_delta":
+				writeSSEChunk(w, types.ChatCompletionChunk{
+					ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+					Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{Content: delta.Text}}},
+				})
+			case "input_json_delta":
+				writeSSEChunk(w, types.ChatCompletionChunk{
+					ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+					Choices: []types.ChatCompletionChoice{{
+						Index: 0,
+						Delta: &types.ChatResult{ToolCalls: []types.ToolCall{{
+							Index: event.Index,
+							Function: types.ToolCallFunction{
+								Arguments: delta.JSON,
+							},
+						}}},
+					}},
+				})
+			}
+		case "message_delta":
+			if event.Usage != nil {
+				usage.CompletionTokens = event.Usage.OutputTokens
+				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+			}
+			finishReason := "stop"
+			if hasToolCalls {
+				finishReason = "tool_calls"
+			}
+			if len(event.Delta) > 0 {
+				var delta struct {
+					StopReason string `json:"stop_reason"`
+				}
+				if json.Unmarshal(event.Delta, &delta) == nil && delta.StopReason != "" {
+					finishReason = mapStopReason(delta.StopReason)
+				}
+			}
+			writeSSEChunk(w, types.ChatCompletionChunk{
+				ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
+				Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{}, FinishReason: &finishReason}},
+				Usage:   &usage,
+			})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return &usage, err
+	}
+	fmt.Fprint(w, "data: [DONE]\n\n")
 	return &usage, nil
 }
 
@@ -453,7 +659,52 @@ func convertAnthropicToolChoice(raw json.RawMessage) json.RawMessage {
 	return converted
 }
 
-func (e *KimiExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, _ http.Header) ([]byte, int, error) {
+func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("parse Anthropic request: %w", err)
+	}
+	var model string
+	if err := json.Unmarshal(payload["model"], &model); err != nil || strings.TrimSpace(model) == "" {
+		return nil, fmt.Errorf("model is required")
+	}
+	payload["model"], _ = json.Marshal(e.resolveModel(model))
+	return json.Marshal(payload)
+}
+
+func (e *KimiExecutor) executeAnthropicPassthroughRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
+	rewritten, err := e.rewriteAnthropicModel(body)
+	if err != nil {
+		return anthropicErrorJSON("invalid_request_error", err.Error()), http.StatusBadRequest, nil
+	}
+	resp, err := e.openAnthropic(ctx, rewritten, clientHeaders, false)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read kimi anthropic response: %w", err)
+	}
+	return respBody, resp.StatusCode, nil
+}
+
+func (e *KimiExecutor) openAnthropicPassthrough(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
+	rewritten, err := e.rewriteAnthropicModel(body)
+	if err != nil {
+		return io.NopCloser(bytes.NewReader(anthropicErrorJSON("invalid_request_error", err.Error()))), http.StatusBadRequest, nil
+	}
+	resp, err := e.openAnthropic(ctx, rewritten, clientHeaders, true)
+	if err != nil {
+		return nil, 0, err
+	}
+	return resp.Body, resp.StatusCode, nil
+}
+
+func (e *KimiExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
+	if e.APIFormat() == "anthropic" {
+		return e.executeAnthropicPassthroughRaw(ctx, body, clientHeaders)
+	}
 	req, err := anthropicToChatRequest(body)
 	if err != nil {
 		return anthropicErrorJSON("invalid_request_error", err.Error()), http.StatusBadRequest, nil
@@ -557,7 +808,10 @@ func kimiErrorToAnthropic(body []byte, status int) []byte {
 	return anthropicErrorJSON("api_error", message)
 }
 
-func (e *KimiExecutor) OpenAnthropicStream(ctx context.Context, body []byte, _ http.Header) (io.ReadCloser, int, error) {
+func (e *KimiExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
+	if e.APIFormat() == "anthropic" {
+		return e.openAnthropicPassthrough(ctx, body, clientHeaders)
+	}
 	req, err := anthropicToChatRequest(body)
 	if err != nil {
 		return io.NopCloser(bytes.NewReader(anthropicErrorJSON("invalid_request_error", err.Error()))), http.StatusBadRequest, nil
