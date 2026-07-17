@@ -65,11 +65,16 @@
     <div class="chat-panel">
       <div class="chat-toolbar">
         <select id="chat-model" class="model-select"></select>
-        <button class="btn btn-primary" onclick="sendChat()">Send</button>
+        <button id="chat-send" class="btn btn-primary" onclick="sendChat()">Send</button>
         <button class="btn btn-secondary" onclick="clearChat()">Clear</button>
       </div>
       <textarea id="chat-input" class="chat-input" rows="2" placeholder="Type a message..."></textarea>
-      <div id="chat-output" class="chat-output"></div>
+      <div id="chat-status" class="chat-status" role="status" aria-live="polite" aria-atomic="true" hidden>
+        <span class="chat-status-cells" aria-hidden="true"><i></i><i></i><i></i></span>
+        <span class="chat-status-copy"><strong id="chat-status-model">model</strong><span class="chat-status-divider" aria-hidden="true">/</span><span>thinking</span></span>
+        <span id="chat-status-elapsed" class="chat-status-elapsed" aria-hidden="true">0.0s</span>
+      </div>
+      <div id="chat-output" class="chat-output" aria-live="polite" aria-busy="false"></div>
     </div>
   </div>
 

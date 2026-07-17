@@ -125,22 +125,48 @@ async function loadStatus() {
   if (sel._sync) sel._sync();
 }
 
+let chatStatusTimer = 0;
+
+function hideChatStatus() {
+  if (chatStatusTimer) clearInterval(chatStatusTimer);
+  chatStatusTimer = 0;
+  const status = document.getElementById('chat-status');
+  const output = document.getElementById('chat-output');
+  status.hidden = true;
+  output.setAttribute('aria-busy', 'false');
+}
+
+function showChatStatus(model) {
+  hideChatStatus();
+  const status = document.getElementById('chat-status');
+  const output = document.getElementById('chat-output');
+  const elapsed = document.getElementById('chat-status-elapsed');
+  document.getElementById('chat-status-model').textContent = model || 'model';
+  status.hidden = false;
+  output.setAttribute('aria-busy', 'true');
+  const startedAt = performance.now();
+  const updateElapsed = () => { elapsed.textContent = ((performance.now() - startedAt) / 1000).toFixed(1) + 's'; };
+  updateElapsed();
+  chatStatusTimer = setInterval(updateElapsed, 100);
+}
+
 async function sendChat() {
   const model = document.getElementById('chat-model').value;
   const input = document.getElementById('chat-input').value.trim();
   if (!input) return;
   const output = document.getElementById('chat-output');
-  const sendBtn = document.querySelector('.btn-primary');
+  const sendBtn = document.getElementById('chat-send');
   output.textContent = '';
-  output.classList.add('loading');
-  sendBtn.disabled = true; sendBtn.textContent = 'Sending...';
+  output.classList.add('waiting');
+  showChatStatus(model);
+  sendBtn.disabled = true; sendBtn.textContent = 'Working';
+  let hasVisibleText = false;
   try {
     const resp = await apiFetch('/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model, messages: [{ role: 'user', content: input }], stream: true })
     });
-    if (!resp.ok) { const e = await resp.json(); output.classList.remove('loading'); output.textContent = 'Error: ' + (e.error?.message || resp.statusText); return; }
-    output.classList.remove('loading');
+    if (!resp.ok) { const e = await resp.json(); hideChatStatus(); output.classList.remove('waiting'); output.textContent = 'Error: ' + (e.error?.message || resp.statusText); return; }
     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
@@ -150,17 +176,30 @@ async function sendChat() {
         if (!line.startsWith('data: ') || line === 'data: [DONE]') continue;
         try {
           const c = JSON.parse(line.slice(6));
-          if (c.error) { output.textContent = 'Error: ' + (c.error.message || JSON.stringify(c.error)); return; }
-          const t = c.choices?.[0]?.delta?.content; if (t) output.textContent += t;
+          if (c.error) { hideChatStatus(); output.classList.remove('waiting'); output.textContent = 'Error: ' + (c.error.message || JSON.stringify(c.error)); return; }
+          const t = c.choices?.[0]?.delta?.content;
+          if (t) {
+            if (!hasVisibleText) {
+              hasVisibleText = true;
+              hideChatStatus();
+              output.classList.remove('waiting');
+            }
+            output.textContent += t;
+            output.scrollTop = output.scrollHeight;
+          }
         } catch {}
       }
     }
-  } catch (e) { output.classList.remove('loading'); output.textContent = 'Error: ' + e.message; }
-  finally { sendBtn.disabled = false; sendBtn.textContent = 'Send'; loadStatus(); }
+    if (!hasVisibleText) output.textContent = 'No visible text returned.';
+  } catch (e) { output.textContent = 'Error: ' + e.message; }
+  finally { hideChatStatus(); output.classList.remove('waiting'); sendBtn.disabled = false; sendBtn.textContent = 'Send'; loadStatus(); }
 }
 
 function clearChat() {
-  document.getElementById('chat-output').textContent = '';
+  hideChatStatus();
+  const output = document.getElementById('chat-output');
+  output.classList.remove('waiting');
+  output.textContent = '';
   document.getElementById('chat-input').value = '';
 }
 
