@@ -239,6 +239,12 @@
           <button type="button" class="btn-add" onclick="addVertexRow()">+ Add alias</button>
         </div>
         <div class="cfg-field">
+          <label>Kimi models <span class="cfg-badge cfg-live">● live</span></label>
+          <p class="cfg-hint">Alias clients call → Kimi upstream model. The API key stays in the configured environment variable.</p>
+          <div id="cfg-kimi-rows" class="cfg-rows"></div>
+          <button type="button" class="btn-add" onclick="addKimiRow()">+ Add alias</button>
+        </div>
+        <div class="cfg-field">
           <label>Codex models <span class="cfg-badge cfg-restart">⟳ restart</span></label>
           <p class="cfg-hint">Fallback list only — Codex auto-syncs its models from the API at startup, which overrides this.</p>
           <div id="cfg-codex-models" class="cfg-chips"></div>

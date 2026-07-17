@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 type ResponsesHandler struct {
@@ -143,7 +143,7 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types
 	for _, item := range inputItems {
 		switch {
 		case item.Role == "user" || item.Role == "assistant":
-			content := item.Content
+			content := normalizeResponsesContent(item.Content)
 			if len(content) == 0 {
 				content, _ = json.Marshal("")
 			}
@@ -181,8 +181,25 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types
 
 	for _, tool := range req.Tools {
 		var t types.Tool
-		if json.Unmarshal(tool, &t) == nil {
+		if json.Unmarshal(tool, &t) == nil && t.Function.Name != "" {
 			chatReq.Tools = append(chatReq.Tools, t)
+			continue
+		}
+		var responseTool struct {
+			Type        string          `json:"type"`
+			Name        string          `json:"name"`
+			Description string          `json:"description,omitempty"`
+			Parameters  json.RawMessage `json:"parameters,omitempty"`
+		}
+		if json.Unmarshal(tool, &responseTool) == nil && responseTool.Type == "function" && responseTool.Name != "" {
+			chatReq.Tools = append(chatReq.Tools, types.Tool{
+				Type: "function",
+				Function: types.ToolFunction{
+					Name:        responseTool.Name,
+					Description: responseTool.Description,
+					Parameters:  responseTool.Parameters,
+				},
+			})
 		}
 	}
 	chatReq.ToolChoice = req.ToolChoice
@@ -192,6 +209,38 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types
 	}
 
 	return chatReq
+}
+
+// normalizeResponsesContent converts Responses API content block names into
+// their Chat Completions equivalents. Codex sends input_text/input_image while
+// OpenAI-compatible upstreams such as Kimi expect text/image_url.
+func normalizeResponsesContent(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return raw
+	}
+	var blocks []map[string]interface{}
+	if err := json.Unmarshal(raw, &blocks); err != nil {
+		return raw
+	}
+	for _, block := range blocks {
+		typeName, _ := block["type"].(string)
+		switch typeName {
+		case "input_text", "output_text":
+			block["type"] = "text"
+		case "input_image":
+			block["type"] = "image_url"
+			if imageURL, ok := block["image_url"]; ok {
+				if _, isObject := imageURL.(map[string]interface{}); !isObject {
+					block["image_url"] = map[string]interface{}{"url": imageURL}
+				}
+			}
+		}
+	}
+	normalized, err := json.Marshal(blocks)
+	if err != nil {
+		return raw
+	}
+	return normalized
 }
 
 func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec executor.Executor, req *types.ChatCompletionRequest, w io.Writer) error {
@@ -274,9 +323,9 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 						},
 					})
 					writeEvent("response.content_part.added", map[string]interface{}{
-						"type":         "response.content_part.added",
-						"item_id":      outputItemID,
-						"output_index": 0,
+						"type":          "response.content_part.added",
+						"item_id":       outputItemID,
+						"output_index":  0,
 						"content_index": contentPartIdx,
 						"part": map[string]interface{}{
 							"type": "output_text",

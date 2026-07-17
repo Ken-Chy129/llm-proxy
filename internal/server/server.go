@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/gin-gonic/gin"
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/dashboard"
@@ -12,19 +11,20 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/handler"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
+	"github.com/gin-gonic/gin"
 )
 
 func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, keyStore *auth.KeyStore, statsDB *stats.DB,
 	claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth,
 	claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor,
-	vertexExec *executor.VertexExecutor) error {
+	vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
-	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec)
+	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 

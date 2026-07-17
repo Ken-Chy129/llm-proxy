@@ -6,15 +6,15 @@
 
 **简体中文** | [English](README_EN.md)
 
-为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）和 OpenAI Codex（OAuth）统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
+为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）、OpenAI Codex（OAuth）和 Kimi API 统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
 ## 功能特性
 
-- **多协议兼容** — OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations` + Anthropic `/v1/messages` 原生透传
+- **多协议兼容** — OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations` + Anthropic `/v1/messages` 透传或协议转换
 - **开箱即用** — Claude Code、Codex CLI、OpenAI SDK 均可直连，零适配成本
-- **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth，按模型名自动分发
+- **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth、Kimi API，按模型名自动分发
 - **多账号轮转 + 故障转移** — Round-robin 负载均衡；某账号被上游 429 限流时自动切换到下一个账号，过期 Token 自动跳过
 - **多 API Key 管理** — 为不同调用方签发独立密钥，每个密钥可设每日 Token 限额，仪表板增删改
 - **可视化统计** — 时间趋势图 + 按模型 / 密钥 / 后端 / 账号的多维度拆分（自适应时区）
@@ -81,6 +81,60 @@ export OPENAI_API_KEY="sk-your-api-key"
 codex
 ```
 
+### 通过代理使用 Kimi
+
+Kimi API Key 只从环境变量读取，不会写入 `config.yaml` 或仪表板配置。先撤销任何已泄露的 Key，再设置新 Key：
+
+```bash
+export MOONSHOT_API_KEY="新生成的_Kimi_API_Key"
+```
+
+在 `config.yaml` 中启用 Kimi：
+
+```yaml
+kimi:
+  enabled: true
+  base_url: "https://api.moonshot.cn/v1"
+  api_key_env: "MOONSHOT_API_KEY"
+  models:
+    - name: "kimi-k3"       # 客户端使用的模型名
+      model: "kimi-k3"      # Kimi 上游实际模型名
+```
+
+重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。
+
+Claude Code：
+
+```bash
+export ANTHROPIC_BASE_URL="https://your-domain"
+export ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key"
+export ANTHROPIC_MODEL="kimi-k3"
+# 可选：把 Kimi 加到 /model 选择器
+export ANTHROPIC_CUSTOM_MODEL_OPTION="kimi-k3"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="Kimi K3 via LLM Proxy"
+claude
+```
+
+Codex CLI，在 `~/.codex/config.toml` 中配置：
+
+```toml
+model_provider = "llm-proxy"
+model = "kimi-k3"
+
+[model_providers.llm-proxy]
+name = "Kimi via LLM Proxy"
+base_url = "https://your-domain/v1"
+env_key = "LLM_PROXY_API_KEY"
+wire_api = "responses"
+```
+
+```bash
+export LLM_PROXY_API_KEY="sk-your-proxy-key"
+codex
+```
+
+协议链路：Claude Code 的 Anthropic Messages 请求会转换为 Kimi Chat Completions；Codex 的 Responses 请求也会转换为 Chat Completions。文本、流式输出和工具调用已覆盖；Anthropic 专属的 prompt caching、thinking signature、context management 等能力不会完整保留。
+
 ### OpenAI SDK
 
 ```python
@@ -116,6 +170,7 @@ curl https://your-domain/v1/images/generations \
 | Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP 凭证（应用默认凭证 / 仪表板上传） |
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | 浏览器 OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | 浏览器 OAuth |
+| Kimi API | kimi-k3, kimi-k2.7-code-highspeed, kimi-k2.6 | `MOONSHOT_API_KEY` 环境变量 |
 
 > 模型列表可在仪表板的 **Config** 页在线编辑；Codex 登录后会自动从上游拉取可用模型。
 
@@ -155,6 +210,14 @@ codex:
   models:                              # 回退列表；登录后自动从后端拉取
     - "gpt-5.5"
     - "gpt-5.4"
+
+kimi:
+  enabled: true
+  base_url: "https://api.moonshot.cn/v1"
+  api_key_env: "MOONSHOT_API_KEY"       # 这里只写环境变量名，不写 Key
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
 ```
 
 ## 管理仪表板
@@ -213,9 +276,9 @@ nohup ./llm-proxy -config config.yaml > /var/log/llm-proxy.log 2>&1 &
 ```
 客户端请求
   │
-  ├─ /v1/messages           → Router → 原生透传 → Vertex AI / api.anthropic.com
+  ├─ /v1/messages           → Router → 透传或转换 → Claude / Vertex / Kimi
   ├─ /v1/chat/completions   → Router → Executor → 后端 API
-  ├─ /v1/responses          → Codex 直通 ────────→ chatgpt.com
+  ├─ /v1/responses          → Codex 直通或转换 ──→ chatgpt.com / Kimi
   ├─ /v1/images/generations → Codex Tool Call ───→ chatgpt.com
   └─ /v1/models             → 返回所有已注册模型
 
@@ -223,6 +286,7 @@ Executor（执行器）：
   VertexExecutor       → OpenAI ↔ Anthropic Messages API ↔ GCP Vertex AI
   ClaudeOAuthExecutor  → OpenAI ↔ Anthropic Messages API ↔ api.anthropic.com
   CodexExecutor        → OpenAI ↔ Codex Responses API    ↔ chatgpt.com
+  KimiExecutor         → OpenAI/Responses/Anthropic      ↔ Kimi Chat Completions
 ```
 
 ## 技术栈

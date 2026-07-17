@@ -12,6 +12,7 @@ type Config struct {
 	Vertex      VertexConfig      `yaml:"vertex"`
 	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
 	Codex       CodexConfig       `yaml:"codex"`
+	Kimi        KimiConfig        `yaml:"kimi"`
 }
 
 type ServerConfig struct {
@@ -47,6 +48,16 @@ type ClaudeOAuthConfig struct {
 type CodexConfig struct {
 	Enabled bool     `yaml:"enabled"`
 	Models  []string `yaml:"models"`
+}
+
+// KimiConfig intentionally stores only the name of an environment variable,
+// never the API key itself. This keeps config.yaml and dashboard saves free of
+// upstream credentials.
+type KimiConfig struct {
+	Enabled   bool          `yaml:"enabled"`
+	BaseURL   string        `yaml:"base_url"`
+	APIKeyEnv string        `yaml:"api_key_env"`
+	Models    []ModelConfig `yaml:"models"`
 }
 
 func Load(path string) (*Config, error) {

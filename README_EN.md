@@ -6,15 +6,15 @@
 
 [简体中文](README.md) | **English**
 
-Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth) and OpenAI Codex (OAuth) behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
+Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth), OpenAI Codex (OAuth), and Kimi API behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
 ## Features
 
-- **Multi-protocol** — OpenAI `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` + Anthropic `/v1/messages` native passthrough
+- **Multi-protocol** — OpenAI `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` + Anthropic `/v1/messages` passthrough or translation
 - **Drop-in compatible** — Works directly with Claude Code, Codex CLI, and OpenAI SDKs
-- **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth — auto-dispatched by model name
+- **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth, Kimi API — auto-dispatched by model name
 - **Account pooling + failover** — Round-robin load balancing; on an upstream 429 the request fails over to the next account, and expired tokens are auto-skipped
 - **Multi API-key management** — Issue per-caller keys with individual daily token limits; create/revoke from the dashboard
 - **Visual analytics** — Time-series trend plus breakdowns by model / key / backend / account (timezone-aware)
@@ -81,6 +81,35 @@ export OPENAI_API_KEY="sk-your-api-key"
 codex
 ```
 
+### Kimi through the proxy
+
+The Kimi key is read only from an environment variable and is never persisted in `config.yaml`:
+
+```bash
+export MOONSHOT_API_KEY="your-new-kimi-api-key"
+```
+
+```yaml
+kimi:
+  enabled: true
+  base_url: "https://api.moonshot.cn/v1"
+  api_key_env: "MOONSHOT_API_KEY"
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
+```
+
+Claude Code:
+
+```bash
+export ANTHROPIC_BASE_URL="https://your-domain"
+export ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key"
+export ANTHROPIC_MODEL="kimi-k3"
+claude
+```
+
+Codex CLI uses the same custom provider configuration shown above, with `model = "kimi-k3"` and `wire_api = "responses"`. Anthropic Messages and Responses requests are translated to Kimi Chat Completions. Text streaming and tool calls are supported; Anthropic-only features such as thinking signatures and context management are not preserved completely.
+
 ### OpenAI SDK
 
 ```python
@@ -116,6 +145,7 @@ curl https://your-domain/v1/images/generations \
 | Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP credentials (ADC / dashboard upload) |
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | Browser OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | Browser OAuth |
+| Kimi API | kimi-k3, kimi-k2.7-code-highspeed, kimi-k2.6 | `MOONSHOT_API_KEY` environment variable |
 
 > Model lists are editable from the dashboard's **Config** tab; Codex auto-fetches its available models after login.
 
@@ -157,6 +187,14 @@ codex:
   models:                              # Fallback list; auto-fetched after login
     - "gpt-5.5"
     - "gpt-5.4"
+
+kimi:
+  enabled: true
+  base_url: "https://api.moonshot.cn/v1"
+  api_key_env: "MOONSHOT_API_KEY"
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
 ```
 
 ## Dashboard
@@ -215,9 +253,9 @@ nohup ./llm-proxy -config config.yaml > /var/log/llm-proxy.log 2>&1 &
 ```
 Client Request
   │
-  ├─ /v1/messages           → Router → Raw passthrough → Vertex AI / api.anthropic.com
+  ├─ /v1/messages           → Router → Passthrough/translate → Claude / Vertex / Kimi
   ├─ /v1/chat/completions   → Router → Executor ────────→ Backend API
-  ├─ /v1/responses          → Codex passthrough ────────→ chatgpt.com
+  ├─ /v1/responses          → Passthrough/translate ────→ chatgpt.com / Kimi
   ├─ /v1/images/generations → Codex tool call ──────────→ chatgpt.com
   └─ /v1/models             → List all registered models
 
@@ -225,6 +263,7 @@ Executors:
   VertexExecutor       → OpenAI ↔ Anthropic Messages API ↔ GCP Vertex AI
   ClaudeOAuthExecutor  → OpenAI ↔ Anthropic Messages API ↔ api.anthropic.com
   CodexExecutor        → OpenAI ↔ Codex Responses API    ↔ chatgpt.com
+  KimiExecutor         → OpenAI/Responses/Anthropic      ↔ Kimi Chat Completions
 ```
 
 ## Tech Stack

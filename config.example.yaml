@@ -33,3 +33,17 @@ codex:
     - "gpt-5.4"
     - "gpt-5.4-mini"
     - "gpt-5.3-codex"
+
+# Kimi API key is read from the environment variable below. Never put the
+# actual key in this file or commit it to Git.
+kimi:
+  enabled: false
+  base_url: "https://api.moonshot.cn/v1"
+  api_key_env: "MOONSHOT_API_KEY"
+  models:
+    - name: "kimi-k3"
+      model: "kimi-k3"
+    - name: "kimi-k2.7-code-highspeed"
+      model: "kimi-k2.7-code-highspeed"
+    - name: "kimi-k2.6"
+      model: "kimi-k2.6"

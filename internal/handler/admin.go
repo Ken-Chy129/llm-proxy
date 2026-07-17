@@ -28,10 +28,11 @@ type AdminHandler struct {
 	claudeExec  *executor.ClaudeOAuthExecutor
 	codexExec   *executor.CodexExecutor
 	vertexExec  *executor.VertexExecutor
+	kimiExec    *executor.KimiExecutor
 }
 
-func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor) *AdminHandler {
-	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec}
+func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor) *AdminHandler {
+	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec}
 }
 
 // formatLocalTime renders a timestamp as HH:MM, prefixing the date (MM-DD) when
@@ -73,6 +74,27 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"models": h.vertexExec.Models(),
 			})
 		}
+	}
+
+	// Kimi — API key comes from an environment variable and is never exposed.
+	if h.kimiExec != nil && h.cfg.Kimi.Enabled {
+		disabled := h.tokenStore.IsBackendDisabled("kimi")
+		status := "not_authenticated"
+		info := "Missing environment variable " + h.kimiExec.APIKeyEnv()
+		if h.kimiExec.Configured() {
+			status = "active"
+			info = h.kimiExec.BaseURL() + " · key: " + h.kimiExec.APIKeyEnv()
+		}
+		if disabled {
+			status = "disabled"
+		}
+		backends = append(backends, gin.H{
+			"name":     "kimi",
+			"status":   status,
+			"disabled": disabled,
+			"info":     info,
+			"models":   h.kimiExec.Models(),
+		})
 	}
 
 	// OAuth providers
@@ -314,6 +336,12 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"enabled": h.cfg.Codex.Enabled,
 			"models":  h.cfg.Codex.Models,
 		},
+		"kimi": gin.H{
+			"enabled":     h.cfg.Kimi.Enabled,
+			"base_url":    h.cfg.Kimi.BaseURL,
+			"api_key_env": h.cfg.Kimi.APIKeyEnv,
+			"models":      h.cfg.Kimi.Models,
+		},
 	})
 }
 
@@ -335,6 +363,27 @@ func cleanModelList(in []string) ([]string, error) {
 	return out, nil
 }
 
+func cleanModelMappings(in []config.ModelConfig, provider string) ([]config.ModelConfig, error) {
+	out := make([]config.ModelConfig, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, item := range in {
+		name := strings.TrimSpace(item.Name)
+		model := strings.TrimSpace(item.Model)
+		if name == "" && model == "" {
+			continue
+		}
+		if name == "" || model == "" {
+			return nil, fmt.Errorf("%s models: each row needs both an alias and a model", provider)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("%s models: duplicate alias %s", provider, name)
+		}
+		seen[name] = true
+		out = append(out, config.ModelConfig{Name: name, Model: model})
+	}
+	return out, nil
+}
+
 // UpdateConfig edits the net-new config surface (model lists + server settings)
 // not already controllable from the BACKENDS tab. Model-list edits apply live by
 // re-registering the executors with the router; server settings are persisted to
@@ -351,6 +400,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		Vertex struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"vertex"`
+		Kimi *struct {
+			Models []config.ModelConfig `json:"models"`
+		} `json:"kimi"`
 		Server struct {
 			Port          int    `json:"port"`
 			AdminUser     string `json:"admin_user"`
@@ -373,24 +425,18 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "codex models: " + err.Error()})
 		return
 	}
-	vertexModels := make([]config.ModelConfig, 0, len(req.Vertex.Models))
-	seenAlias := make(map[string]bool)
-	for _, m := range req.Vertex.Models {
-		name := strings.TrimSpace(m.Name)
-		model := strings.TrimSpace(m.Model)
-		if name == "" && model == "" {
-			continue
-		}
-		if name == "" || model == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "vertex models: each row needs both an alias and a model"})
+	vertexModels, err := cleanModelMappings(req.Vertex.Models, "vertex")
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	kimiModels := h.cfg.Kimi.Models
+	if req.Kimi != nil {
+		kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-		if seenAlias[name] {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "vertex models: duplicate alias " + name})
-			return
-		}
-		seenAlias[name] = true
-		vertexModels = append(vertexModels, config.ModelConfig{Name: name, Model: model})
 	}
 	// Port is optional: 0 means "leave unchanged". When provided it must be valid.
 	if req.Server.Port != 0 && (req.Server.Port < 1 || req.Server.Port > 65535) {
@@ -417,6 +463,13 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			h.router.Register(h.vertexExec, "vertex")
 		}
 	}
+	if req.Kimi != nil && h.kimiExec != nil && h.cfg.Kimi.Enabled {
+		h.kimiExec.SetModels(kimiModels)
+		h.router.UnregisterBackend("kimi")
+		if h.kimiExec.Configured() {
+			h.router.Register(h.kimiExec, "kimi")
+		}
+	}
 	if req.Server.AdminUser != "" {
 		h.cfg.Server.AdminUser = req.Server.AdminUser
 	}
@@ -428,6 +481,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	h.cfg.ClaudeOAuth.Models = claudeModels
 	h.cfg.Codex.Models = codexModels
 	h.cfg.Vertex.Models = vertexModels
+	if req.Kimi != nil {
+		h.cfg.Kimi.Models = kimiModels
+	}
 	if req.Server.Port != 0 {
 		h.cfg.Server.Port = req.Server.Port
 	}

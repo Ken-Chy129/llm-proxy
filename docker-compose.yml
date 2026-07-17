@@ -13,6 +13,8 @@ services:
       - TZ=Asia/Shanghai
       # Vertex AI ADC credentials live inside the data volume.
       - GOOGLE_APPLICATION_CREDENTIALS=/data/gcp-adc.json
+      # Set this in the host shell or a Compose .env file excluded from Git.
+      - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
     volumes:
       # Single persistent volume: config.yaml + OAuth tokens + keys.json + stats.db
       # + gcp-adc.json all live here. token_dir in config.yaml must be /data.

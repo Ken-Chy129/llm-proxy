@@ -89,6 +89,20 @@ func main() {
 		}
 	}
 
+	// Kimi API: OpenAI-compatible upstream, with the key read only from the
+	// configured environment variable. Responses API requests from Codex are
+	// translated by the handler; Anthropic Messages requests from Claude Code
+	// are translated by KimiExecutor.
+	kimiExec := executor.NewKimiExecutor(cfg.Kimi)
+	if cfg.Kimi.Enabled {
+		if kimiExec.Configured() {
+			r.Register(kimiExec, "kimi")
+			log.Printf("registered kimi executor: %v (base=%s, key_env=%s)", kimiExec.Models(), kimiExec.BaseURL(), kimiExec.APIKeyEnv())
+		} else {
+			log.Printf("kimi enabled but %s is not set; backend not registered", kimiExec.APIKeyEnv())
+		}
+	}
+
 	keyStore := auth.NewKeyStore(tokenStore.Dir())
 
 	// Cleanup old logs (retain 90 days), run at startup and daily
@@ -118,7 +132,7 @@ func main() {
 		}()
 	}
 
-	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec); err != nil {
+	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

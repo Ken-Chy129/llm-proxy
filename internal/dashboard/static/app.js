@@ -6,6 +6,12 @@ function apiFetch(url, opts) {
   return fetch(url, opts);
 }
 
+function escapeHTML(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+}
+
 async function loadStatus() {
   const r = await apiFetch('/api/status');
   if (r.status === 401) { window.location.href = '/login'; return; }
@@ -63,9 +69,9 @@ async function loadStatus() {
     const toggleBtn = `<button class="btn-add" style="${b.disabled ? 'color:var(--green);border-color:var(--green)' : 'color:var(--yellow);border-color:var(--yellow)'}" onclick="toggleBackend('${b.name}')">${b.disabled ? 'Enable' : 'Pause'}</button>`;
     // No card dimming for paused backends — the top-right badge (Paused/Active/
     // Expired/Offline) and the header dot already convey state.
-    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${b.name}</span><span class="backend-badge ${bc}">${bl}</span></div>`
-      + `<div class="backend-info">${b.info || ''}</div>`
-      + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${m}</span>`).join('')}</div>`
+    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${escapeHTML(b.name)}</span><span class="backend-badge ${bc}">${bl}</span></div>`
+      + `<div class="backend-info">${escapeHTML(b.info || '')}</div>`
+      + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join('')}</div>`
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   }).join('');
 
@@ -638,19 +644,19 @@ function chipValues(container) {
   return [...container.querySelectorAll('.cfg-chip-label')].map(s => s.textContent.trim()).filter(Boolean);
 }
 
-function addVertexRow(name, model) {
-  const rows = document.getElementById('cfg-vertex-rows');
+function addModelMappingRow(rowsId, nameClass, modelClass, name, model) {
+  const rows = document.getElementById(rowsId);
   const row = document.createElement('div');
   row.className = 'cfg-row';
   const nameInput = document.createElement('input');
-  nameInput.className = 'cfg-vx-name';
+  nameInput.className = nameClass;
   nameInput.placeholder = 'alias';
   nameInput.value = name || '';
   const arrow = document.createElement('span');
   arrow.className = 'cfg-arrow';
   arrow.textContent = '→';
   const modelInput = document.createElement('input');
-  modelInput.className = 'cfg-vx-model';
+  modelInput.className = modelClass;
   modelInput.placeholder = 'underlying model';
   modelInput.value = model || '';
   const del = document.createElement('button');
@@ -660,6 +666,14 @@ function addVertexRow(name, model) {
   del.onclick = () => row.remove();
   row.append(nameInput, arrow, modelInput, del);
   rows.appendChild(row);
+}
+
+function addVertexRow(name, model) {
+  addModelMappingRow('cfg-vertex-rows', 'cfg-vx-name', 'cfg-vx-model', name, model);
+}
+
+function addKimiRow(name, model) {
+  addModelMappingRow('cfg-kimi-rows', 'cfg-kimi-name', 'cfg-kimi-model', name, model);
 }
 
 async function loadConfig() {
@@ -673,6 +687,11 @@ async function loadConfig() {
   const vmodels = d.vertex?.models || [];
   vmodels.forEach(m => addVertexRow(m.Name ?? m.name, m.Model ?? m.model));
   if (!vmodels.length) addVertexRow('', '');
+  const kimiRows = document.getElementById('cfg-kimi-rows');
+  kimiRows.innerHTML = '';
+  const kimiModels = d.kimi?.models || [];
+  kimiModels.forEach(m => addKimiRow(m.Name ?? m.name, m.Model ?? m.model));
+  if (!kimiModels.length) addKimiRow('', '');
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
   document.getElementById('cfg-admin-pass').value = '';
   setCfgStatus('', '');
@@ -685,10 +704,15 @@ async function saveConfig() {
     name: row.querySelector('.cfg-vx-name').value.trim(),
     model: row.querySelector('.cfg-vx-model').value.trim(),
   })).filter(m => m.name || m.model);
+  const kimi = [...document.querySelectorAll('#cfg-kimi-rows .cfg-row')].map(row => ({
+    name: row.querySelector('.cfg-kimi-name').value.trim(),
+    model: row.querySelector('.cfg-kimi-model').value.trim(),
+  })).filter(m => m.name || m.model);
   const body = {
     claude_oauth: { models: claude },
     codex: { models: codex },
     vertex: { models: vertex },
+    kimi: { models: kimi },
     server: {
       admin_user: document.getElementById('cfg-admin-user').value.trim(),
       admin_password: document.getElementById('cfg-admin-pass').value,
