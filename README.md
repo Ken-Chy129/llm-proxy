@@ -111,11 +111,15 @@ kimi:
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "anthropic"
   models:
-    - name: "kimi-k3"
-      model: "kimi-k3"
+    - name: "kimi-k3"               # 客户端友好别名
+      model: "k3"                    # Kimi Coding API 官方模型 ID
+    - name: "kimi-for-coding"
+      model: "kimi-for-coding"
+    - name: "kimi-for-coding-highspeed"
+      model: "kimi-for-coding-highspeed"
 ```
 
-重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。
+重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。Kimi Coding API 对未知模型名可能仍返回成功，因此上游 ID 必须使用 `/v1/models` 返回的精确值；K3 的 ID 是 `k3`，不是 `kimi-k3`。
 
 Claude Code：
 
@@ -184,7 +188,7 @@ curl https://your-domain/v1/images/generations \
 | Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP 凭证（应用默认凭证 / 仪表板上传） |
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | 浏览器 OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | 浏览器 OAuth |
-| Kimi API | kimi-k3, kimi-k2.7-code-highspeed, kimi-k2.6 | `MOONSHOT_API_KEY` 环境变量 |
+| Kimi Code | kimi-k3（上游 `k3`）, kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` 环境变量 |
 
 > 模型列表可在仪表板的 **Config** 页在线编辑；Codex 登录后会自动从上游拉取可用模型。
 

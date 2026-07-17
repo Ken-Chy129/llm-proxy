@@ -110,8 +110,14 @@ kimi:
   api_format: "anthropic"
   models:
     - name: "kimi-k3"
-      model: "kimi-k3"
+      model: "k3"
+    - name: "kimi-for-coding"
+      model: "kimi-for-coding"
+    - name: "kimi-for-coding-highspeed"
+      model: "kimi-for-coding-highspeed"
 ```
+
+Kimi Coding may accept an unknown model string without rejecting the request, so the upstream IDs must exactly match `/v1/models`. K3's upstream ID is `k3`, not `kimi-k3`.
 
 Claude Code:
 
@@ -159,7 +165,7 @@ curl https://your-domain/v1/images/generations \
 | Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP credentials (ADC / dashboard upload) |
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | Browser OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | Browser OAuth |
-| Kimi API | kimi-k3, kimi-k2.7-code-highspeed, kimi-k2.6 | `MOONSHOT_API_KEY` environment variable |
+| Kimi Code | kimi-k3 (upstream `k3`), kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` environment variable |
 
 > Model lists are editable from the dashboard's **Config** tab; Codex auto-fetches its available models after login.
 

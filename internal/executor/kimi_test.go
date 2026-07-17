@@ -6,12 +6,33 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
+
+func TestDefaultKimiCodingModelsUseOfficialUpstreamIDs(t *testing.T) {
+	exec := NewKimiExecutor(config.KimiConfig{APIFormat: "anthropic"})
+
+	wantMappings := map[string]string{
+		"kimi-k3":                   "k3",
+		"kimi-for-coding":           "kimi-for-coding",
+		"kimi-for-coding-highspeed": "kimi-for-coding-highspeed",
+	}
+	for alias, want := range wantMappings {
+		if got := exec.resolveModel(alias); got != want {
+			t.Errorf("resolveModel(%q) = %q, want %q", alias, got, want)
+		}
+	}
+
+	wantModels := []string{"kimi-k3", "kimi-for-coding", "kimi-for-coding-highspeed"}
+	if got := exec.Models(); !slices.Equal(got, wantModels) {
+		t.Fatalf("Models() = %v, want %v", got, wantModels)
+	}
+}
 
 func TestKimiExecutorExecuteUsesConfiguredKeyAndModelMapping(t *testing.T) {
 	t.Setenv("TEST_MOONSHOT_API_KEY", "secret-for-test")

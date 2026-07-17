@@ -24,10 +24,16 @@ const (
 	defaultKimiAPIKeyEnv = "MOONSHOT_API_KEY"
 )
 
-var defaultKimiModels = []config.ModelConfig{
+var defaultKimiOpenAIModels = []config.ModelConfig{
 	{Name: "kimi-k3", Model: "kimi-k3"},
 	{Name: "kimi-k2.7-code-highspeed", Model: "kimi-k2.7-code-highspeed"},
 	{Name: "kimi-k2.6", Model: "kimi-k2.6"},
+}
+
+var defaultKimiCodingModels = []config.ModelConfig{
+	{Name: "kimi-k3", Model: "k3"},
+	{Name: "kimi-for-coding", Model: "kimi-for-coding"},
+	{Name: "kimi-for-coding-highspeed", Model: "kimi-for-coding-highspeed"},
 }
 
 // KimiExecutor connects the proxy's internal Chat Completions contract to the
@@ -57,7 +63,11 @@ func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
 	}
 	models := cfg.Models
 	if len(models) == 0 {
-		models = append([]config.ModelConfig(nil), defaultKimiModels...)
+		defaults := defaultKimiOpenAIModels
+		if apiFormat == "anthropic" {
+			defaults = defaultKimiCodingModels
+		}
+		models = append([]config.ModelConfig(nil), defaults...)
 	}
 	return &KimiExecutor{
 		baseURL:    baseURL,
