@@ -126,11 +126,24 @@ Claude Code：
 ```bash
 export ANTHROPIC_BASE_URL="https://your-domain"
 export ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key"
-export ANTHROPIC_MODEL="kimi-k3"
-# 可选：把 Kimi 加到 /model 选择器
+# 只在 /model 中新增 K3，不覆盖 Opus / Sonnet / Haiku
 export ANTHROPIC_CUSTOM_MODEL_OPTION="kimi-k3"
 export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="Kimi K3 via LLM Proxy"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Kimi K3 coding model"
 claude
+```
+
+上面的环境变量只影响当前终端及其子进程，不会修改 `~/.claude/settings.json`。请勿把
+`ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、
+`ANTHROPIC_DEFAULT_SONNET_MODEL` 或 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 设置为
+`kimi-k3`，否则 Claude Code 会把默认模型和三个内置模型槽位都显示为 K3。
+
+如果只想临时启动一次 K3，而不把它加入 `/model`：
+
+```bash
+ANTHROPIC_BASE_URL="https://your-domain" \
+ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key" \
+claude --model kimi-k3
 ```
 
 Codex CLI，在 `~/.codex/config.toml` 中配置：

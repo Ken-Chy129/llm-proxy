@@ -124,8 +124,26 @@ Claude Code:
 ```bash
 export ANTHROPIC_BASE_URL="https://your-domain"
 export ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key"
-export ANTHROPIC_MODEL="kimi-k3"
+# Add K3 to /model without replacing Opus, Sonnet, or Haiku
+export ANTHROPIC_CUSTOM_MODEL_OPTION="kimi-k3"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="Kimi K3 via LLM Proxy"
+export ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION="Kimi K3 coding model"
 claude
+```
+
+These environment variables affect only the current shell and its child
+processes; they do not modify `~/.claude/settings.json`. Do not map
+`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`,
+`ANTHROPIC_DEFAULT_SONNET_MODEL`, or `ANTHROPIC_DEFAULT_HAIKU_MODEL` to
+`kimi-k3`, because that makes Claude Code display K3 as the default and for all
+three built-in model slots.
+
+For a one-off K3 session without adding it to `/model`:
+
+```bash
+ANTHROPIC_BASE_URL="https://your-domain" \
+ANTHROPIC_AUTH_TOKEN="sk-your-proxy-key" \
+claude --model kimi-k3
 ```
 
 Codex CLI uses the same custom provider configuration shown above, with `model = "kimi-k3"` and `wire_api = "responses"`. Anthropic Messages and Responses requests are translated to Kimi Chat Completions. Text streaming and tool calls are supported; Anthropic-only features such as thinking signatures and context management are not preserved completely.
