@@ -169,7 +169,7 @@ func TestAnthropicPassthroughHeadersPreserveOAuthIdentity(t *testing.T) {
 			t.Errorf("beta %q count=%d in %q", want, count, req.Header.Get("anthropic-beta"))
 		}
 	}
-	if got, want := req.Header.Get("User-Agent"), "claude-cli/2.1.181 (external, cli)"; got != want {
+	if got, want := req.Header.Get("User-Agent"), "claude-cli/2.1.220 (external, sdk-cli)"; got != want {
 		t.Errorf("User-Agent=%q want %q", got, want)
 	}
 	if got := req.Header.Get("x-app"); got != "cli" {
