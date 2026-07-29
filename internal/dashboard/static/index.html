@@ -143,10 +143,16 @@
           <button class="btn btn-secondary" style="padding:5px 11px;font-size:12px" onclick="loadLogs()">Refresh</button>
         </div>
       </div>
-      <table>
-        <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Account</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
-        <tbody id="log-body"></tbody>
-      </table>
+      <div class="log-table-wrap">
+        <table class="log-table">
+          <colgroup>
+            <col style="width:18%"><col style="width:25%"><col style="width:10%"><col style="width:23%">
+            <col style="width:9%"><col style="width:8%"><col style="width:7%">
+          </colgroup>
+          <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Account</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
       <div class="pagination">
         <button class="page-btn" onclick="prevPage()">&larr;</button>
         <span class="page-info" id="page-info">1 / 1</span>
