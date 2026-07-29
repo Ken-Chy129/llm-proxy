@@ -60,6 +60,12 @@ func (e *ClaudeOAuthExecutor) SetModels(models []string) {
 // refreshed every 5 min and on each 429.
 const maxClaudeReactiveCooldown = 5 * time.Minute
 
+// Claude returns HTTP 400 (rather than 429) when a workspace has exhausted its
+// extra-usage allowance. Treat it as account-wide capacity exhaustion for a
+// short period so another workspace/account can serve the request. The retry
+// window is intentionally bounded because an admin may add usage at any time.
+const claudeExtraUsageCooldown = 5 * time.Minute
+
 // capReactiveCooldown clamps a 429-derived cooldown to maxClaudeReactiveCooldown.
 // When it clamps, the original reset time is no longer trustworthy as the true
 // reset, so known is forced to false.
@@ -81,14 +87,33 @@ func modelFromBody(body []byte) string {
 	return peek.Model
 }
 
+// isClaudeExtraUsageError recognizes Anthropic's capacity error without
+// treating unrelated invalid_request_error responses as retryable.
+func isClaudeExtraUsageError(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	var envelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil || envelope.Error.Type != "invalid_request_error" {
+		return false
+	}
+	message := strings.ToLower(envelope.Error.Message)
+	return strings.Contains(message, "extra usage") &&
+		(strings.Contains(message, "out of") || strings.Contains(message, "exhaust"))
+}
+
 // doWithFailover acquires a Claude account, builds a request via makeReq, and
-// sends it. On HTTP 429 it marks that account rate-limited for model (using the
-// upstream reset time, clamped to maxClaudeReactiveCooldown, or a 60s default)
-// and retries with the next account, up to one full pass over the account pool.
-// The cooldown is scoped to model so hitting one model's cap (e.g. Fable/Opus
-// weekly) doesn't sideline the account for other models. The 429 from the final
-// attempt is returned so the client still sees the real upstream error when
-// every account is exhausted.
+// sends it. Capacity failures (HTTP 429, or the HTTP 400 extra-usage error) put
+// the account on a short cooldown and retry with the next account, up to one
+// full pass over the pool. A 429 cooldown is model-scoped so hitting one model's
+// cap doesn't sideline the account for other models; extra-usage exhaustion is
+// account-wide. The final upstream response is returned unchanged when every
+// account is exhausted.
 func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, makeReq func(token string) (*http.Request, error)) (*http.Response, error) {
 	attempts := len(e.oauth.Store().AllForProvider("claude"))
 	if attempts < 1 {
@@ -110,27 +135,47 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 			lastErr = err
 			continue
 		}
-		if resp.StatusCode == http.StatusTooManyRequests {
+		extraUsageExhausted := false
+		if resp.StatusCode == http.StatusBadRequest {
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				return nil, fmt.Errorf("read claude oauth error response: %w", readErr)
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			extraUsageExhausted = isClaudeExtraUsageError(resp.StatusCode, respBody)
+		}
+		if resp.StatusCode == http.StatusTooManyRequests || extraUsageExhausted {
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
+			cooldownModel := model
+			reason := "rate-limited"
+			if extraUsageExhausted {
+				until = time.Now().Add(claudeExtraUsageCooldown)
+				known = false
+				cooldownModel = ""
+				reason = "extra usage exhausted"
+			}
 			// Don't let a model-specific weekly cap (whose 429 reports the weekly
 			// boundary) bench the whole account for days; clamp short and let quota
 			// be the authority on real account-wide exhaustion. Refetch that account's
 			// quota now so a genuine session/all-models-weekly limit shows up right
 			// away instead of at the next 5-min poll.
-			until, known = capReactiveCooldown(until, known, time.Now())
-			e.oauth.Store().MarkRateLimited("claude", accountID, model, until, !known)
+			if !extraUsageExhausted {
+				until, known = capReactiveCooldown(until, known, time.Now())
+			}
+			e.oauth.Store().MarkRateLimited("claude", accountID, cooldownModel, until, !known)
 			if auth.QuotaCache != nil && auth.QuotaCache.IsStale("claude:"+accountID, time.Minute) {
 				go func(id string) { _ = e.oauth.FetchQuotaForAccountByID(context.Background(), id) }(accountID)
 			}
-			log.Printf("[failover] claude account %s rate-limited until %s (estimated=%t); %d/%d attempts used",
-				accountID, until.Format(time.RFC3339), !known, i+1, attempts)
+			log.Printf("[failover] claude account %s %s until %s (estimated=%t); %d/%d attempts used",
+				accountID, reason, until.Format(time.RFC3339), !known, i+1, attempts)
 			if i < attempts-1 {
 				resp.Body.Close()
 				recordAccountFailover(ctx, accountID)
-				lastErr = fmt.Errorf("claude account %s rate-limited (429)", accountID)
+				lastErr = fmt.Errorf("claude account %s %s (%d)", accountID, reason, resp.StatusCode)
 				continue
 			}
-			// Final attempt: let the real 429 flow back to the client.
+			// Final attempt: let the real upstream error flow back to the client.
 		}
 		return resp, nil
 	}
