@@ -185,7 +185,6 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)
-	log.Printf("[DEBUG-CHAT] URL=https://api.anthropic.com/v1/messages body=%s", string(body))
 
 	resp, err := e.doWithFailover(ctx, req.Model, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
@@ -193,7 +192,6 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 			return nil, err
 		}
 		e.applyHeaders(httpReq, token)
-		log.Printf("[DEBUG-CHAT] headers: %v", redactHeaders(httpReq.Header))
 		return httpReq, nil
 	})
 	if err != nil {
@@ -203,7 +201,6 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		log.Printf("[DEBUG-CHAT] error response headers: %v", resp.Header)
 		return nil, &HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)}
 	}
 
@@ -388,14 +385,6 @@ func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []by
 }
 
 func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
-	var bodyPeek map[string]json.RawMessage
-	json.Unmarshal(body, &bodyPeek)
-	keys := make([]string, 0, len(bodyPeek))
-	for k := range bodyPeek {
-		keys = append(keys, k)
-	}
-	log.Printf("[DEBUG-PASSTHROUGH] body keys=%v model=%s max_tokens=%s thinking=%s", keys, bodyPeek["model"], bodyPeek["max_tokens"], bodyPeek["thinking"])
-
 	// OAuth tokens require the Claude Code identity/billing system blocks and a
 	// signed body, or Anthropic rejects the request (opaque 429). Idempotent.
 	body = injectClaudeCodeSystemBlocks(body)
@@ -406,28 +395,12 @@ func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []by
 			return nil, err
 		}
 		applyAnthropicPassthroughHeaders(httpReq, token, clientHeaders)
-		log.Printf("[DEBUG-PASSTHROUGH] headers: %v", redactHeaders(httpReq.Header))
 		return httpReq, nil
 	})
 	if err != nil {
 		return nil, 0, fmt.Errorf("claude oauth stream request: %w", err)
 	}
 	return resp.Body, resp.StatusCode, nil
-}
-
-// redactHeaders returns a shallow copy of h with credential-bearing headers
-// masked, so debug logs never persist upstream tokens or client API keys.
-func redactHeaders(h http.Header) http.Header {
-	out := make(http.Header, len(h))
-	for k, v := range h {
-		switch strings.ToLower(k) {
-		case "authorization", "x-api-key", "cookie":
-			out[k] = []string{"***REDACTED***"}
-		default:
-			out[k] = v
-		}
-	}
-	return out
 }
 
 func applyAnthropicPassthroughHeaders(req *http.Request, token string, clientHeaders http.Header) {
