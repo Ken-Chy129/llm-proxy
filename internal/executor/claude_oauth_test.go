@@ -50,7 +50,7 @@ func TestCapReactiveCooldown(t *testing.T) {
 	}
 }
 
-func TestClaudeExtraUsage400FailsOverToAnotherAccount(t *testing.T) {
+func TestClaudeExtraUsage400DoesNotCooldownOrFailOver(t *testing.T) {
 	dir := t.TempDir()
 	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
 	future := time.Now().Add(time.Hour).Format(time.RFC3339)
@@ -64,17 +64,13 @@ func TestClaudeExtraUsage400FailsOverToAnotherAccount(t *testing.T) {
 	var tokens []string
 	executor.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		tokens = append(tokens, strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "))
-		status := http.StatusBadRequest
-		body := `{"type":"error","error":{"type":"invalid_request_error","message":"You're out of extra usage. Ask your workspace admin to add more so you can keep going."}}`
-		if len(tokens) == 2 {
-			status = http.StatusOK
-			body = `{"ok":true}`
-		}
 		return &http.Response{
-			StatusCode: status,
+			StatusCode: http.StatusBadRequest,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    req,
+			Body: io.NopCloser(strings.NewReader(
+				`{"type":"error","error":{"type":"invalid_request_error","message":"You're out of extra usage. Ask your workspace admin to add more so you can keep going."}}`,
+			)),
+			Request: req,
 		}, nil
 	})}
 
@@ -90,19 +86,19 @@ func TestClaudeExtraUsage400FailsOverToAnotherAccount(t *testing.T) {
 		t.Fatalf("doWithFailover: %v", err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("status=%d want %d", resp.StatusCode, http.StatusOK)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status=%d want %d", resp.StatusCode, http.StatusBadRequest)
 	}
-	if len(tokens) != 2 || tokens[0] == tokens[1] {
-		t.Fatalf("expected two different Claude accounts, got %v", tokens)
+	if len(tokens) != 1 {
+		t.Fatalf("extra-usage 400 must not fail over accounts, attempts=%v", tokens)
 	}
 
 	account, failedOver := accountResult()
-	if account == "" || len(failedOver) != 1 || failedOver[0] == account {
+	if account == "" || len(failedOver) != 0 {
 		t.Fatalf("account=%q failedOver=%v", account, failedOver)
 	}
-	if _, _, active := store.RateLimitInfo("claude", failedOver[0]); !active {
-		t.Fatalf("extra-usage account %q was not put on account-wide cooldown", failedOver[0])
+	if _, _, active := store.RateLimitInfo("claude", account); active {
+		t.Fatalf("request-specific extra-usage 400 must not cooldown account %q", account)
 	}
 }
 
@@ -140,5 +136,91 @@ func TestClaudeExtraUsage400PreservesFinalResponseBody(t *testing.T) {
 	}
 	if string(gotBody) != wantBody {
 		t.Fatalf("body=%q want %q", gotBody, wantBody)
+	}
+}
+
+func TestAnthropicPassthroughHeadersPreserveOAuthIdentity(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "https://example.test/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientHeaders := make(http.Header)
+	clientHeaders.Set("anthropic-version", "2023-06-01")
+	clientHeaders.Set("anthropic-beta", "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14")
+	clientHeaders.Set("Authorization", "Bearer untrusted-client-token")
+	clientHeaders.Set("x-api-key", "untrusted-client-key")
+
+	applyAnthropicPassthroughHeaders(req, "oauth-token", clientHeaders)
+
+	betas := strings.Split(req.Header.Get("anthropic-beta"), ",")
+	for _, want := range []string{
+		"interleaved-thinking-2025-05-14",
+		"fine-grained-tool-streaming-2025-05-14",
+		"claude-code-20250219",
+		"oauth-2025-04-20",
+	} {
+		count := 0
+		for _, got := range betas {
+			if got == want {
+				count++
+			}
+		}
+		if count != 1 {
+			t.Errorf("beta %q count=%d in %q", want, count, req.Header.Get("anthropic-beta"))
+		}
+	}
+	if got, want := req.Header.Get("User-Agent"), "claude-cli/2.1.181 (external, cli)"; got != want {
+		t.Errorf("User-Agent=%q want %q", got, want)
+	}
+	if got := req.Header.Get("x-app"); got != "cli" {
+		t.Errorf("x-app=%q want cli", got)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer oauth-token" {
+		t.Errorf("Authorization=%q want upstream OAuth token", got)
+	}
+	if got := req.Header.Get("x-api-key"); got != "" {
+		t.Errorf("untrusted client x-api-key leaked upstream: %q", got)
+	}
+}
+
+func TestPassthroughBetaDoesNotLeakIntoDashboardRequests(t *testing.T) {
+	dir := t.TempDir()
+	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
+	if err := store.Add(&auth.TokenData{
+		ID: "A", Provider: "claude", AccessToken: "token-A",
+		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	executor := NewClaudeOAuthExecutor(auth.NewClaudeOAuth(store), nil)
+	executor.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("")),
+			Request:    req,
+		}, nil
+	})}
+
+	passthroughHeaders := make(http.Header)
+	passthroughHeaders.Set("anthropic-beta", "hermes-only-beta")
+	stream, status, err := executor.OpenAnthropicStream(
+		context.Background(),
+		[]byte(`{"model":"claude-opus-5","stream":true,"max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`),
+		passthroughHeaders,
+	)
+	if err != nil {
+		t.Fatalf("OpenAnthropicStream: %v", err)
+	}
+	stream.Close()
+	if status != http.StatusOK {
+		t.Fatalf("status=%d want %d", status, http.StatusOK)
+	}
+
+	dashboardReq, _ := http.NewRequest(http.MethodPost, "https://example.test/messages", nil)
+	executor.applyHeaders(dashboardReq, "oauth-token")
+	if got := dashboardReq.Header.Get("anthropic-beta"); strings.Contains(got, "hermes-only-beta") {
+		t.Fatalf("passthrough beta leaked into dashboard request: %q", got)
 	}
 }

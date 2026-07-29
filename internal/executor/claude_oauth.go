@@ -20,12 +20,10 @@ import (
 )
 
 type ClaudeOAuthExecutor struct {
-	oauth         *auth.ClaudeOAuth
-	httpClient    *http.Client
-	models        []string
-	modelsMu      sync.RWMutex
-	lastBetaFlags string
-	betaMu        sync.RWMutex
+	oauth      *auth.ClaudeOAuth
+	httpClient *http.Client
+	models     []string
+	modelsMu   sync.RWMutex
 }
 
 func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []string) *ClaudeOAuthExecutor {
@@ -60,12 +58,6 @@ func (e *ClaudeOAuthExecutor) SetModels(models []string) {
 // refreshed every 5 min and on each 429.
 const maxClaudeReactiveCooldown = 5 * time.Minute
 
-// Claude returns HTTP 400 (rather than 429) when a workspace has exhausted its
-// extra-usage allowance. Treat it as account-wide capacity exhaustion for a
-// short period so another workspace/account can serve the request. The retry
-// window is intentionally bounded because an admin may add usage at any time.
-const claudeExtraUsageCooldown = 5 * time.Minute
-
 // capReactiveCooldown clamps a 429-derived cooldown to maxClaudeReactiveCooldown.
 // When it clamps, the original reset time is no longer trustworthy as the true
 // reset, so known is forced to false.
@@ -87,32 +79,12 @@ func modelFromBody(body []byte) string {
 	return peek.Model
 }
 
-// isClaudeExtraUsageError recognizes Anthropic's capacity error without
-// treating unrelated invalid_request_error responses as retryable.
-func isClaudeExtraUsageError(status int, body []byte) bool {
-	if status != http.StatusBadRequest {
-		return false
-	}
-	var envelope struct {
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if json.Unmarshal(body, &envelope) != nil || envelope.Error.Type != "invalid_request_error" {
-		return false
-	}
-	message := strings.ToLower(envelope.Error.Message)
-	return strings.Contains(message, "extra usage") &&
-		(strings.Contains(message, "out of") || strings.Contains(message, "exhaust"))
-}
-
 // doWithFailover acquires a Claude account, builds a request via makeReq, and
-// sends it. Capacity failures (HTTP 429, or the HTTP 400 extra-usage error) put
-// the account on a short cooldown and retry with the next account, up to one
-// full pass over the pool. A 429 cooldown is model-scoped so hitting one model's
-// cap doesn't sideline the account for other models; extra-usage exhaustion is
-// account-wide. The final upstream response is returned unchanged when every
+// sends it. On HTTP 429 it marks that account rate-limited for model (using the
+// upstream reset time, clamped to maxClaudeReactiveCooldown, or a 60s default)
+// and retries with the next account, up to one full pass over the account pool.
+// The cooldown is scoped to model so hitting one model's cap doesn't sideline
+// the account for other models. The final 429 is returned unchanged when every
 // account is exhausted.
 func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, makeReq func(token string) (*http.Request, error)) (*http.Response, error) {
 	attempts := len(e.oauth.Store().AllForProvider("claude"))
@@ -135,44 +107,24 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 			lastErr = err
 			continue
 		}
-		extraUsageExhausted := false
-		if resp.StatusCode == http.StatusBadRequest {
-			respBody, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
-			if readErr != nil {
-				return nil, fmt.Errorf("read claude oauth error response: %w", readErr)
-			}
-			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-			extraUsageExhausted = isClaudeExtraUsageError(resp.StatusCode, respBody)
-		}
-		if resp.StatusCode == http.StatusTooManyRequests || extraUsageExhausted {
+		if resp.StatusCode == http.StatusTooManyRequests {
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
-			cooldownModel := model
-			reason := "rate-limited"
-			if extraUsageExhausted {
-				until = time.Now().Add(claudeExtraUsageCooldown)
-				known = false
-				cooldownModel = ""
-				reason = "extra usage exhausted"
-			}
 			// Don't let a model-specific weekly cap (whose 429 reports the weekly
 			// boundary) bench the whole account for days; clamp short and let quota
 			// be the authority on real account-wide exhaustion. Refetch that account's
 			// quota now so a genuine session/all-models-weekly limit shows up right
 			// away instead of at the next 5-min poll.
-			if !extraUsageExhausted {
-				until, known = capReactiveCooldown(until, known, time.Now())
-			}
-			e.oauth.Store().MarkRateLimited("claude", accountID, cooldownModel, until, !known)
+			until, known = capReactiveCooldown(until, known, time.Now())
+			e.oauth.Store().MarkRateLimited("claude", accountID, model, until, !known)
 			if auth.QuotaCache != nil && auth.QuotaCache.IsStale("claude:"+accountID, time.Minute) {
 				go func(id string) { _ = e.oauth.FetchQuotaForAccountByID(context.Background(), id) }(accountID)
 			}
-			log.Printf("[failover] claude account %s %s until %s (estimated=%t); %d/%d attempts used",
-				accountID, reason, until.Format(time.RFC3339), !known, i+1, attempts)
+			log.Printf("[failover] claude account %s rate-limited until %s (estimated=%t); %d/%d attempts used",
+				accountID, until.Format(time.RFC3339), !known, i+1, attempts)
 			if i < attempts-1 {
 				resp.Body.Close()
 				recordAccountFailover(ctx, accountID)
-				lastErr = fmt.Errorf("claude account %s %s (%d)", accountID, reason, resp.StatusCode)
+				lastErr = fmt.Errorf("claude account %s rate-limited (429)", accountID)
 				continue
 			}
 			// Final attempt: let the real upstream error flow back to the client.
@@ -368,23 +320,45 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	return &usage, nil
 }
 
-const defaultClaudeBeta = "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24"
+const (
+	defaultClaudeBeta    = "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24"
+	claudeOAuthUserAgent = "claude-cli/2.1.181 (external, cli)"
+)
 
-func (e *ClaudeOAuthExecutor) getClaudeBeta() string {
-	e.betaMu.RLock()
-	defer e.betaMu.RUnlock()
-	if e.lastBetaFlags != "" {
-		return e.lastBetaFlags
+var claudeOAuthRequiredBetas = []string{"claude-code-20250219", "oauth-2025-04-20"}
+
+func mergeClaudeOAuthBetas(clientBetas string) string {
+	seen := make(map[string]bool)
+	merged := make([]string, 0, len(claudeOAuthRequiredBetas)+4)
+	appendBeta := func(beta string) {
+		beta = strings.TrimSpace(beta)
+		if beta == "" || seen[beta] {
+			return
+		}
+		seen[beta] = true
+		merged = append(merged, beta)
 	}
-	return defaultClaudeBeta
+	for _, beta := range strings.Split(clientBetas, ",") {
+		appendBeta(beta)
+	}
+	for _, beta := range claudeOAuthRequiredBetas {
+		appendBeta(beta)
+	}
+	return strings.Join(merged, ",")
 }
 
-func (e *ClaudeOAuthExecutor) applyHeaders(req *http.Request, token string) {
+func applyClaudeOAuthIdentityHeaders(req *http.Request, token, betas string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("anthropic-beta", e.getClaudeBeta())
+	req.Header.Set("anthropic-beta", mergeClaudeOAuthBetas(betas))
+	req.Header.Set("User-Agent", claudeOAuthUserAgent)
+	req.Header.Set("x-app", "cli")
+}
+
+func (e *ClaudeOAuthExecutor) applyHeaders(req *http.Request, token string) {
+	applyClaudeOAuthIdentityHeaders(req, token, defaultClaudeBeta)
 }
 
 func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
@@ -414,11 +388,6 @@ func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []by
 }
 
 func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
-	if beta := clientHeaders.Get("anthropic-beta"); beta != "" {
-		e.betaMu.Lock()
-		e.lastBetaFlags = beta
-		e.betaMu.Unlock()
-	}
 	var bodyPeek map[string]json.RawMessage
 	json.Unmarshal(body, &bodyPeek)
 	keys := make([]string, 0, len(bodyPeek))
@@ -462,15 +431,11 @@ func redactHeaders(h http.Header) http.Header {
 }
 
 func applyAnthropicPassthroughHeaders(req *http.Request, token string, clientHeaders http.Header) {
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	// The client authenticates to this proxy with a generated sk-* key, so its
+	// header set cannot identify the upstream auth mode. Preserve only supported
+	// feature/version hints and always stamp the actual Claude OAuth identity.
+	applyClaudeOAuthIdentityHeaders(req, token, clientHeaders.Get("anthropic-beta"))
 	if v := clientHeaders.Get("anthropic-version"); v != "" {
 		req.Header.Set("anthropic-version", v)
-	} else {
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
-	if v := clientHeaders.Get("anthropic-beta"); v != "" {
-		req.Header.Set("anthropic-beta", v)
 	}
 }
