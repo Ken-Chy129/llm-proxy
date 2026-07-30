@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+.DS_Store
+
+# 仓库根 .gitignore 有 `*.json`（用于挡凭据文件），会连带吞掉 Tauri 的必需配置。
+# 这两个文件缺失会直接导致构建失败，必须显式豁免。
+!src-tauri/tauri.conf.json
+!src-tauri/capabilities/*.json
+!package.json

@@ -67,6 +67,12 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.POST("/keys/:id/toggle", adminHandler.ToggleKey)
 	admin.DELETE("/keys/:id", adminHandler.DeleteKey)
 
+	// Tray API — compact snapshot for the desktop widget. Accepts either a
+	// managed API key (Bearer/x-api-key) or a dashboard session cookie, because
+	// sessions live in memory and are wiped on every restart; a long-polling
+	// tray needs a credential that survives redeploys.
+	engine.GET("/api/tray", APIKeyAuth(keyStore), adminHandler.Tray)
+
 	// OAuth login (session protected)
 	if claudeOAuth != nil {
 		engine.GET("/auth/claude", SessionAuth(), func(c *gin.Context) {

@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>LLM Proxy</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="app">
+  <header class="bar" data-tauri-drag-region>
+    <div class="bar-title">
+      <span class="dot" id="live-dot"></span>
+      <span>LLM Proxy</span>
+    </div>
+    <div class="bar-actions">
+      <span class="stamp" id="stamp">--:--</span>
+      <button class="icon-btn" id="btn-refresh" title="立即刷新">⟳</button>
+      <button class="icon-btn" id="btn-float" title="桌面悬浮挂件">▣</button>
+      <button class="icon-btn" id="btn-pin" title="取消置顶">▲</button>
+      <button class="icon-btn" id="btn-settings" title="设置">⚙</button>
+    </div>
+  </header>
+
+  <div id="error" class="error hidden"></div>
+
+  <main id="panel">
+    <!-- 今日用量 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-label">今日用量</span>
+        <span class="card-date" id="today-date"></span>
+      </div>
+      <div class="hero">
+        <div class="hero-main">
+          <div class="hero-num" id="today-tokens">–</div>
+          <div class="hero-unit">tokens</div>
+        </div>
+        <div class="hero-side">
+          <div class="hero-reqs"><b id="today-reqs">–</b> 请求</div>
+          <div class="deltas">
+            <span class="delta" id="delta-yday"></span>
+            <span class="delta" id="delta-avg"></span>
+          </div>
+        </div>
+      </div>
+      <div class="spark" id="spark" title="今日每小时 token 消耗"></div>
+      <div class="spark-axis" id="spark-axis"></div>
+    </section>
+
+    <!-- 账号额度 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-label">账号额度</span>
+        <span class="card-date" id="quota-stamp"></span>
+      </div>
+      <div id="accounts"></div>
+    </section>
+
+    <!-- Key 分摊 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-label">今日 Key 分摊</span>
+      </div>
+      <div id="keys"></div>
+    </section>
+
+    <footer class="foot">
+      <span id="foot-backends"></span>
+      <span id="foot-idle"></span>
+    </footer>
+  </main>
+
+  <!-- 设置面板 -->
+  <section id="settings" class="settings hidden">
+    <label>代理地址
+      <input type="text" id="in-base" placeholder="https://proxy.example.com" spellcheck="false" />
+    </label>
+    <label>API Key
+      <input type="password" id="in-key" placeholder="sk-..." spellcheck="false" />
+    </label>
+    <div class="row2">
+      <label>刷新间隔（秒）
+        <input type="number" id="in-interval" min="10" max="3600" />
+      </label>
+      <label>告警阈值（%）
+        <input type="number" id="in-threshold" min="1" max="99" />
+      </label>
+    </div>
+    <label class="chk">
+      <input type="checkbox" id="in-notify" />
+      <span>额度低于阈值时发系统通知</span>
+    </label>
+    <div class="settings-actions">
+      <button class="btn ghost" id="btn-cancel">取消</button>
+      <button class="btn" id="btn-save">保存</button>
+    </div>
+    <p class="hint">API Key 在 Dashboard → Keys 页面创建/复制。数据只在本机与你的代理之间传输。</p>
+  </section>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
