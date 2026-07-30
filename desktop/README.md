@@ -47,7 +47,7 @@ xattr -dr com.apple.quarantine "/Applications/LLM Proxy.app"
 
 启动后面板会自动打开设置页，填三项：
 
-- **代理地址** — 例如 `https://proxy.ken-chy129.cn`（不要带尾斜杠，带了也会自动去掉）
+- **代理地址** — 你的 llm-proxy 地址，例如 `https://proxy.example.com`（不要带尾斜杠，带了也会自动去掉）
 - **API Key** — 在 llm-proxy Dashboard → Keys 页面创建或复制一个（`sk-...`）
 - **刷新间隔 / 告警阈值** — 默认 60 秒 / 20%
 
@@ -86,6 +86,19 @@ xattr -dr com.apple.quarantine "/Applications/LLM Proxy.app"
 
 注意这里的「今日」是**日历天**，跟 dashboard 的 `/api/stats?range=today`（滚动 24 小时窗口）口径不同 —— 后者会把昨天傍晚的流量算进"今天"。
 
+### CORS
+
+打包后的 Tauri 应用运行在 `tauri://localhost`（macOS/Linux）或 `https://tauri.localhost`（Windows），因此访问远程代理属于跨源请求，浏览器会要求 CORS 头。`/api/tray` 挂了 `DesktopCORS()` 中间件放行这几个来源。
+
+两点刻意的设计：
+
+- **白名单而非回显 Origin。** 回显任意来源等于让任何网站都能读你的用量数据。
+- **绝不发 `Allow-Credentials`。** 挂件用 Bearer key 认证，不需要 cookie；一旦允许携带凭据，白名单里的来源就能盗用你已登录的 dashboard session。
+
+预检（OPTIONS）在鉴权之前响应 —— 预检请求不带 `Authorization` 头，鉴权在前会导致永远 401。这几条行为都有测试锁住（`internal/server/cors_test.go`），改动前先看测试。
+
+如果你的代理挂在反向代理后面，确认它没有吞掉或覆盖这些响应头（Caddy 默认不会）。
+
 ## 目录结构
 
 ```
@@ -109,7 +122,7 @@ desktop/
 ```bash
 # 抓一份真实数据
 curl -H "Authorization: Bearer sk-..." \
-     "https://proxy.ken-chy129.cn/api/tray?tz=480" -o /tmp/tray.json
+     "https://proxy.example.com/api/tray?tz=480" -o /tmp/tray.json
 
 node scripts/preview.mjs /tmp/tray.json /tmp/pv.html --dark --hour 11
 node scripts/preview.mjs /tmp/tray.json /tmp/pv.html --dark --float  # 悬浮挂件样式
@@ -121,8 +134,9 @@ open /tmp/pv.html
 ## 测试
 
 ```bash
-node --test scripts/            # 渲染层：数字格式化、额度分档、刻度防重叠
-cd .. && go test ./internal/stats/   # 后端：日历天口径、时区边界、7日均值
+node --test scripts/                  # 渲染层：数字格式化、额度分档、刻度防重叠
+cd .. && go test ./internal/stats/    # 后端：日历天口径、时区边界、7日均值
+cd .. && go test ./internal/server/   # CORS：来源白名单、拒绝凭据、预检绕过鉴权
 ```
 
 后端测试里有一条专门锁住「日历天 ≠ 滚动 24 小时」这个差异（`TestDayUsageIsCalendarDayNotRolling24h`），别删。
@@ -131,4 +145,4 @@ cd .. && go test ./internal/stats/   # 后端：日历天口径、时区边界�
 
 - **不是 macOS 原生 Widget。** 桌面小组件（通知中心那种）必须用 Swift + WidgetKit，Tauri 做不到。这里的"悬浮挂件"是个无边框置顶窗口，视觉接近但本质是窗口。
 - **16px 图标下指针退化成一个点。** 16px 只出现在少数系统 UI 位置；菜单栏用的是独立的 `trayTemplate.png`（单色模板图），不受影响。
-- 需要能访问到代理地址。走公网就配好 HTTPS（本仓库的 Caddy 已经代理了 `proxy.ken-chy129.cn`）。
+- 需要能访问到代理地址。走公网就配好 HTTPS 反代（Caddy/Nginx 均可）；只在内网用则填 `http://<内网IP>:9090`。

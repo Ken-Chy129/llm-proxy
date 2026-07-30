@@ -36,6 +36,48 @@ func (s *sessionStore) Valid(token string) bool {
 	return s.tokens[token]
 }
 
+// DesktopCORS allows the Tauri desktop widget to call an endpoint cross-origin.
+//
+// A packaged Tauri app runs on tauri://localhost (macOS/Linux) or
+// https://tauri.localhost (Windows), so every request to a remote proxy is
+// cross-origin and the browser demands CORS headers — without these the widget
+// fails at the preflight with no useful error.
+//
+// Origins are whitelisted rather than mirrored back, and credentials are never
+// allowed: the widget authenticates with a Bearer key, so permitting cookies
+// would let any origin listed here ride on a live dashboard session. Echoing
+// arbitrary origins plus allow-credentials is the classic mistake that turns a
+// convenience header into CSRF against every admin route.
+func DesktopCORS() gin.HandlerFunc {
+	allowed := map[string]bool{
+		"tauri://localhost":       true, // macOS / Linux bundle
+		"https://tauri.localhost": true, // Windows bundle
+		"http://tauri.localhost":  true,
+		"http://localhost:1420":   true, // `tauri dev` vite server
+		"http://127.0.0.1:1420":   true,
+	}
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin != "" && allowed[origin] {
+			h := c.Writer.Header()
+			h.Set("Access-Control-Allow-Origin", origin)
+			h.Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			h.Set("Access-Control-Allow-Headers", "Authorization, x-api-key, Content-Type")
+			h.Set("Access-Control-Max-Age", "600")
+			// Vary matters because the value depends on the request's Origin;
+			// without it a proxy could serve one origin's header to another.
+			h.Add("Vary", "Origin")
+		}
+		if c.Request.Method == http.MethodOptions {
+			// Answer the preflight before auth runs — a preflight carries no
+			// Authorization header, so requiring auth here would always 401.
+			c.AbortWithStatus(http.StatusNoContent)
+			return
+		}
+		c.Next()
+	}
+}
+
 // APIKeyAuth protects /v1/* endpoints with Bearer token OR session cookie.
 // Validates against managed keys issued from the dashboard Keys page.
 func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
