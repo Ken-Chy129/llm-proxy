@@ -79,6 +79,60 @@ export function trayTitle(d) {
   return '–';
 }
 
+/**
+ * 根据一份 tray 数据算出该不该告警，以及告警文案。
+ *
+ * 放在这里（而不是 app.js）是为了让 app.js 和离线预览共用同一份逻辑——
+ * 两处各写一遍的话，预览截图验证的就不是实际会弹出的内容了。
+ *
+ * 返回 null 表示无需告警。key 用于去重：同一档位只提醒一次。
+ */
+export function alertFor(d, threshold = 20) {
+  const accounts = (d && d.accounts) || [];
+  const limited = accounts.filter((a) => a.status === 'rate_limited');
+  const worst = accounts
+    .filter(
+      (a) =>
+        a.has_real_data &&
+        a.status !== 'disabled' &&
+        a.session_percent !== null &&
+        a.session_percent !== undefined
+    )
+    .sort((a, b) => a.session_percent - b.session_percent)[0];
+
+  if (limited.length > 0) {
+    // 账号一多就不逐个列举：面板只有 320px 宽，四五个账号会把横幅撑到
+    // 把用量卡片挤出可视区。只报最早恢复时间，其余折成计数。
+    let body;
+    if (limited.length === 1) {
+      body = `${limited[0].email.split('@')[0]} 至 ${limited[0].rate_limited_until || '?'}`;
+    } else {
+      const earliest = limited
+        .map((a) => a.rate_limited_until)
+        .filter(Boolean)
+        .sort()[0];
+      body = `${limited.length} 个账号被限流${earliest ? `，最早 ${earliest} 恢复` : ''}`;
+    }
+    return {
+      key: `limited:${limited.map((a) => a.email).sort().join(',')}`,
+      title: 'LLM Proxy 账号被限流',
+      body,
+    };
+  }
+
+  if (worst && worst.session_percent <= threshold) {
+    // 按 5% 分档，跌得更低会再提醒一次，但同档内反复轮询不会重复打扰
+    const bucket = Math.floor(worst.session_percent / 5) * 5;
+    return {
+      key: `low:${worst.email}:${bucket}`,
+      title: 'LLM Proxy 额度偏低',
+      body: `${worst.email.split('@')[0]} 会话额度仅剩 ${Math.round(worst.session_percent)}%`,
+    };
+  }
+
+  return null;
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;

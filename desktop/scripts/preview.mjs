@@ -20,6 +20,9 @@ const isFloat = process.argv.includes('--float');
 const isDark = process.argv.includes('--dark');
 const hourArg = process.argv.indexOf('--hour');
 const nowHour = hourArg > -1 ? Number(process.argv[hourArg + 1]) : new Date().getHours();
+// 告警阈值，跟 app.js 的默认值保持一致；只影响预览里横幅是否出现
+const thArg = process.argv.indexOf('--threshold');
+const threshold = thArg > -1 ? Number(process.argv[thArg + 1]) : 20;
 
 const data = JSON.parse(readFileSync(dataPath, 'utf8'));
 const html = readFileSync(`${SRC}/index.html`, 'utf8');
@@ -56,6 +59,17 @@ const DATA = ${JSON.stringify(data)};
 document.getElementById('btn-pin').classList.add('hidden');
 render(DATA, { nowHour: ${nowHour} });
 document.getElementById('live-dot').className = 'dot live';
+// 复现告警横幅：预览里没有 Tauri，走 app.js 的降级路径。判定逻辑用
+// render.js 导出的 alertFor，跟实际运行时是同一份代码。
+(() => {
+  const a = alertFor(DATA, ${threshold});
+  const box = document.getElementById('alert');
+  if (a && box) {
+    // 与 app.js 一致：横幅只用 body，不拼 title（否则同义重复且会换行）
+    box.textContent = '⚠ ' + a.body;
+    box.classList.remove('hidden');
+  }
+})();
 </script>
 </body></html>`;
 

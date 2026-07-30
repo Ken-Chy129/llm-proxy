@@ -14,7 +14,7 @@ const src = readFileSync(resolve(__dirname, '../src/render.js'), 'utf8');
 const mod = await import(
   'data:text/javascript;base64,' + Buffer.from(src).toString('base64')
 );
-const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle } = mod;
+const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor } = mod;
 
 test('fmtNum 加千分位，空值不显示 NaN', () => {
   assert.equal(fmtNum(25969045), '25,969,045');
@@ -114,7 +114,6 @@ function axisTicks(nowHour) {
 }
 
 test('轴刻度：相邻固定刻度让位给当前小时，避免数字重叠', () => {
-  // 11 紧邻 12 → 12 必须让位，否则渲染成 "1112"
   assert.deepEqual(axisTicks(11), [0, 6, 11, 18, 23]);
   // 13 紧邻 12 → 同理
   assert.deepEqual(axisTicks(13), [0, 6, 13, 18, 23]);
@@ -133,4 +132,110 @@ test('轴刻度：相邻固定刻度让位给当前小时，避免数字重叠',
       assert.ok(t[i] - t[i - 1] >= 2, `nowHour=${h} 刻度 ${t[i - 1]} 与 ${t[i]} 距离过近`);
     }
   }
+});
+
+// ---------- alertFor ----------
+// 告警判定是这个工具的核心价值：判错就是"额度用光了但没提醒"。
+// app.js 和离线预览共用这一份，所以这里锁住的行为就是实际行为。
+
+const acct = (o) => ({
+  provider: 'claude', email: 'a@example.com', status: 'active',
+  has_real_data: true, session_percent: 80, weekly_percent: 90, ...o,
+});
+
+test('alertFor 额度充足时不告警', () => {
+  assert.equal(alertFor({ accounts: [acct({ session_percent: 80 })] }, 20), null);
+  assert.equal(alertFor({ accounts: [] }, 20), null);
+  assert.equal(alertFor({}, 20), null);
+  assert.equal(alertFor(null, 20), null);
+});
+
+test('alertFor 跌破阈值才告警，边界含等于', () => {
+  assert.equal(alertFor({ accounts: [acct({ session_percent: 21 })] }, 20), null);
+  const at = alertFor({ accounts: [acct({ session_percent: 20 })] }, 20);
+  assert.ok(at, '等于阈值必须告警');
+  assert.match(at.body, /仅剩 20%/);
+  assert.match(at.title, /额度偏低/);
+});
+
+test('alertFor 去重键按 5% 分档：同档不重复，跌档再提醒', () => {
+  const k = (p) => alertFor({ accounts: [acct({ session_percent: p })] }, 20).key;
+  assert.equal(k(19), k(16), '同一 5% 档位内应产生相同的键');
+  assert.notEqual(k(19), k(14), '跌到下一档必须换键，否则不会再提醒');
+  assert.notEqual(k(9), k(4));
+});
+
+test('alertFor 限流优先于低额度，且不逐个列举账号', () => {
+  const three = {
+    accounts: [
+      acct({ email: 'x@a.com', status: 'rate_limited', rate_limited_until: '21:20', session_percent: 0 }),
+      acct({ email: 'y@a.com', status: 'rate_limited', rate_limited_until: '20:00', session_percent: 0 }),
+      acct({ email: 'z@a.com', status: 'rate_limited', rate_limited_until: '22:40', session_percent: 0 }),
+    ],
+  };
+  const a = alertFor(three, 20);
+  assert.match(a.title, /被限流/);
+  // 三个账号不能全列出来——320px 宽的面板会被撑爆
+  assert.match(a.body, /3 个账号被限流/);
+  assert.match(a.body, /最早 20:00 恢复/, '应报最早恢复时间');
+  assert.ok(!a.body.includes('x@a.com'), '不该逐个列举邮箱');
+  assert.ok(a.body.length < 40, `文案过长会撑破横幅: ${a.body}`);
+});
+
+test('alertFor 单个限流账号仍显示具体信息', () => {
+  const one = {
+    accounts: [
+      acct({ email: 'solo@a.com', status: 'rate_limited', rate_limited_until: '21:20', session_percent: 0 }),
+      acct({ email: 'ok@a.com', session_percent: 90 }),
+    ],
+  };
+  const a = alertFor(one, 20);
+  assert.match(a.body, /solo 至 21:20/);
+});
+
+test('alertFor 去重键与账号顺序无关', () => {
+  const mk = (emails) => ({
+    accounts: emails.map((e) =>
+      acct({ email: e, status: 'rate_limited', rate_limited_until: '21:00', session_percent: 0 })),
+  });
+  assert.equal(
+    alertFor(mk(['a@x.com', 'b@x.com']), 20).key,
+    alertFor(mk(['b@x.com', 'a@x.com']), 20).key,
+    '顺序变化不该被当成新告警重复推送'
+  );
+});
+
+test('alertFor 忽略停用账号和无额度数据的账号', () => {
+  // 停用账号的残余额度没有意义，不该拉低判定
+  assert.equal(
+    alertFor({ accounts: [acct({ status: 'disabled', session_percent: 0 }), acct({ session_percent: 90 })] }, 20),
+    null
+  );
+  // 没抓到真实额度时不能凭 0 值误报
+  assert.equal(
+    alertFor({ accounts: [acct({ has_real_data: false, session_percent: 0 })] }, 20),
+    null
+  );
+});
+
+test('alertFor 取最紧张的账号而非第一个', () => {
+  const a = alertFor({
+    accounts: [
+      acct({ email: 'high@a.com', session_percent: 90 }),
+      acct({ email: 'low@a.com', session_percent: 7 }),
+      acct({ email: 'mid@a.com', session_percent: 50 }),
+    ],
+  }, 20);
+  assert.match(a.body, /low 会话额度仅剩 7%/);
+});
+
+test('alertFor 缺少恢复时间也不产出 undefined 文案', () => {
+  const a = alertFor({
+    accounts: [
+      acct({ email: 'p@a.com', status: 'rate_limited', session_percent: 0 }),
+      acct({ email: 'q@a.com', status: 'rate_limited', session_percent: 0 }),
+    ],
+  }, 20);
+  assert.ok(!/undefined|null/.test(a.body), `文案不该出现 undefined: ${a.body}`);
+  assert.match(a.body, /2 个账号被限流/);
 });

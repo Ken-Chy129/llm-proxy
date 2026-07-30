@@ -4,11 +4,17 @@
   "private": true,
   "description": "LLM Proxy 桌面小工具：菜单栏额度 + 弹出面板 + 桌面悬浮挂件",
   "scripts": {
+    "tauri": "tauri",
     "dev": "tauri dev",
     "build": "tauri build",
-    "preview": "node scripts/preview.mjs"
+    "preview": "node scripts/preview.mjs",
+    "test": "node --test scripts/"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.1.0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-notification": "^2.3.3"
   }
 }

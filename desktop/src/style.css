@@ -73,6 +73,17 @@ body {
   color: var(--bad); border-radius: 7px; font-size: 11.5px; line-height: 1.4;
 }
 
+/* ---------- 告警横幅 ----------
+   跟错误条分开：错误是"取不到数据"，告警是"数据本身有问题"（额度快用完）。
+   两者可能同时存在，也各有各的生命周期。 */
+.alert {
+  margin: 8px 10px 0; padding: 7px 9px;
+  background: rgba(245,181,68,.13); border: 1px solid rgba(245,181,68,.32);
+  color: var(--warn); border-radius: 7px; font-size: 11.5px; line-height: 1.4;
+  /* 保险：文案再长也不换行，截断优于把面板撑高。完整内容在 title 里。 */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
 /* ---------- 卡片 ---------- */
 main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .card { background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 11px; }

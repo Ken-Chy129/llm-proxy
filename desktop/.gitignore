@@ -9,3 +9,4 @@ src-tauri/gen/
 !src-tauri/tauri.conf.json
 !src-tauri/capabilities/*.json
 !package.json
+!package-lock.json
