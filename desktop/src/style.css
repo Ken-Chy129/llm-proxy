@@ -1,0 +1,221 @@
+/* macOS 菜单栏弹出面板：暗色、紧凑、320px 宽，跟随系统亮暗 */
+:root {
+  --bg: #16181d;
+  --bg-card: #1e2128;
+  --bg-hover: #262a33;
+  --fg: #e8eaed;
+  /* 暗色下的次级灰必须比浅色主题更亮，否则小字号会掉到 WCAG AA 以下 */
+  --fg-dim: #adb3bf;
+  --fg-faint: #8b93a1;
+  --line: #2c313b;
+  --slot: #23272f;
+  --accent: #5b9cf8;
+  --ok: #35c98b;
+  --warn: #f5b544;
+  --bad: #f2635f;
+  --radius: 10px;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f6f8;
+    --bg-card: #ffffff;
+    --bg-hover: #eef0f4;
+    --fg: #1c1e22;
+    --fg-dim: #5f6570;
+    --fg-faint: #7c828d;
+    --line: #e2e5ea;
+    --slot: #eceef2;
+  }
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  width: 320px;
+  background: var(--bg);
+  color: var(--fg);
+  font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow-x: hidden;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- 顶栏 ---------- */
+.bar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bg);
+  position: sticky; top: 0; z-index: 5;
+}
+.bar-title { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12.5px; letter-spacing: .2px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-faint); transition: background .3s; }
+.dot.live { background: var(--ok); box-shadow: 0 0 6px rgba(53,201,139,.7); }
+.dot.stale { background: var(--warn); }
+.dot.dead { background: var(--bad); }
+.bar-actions { display: flex; align-items: center; gap: 4px; }
+.stamp { font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; margin-right: 2px; }
+.icon-btn {
+  background: none; border: 0; color: var(--fg-dim); cursor: pointer;
+  font-size: 13px; padding: 3px 5px; border-radius: 5px; line-height: 1;
+}
+.icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.icon-btn.spin { animation: spin .7s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- 错误条 ---------- */
+.error {
+  margin: 8px 10px 0; padding: 7px 9px;
+  background: rgba(242,99,95,.12); border: 1px solid rgba(242,99,95,.3);
+  color: var(--bad); border-radius: 7px; font-size: 11.5px; line-height: 1.4;
+}
+
+/* ---------- 卡片 ---------- */
+main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
+.card { background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 11px; }
+.card-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 8px; }
+.card-label { font-size: 10.5px; font-weight: 600; letter-spacing: .6px; color: var(--fg-dim); text-transform: uppercase; }
+.card-date { font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+
+/* ---------- 今日用量 ---------- */
+.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
+.hero-main { display: flex; align-items: baseline; gap: 4px; }
+.hero-num { font-size: 25px; font-weight: 650; letter-spacing: -.6px; font-variant-numeric: tabular-nums; line-height: 1.05; }
+.hero-unit { font-size: 10.5px; color: var(--fg-faint); }
+.hero-side { text-align: right; }
+.hero-reqs { font-size: 11.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.hero-reqs b { color: var(--fg); font-weight: 600; }
+.deltas { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; margin-top: 3px; }
+.delta { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--fg-faint); white-space: nowrap; }
+.delta.up { color: var(--warn); }
+.delta.down { color: var(--ok); }
+
+/* 迷你柱状图：每小时一个槽位。槽位底色很淡（只是"这里有个小时"的提示），
+   柱子才是数据。底色画太重会让人误读成"每小时都跑满了"。
+   用 grid 而不是 flex：24 等分严格一致，轴刻度才能精确对齐。 */
+.spark {
+  display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px;
+  align-items: end; height: 32px; margin-top: 12px;
+  /* 柱子最高只到槽位顶，槽位高度固定 32px，所以不会溢出去撞上面的文字 */
+  overflow: hidden;
+}
+.spark i.slot {
+  height: 100%; border-radius: 2px;
+  display: flex; align-items: flex-end; justify-content: center;
+  overflow: hidden; position: relative;
+  /* 只在底部画一条极淡的基线，代表空槽位 */
+  background: linear-gradient(to top, var(--slot) 0 3px, transparent 3px);
+}
+.spark i.slot > b {
+  /* 柱子明显窄于槽位，让"当前小时"的槽底色和描边能从两侧透出来。
+     槽位在 320px 面板里只有 ~8px，柱子若铺满就会把标记完全盖住。 */
+  display: block; width: 4px; background: var(--accent);
+  border-radius: 1.5px; transition: height .3s ease; position: relative; z-index: 1;
+}
+/* 当前小时：淡色槽底 + 内描边 + 提亮的柱子。三重冗余是必要的——
+   槽位太窄，单靠任何一种都可能被柱子或背景吃掉。 */
+.spark i.slot.now { background: rgba(91,156,248,.3); box-shadow: inset 0 0 0 1px rgba(91,156,248,.75); }
+.spark i.slot.now > b { background: #a8caff; }
+.spark i.slot:hover { filter: brightness(1.3); }
+/* 轴：和柱状图共用同一套 24 格网格，保证标签严格对准所属槽位。
+   必须用 minmax(0,1fr)——默认的 1fr 最小值是 auto，数字内容会把格子
+   撑宽，导致轴和柱子错位（实测漂移可达 4px，肉眼就是"差了一小时"）。 */
+.spark-axis {
+  display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); gap: 2px; margin-top: 4px;
+  font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums;
+}
+.spark-axis .tick {
+  text-align: center; white-space: nowrap;
+  /* 数字比格子宽时允许溢出显示，但不参与布局宽度计算 */
+  overflow: visible; min-width: 0;
+}
+.spark-axis .tick.now { color: var(--accent); font-weight: 700; }
+
+/* ---------- 账号额度 ---------- */
+.acct { padding: 7px 0; border-top: 1px solid var(--line); }
+.acct:first-child { border-top: 0; padding-top: 0; }
+.acct-top { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 5px; }
+.acct-name { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acct-plan { font-size: 9.5px; color: var(--fg-faint); flex-shrink: 0; }
+.badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; flex-shrink: 0; font-weight: 600; }
+.badge.limited { background: rgba(242,99,95,.16); color: var(--bad); }
+.badge.disabled { background: var(--bg-hover); color: var(--fg-faint); }
+.badge.nodata { background: rgba(245,181,68,.14); color: var(--warn); }
+
+.meter-row { display: flex; align-items: center; gap: 7px; margin-top: 4px; }
+.meter-tag { font-size: 9.5px; color: var(--fg-faint); width: 26px; flex-shrink: 0; }
+.meter { flex: 1; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+/* 额度耗尽：整条轨道染红。0% 的填充只有 2px，撑不起"用光了"这个信号。 */
+.meter.empty-bad { background: rgba(242,99,95,.28); box-shadow: inset 0 0 0 1px rgba(242,99,95,.45); }
+.meter span { display: block; height: 100%; border-radius: 3px; transition: width .35s ease; }
+.meter span.ok { background: var(--ok); }
+.meter span.warn { background: var(--warn); }
+.meter span.bad { background: var(--bad); }
+.meter-pct { font-size: 10.5px; font-variant-numeric: tabular-nums; width: 32px; text-align: right; flex-shrink: 0; color: var(--fg-dim); }
+/* 数字也跟着分档上色，告警不只体现在条形上 */
+.meter-pct.warn { color: var(--warn); font-weight: 600; }
+.meter-pct.bad { color: var(--bad); font-weight: 700; }
+.acct-reset { font-size: 9.5px; color: var(--fg-faint); margin-top: 3px; text-align: right; }
+
+/* ---------- Key 分摊 ---------- */
+.keyrow { margin-bottom: 7px; }
+.keyrow:last-child { margin-bottom: 0; }
+.keyrow-top { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 11px; margin-bottom: 3px; }
+.keyrow-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.keyrow-val { color: var(--fg-dim); font-variant-numeric: tabular-nums; flex-shrink: 0; font-size: 10.5px; }
+.keybar { height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+.keybar span { display: block; height: 100%; background: var(--accent); border-radius: 3px; transition: width .35s ease; }
+
+.empty { font-size: 11px; color: var(--fg-faint); text-align: center; padding: 10px 0; }
+
+/* ---------- 底部 ----------
+   "后端 N/M 启用" 是运维上最该注意的一行，不能弱化成灰得看不见 */
+.foot {
+  display: flex; justify-content: space-between;
+  font-size: 10.5px; color: var(--fg-dim);
+  padding: 6px 3px 8px; border-top: 1px solid var(--line); margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 设置 ---------- */
+.settings { padding: 11px 12px 13px; display: flex; flex-direction: column; gap: 9px; }
+.settings label { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--fg-dim); }
+.settings input[type=text], .settings input[type=password], .settings input[type=number] {
+  background: var(--bg-card); border: 1px solid var(--line); color: var(--fg);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px; font-family: inherit; width: 100%;
+}
+.settings input:focus { outline: none; border-color: var(--accent); }
+.row2 { display: flex; gap: 8px; }
+.row2 label { flex: 1; }
+.chk { flex-direction: row !important; align-items: center; gap: 6px !important; cursor: pointer; }
+.chk input { width: auto; }
+.settings-actions { display: flex; gap: 7px; justify-content: flex-end; margin-top: 2px; }
+.btn {
+  background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+  padding: 6px 13px; font-size: 11.5px; cursor: pointer; font-family: inherit; font-weight: 500;
+}
+.btn:hover { filter: brightness(1.1); }
+.btn.ghost { background: transparent; color: var(--fg-dim); border: 1px solid var(--line); }
+.btn.ghost:hover { background: var(--bg-hover); color: var(--fg); }
+.hint { font-size: 9.5px; color: var(--fg-faint); line-height: 1.5; }
+
+/* ---------- 悬浮挂件模式 ----------
+   窗口是无边框+透明的，所以圆角和边框必须由 CSS 自己画出来，
+   否则会是一个突兀的直角硬块。 */
+html, body { background: transparent; }
+#app {
+  background: var(--bg);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+}
+body.float #app {
+  /* 挂件常年摆在桌面上，给一点阴影和轻微透明，避免压住底下内容 */
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .38);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+}
+body.float .bar { cursor: grab; background: transparent; }
+body.float .bar:active { cursor: grabbing; }
