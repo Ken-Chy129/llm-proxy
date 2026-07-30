@@ -148,11 +148,16 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .meter-row { display: flex; align-items: center; gap: 7px; margin-top: 4px; }
 .meter-tag { font-size: 9.5px; color: var(--fg-faint); width: 26px; flex-shrink: 0; }
 .meter { flex: 1; height: 5px; background: var(--line); border-radius: 3px; overflow: hidden; }
+/* 额度耗尽：整条轨道染红。0% 的填充只有 2px，撑不起"用光了"这个信号。 */
+.meter.empty-bad { background: rgba(242,99,95,.28); box-shadow: inset 0 0 0 1px rgba(242,99,95,.45); }
 .meter span { display: block; height: 100%; border-radius: 3px; transition: width .35s ease; }
 .meter span.ok { background: var(--ok); }
 .meter span.warn { background: var(--warn); }
 .meter span.bad { background: var(--bad); }
 .meter-pct { font-size: 10.5px; font-variant-numeric: tabular-nums; width: 32px; text-align: right; flex-shrink: 0; color: var(--fg-dim); }
+/* 数字也跟着分档上色，告警不只体现在条形上 */
+.meter-pct.warn { color: var(--warn); font-weight: 600; }
+.meter-pct.bad { color: var(--bad); font-weight: 700; }
 .acct-reset { font-size: 9.5px; color: var(--fg-faint); margin-top: 3px; text-align: right; }
 
 /* ---------- Key 分摊 ---------- */

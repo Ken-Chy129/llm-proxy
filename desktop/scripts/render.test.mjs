@@ -74,8 +74,8 @@ test('pctDelta 极端增长改用倍数，避免撑破布局', () => {
 test('pctClass 按剩余额度分档（入参是剩余量，不是已用量）', () => {
   assert.equal(pctClass(100), 'ok', '满格应为安全色');
   assert.equal(pctClass(73), 'ok');
-  assert.equal(pctClass(31), 'ok');
-  assert.equal(pctClass(30), 'warn');
+  assert.equal(pctClass(36), 'ok');
+  assert.equal(pctClass(35), 'warn', '35% 就该预警，别等跌到 10% 才变色');
   assert.equal(pctClass(11), 'warn');
   assert.equal(pctClass(10), 'bad');
   assert.equal(pctClass(0), 'bad', '额度用光必须是警示色');

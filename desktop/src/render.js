@@ -51,7 +51,7 @@ export function pctDelta(current, baseline) {
 export function pctClass(p) {
   if (p === null || p === undefined) return 'warn';
   if (p <= 10) return 'bad';
-  if (p <= 30) return 'warn';
+  if (p <= 35) return 'warn';
   return 'ok';
 }
 
@@ -89,13 +89,20 @@ function el(tag, cls, text) {
 function meterRow(tag, pct, resetAt) {
   const row = el('div', 'meter-row');
   row.appendChild(el('span', 'meter-tag', tag));
+  const cls = pctClass(pct);
   const meter = el('div', 'meter');
-  const fill = el('span', pctClass(pct));
+  // 额度耗尽时给整条轨道上色：0% 的填充条只有几个像素宽，
+  // 光靠填充色传达不了"用光了"这个最该被看见的状态。
+  if (pct !== null && pct !== undefined && pct <= 0) meter.classList.add('empty-bad');
+  const fill = el('span', cls);
   // 0% 也留 2px 可见宽度，否则“用完了”和“没数据”视觉上一样。
   fill.style.width = pct === null || pct === undefined ? '0%' : `${Math.max(2, Math.min(100, pct))}%`;
   meter.appendChild(fill);
   row.appendChild(meter);
-  row.appendChild(el('span', 'meter-pct', pct === null || pct === undefined ? '?' : `${Math.round(pct)}%`));
+  // 百分比数字跟着分档上色，让告警在数字上也有体现
+  const num = el('span', `meter-pct ${pct === null || pct === undefined ? '' : cls}`);
+  num.textContent = pct === null || pct === undefined ? '?' : `${Math.round(pct)}%`;
+  row.appendChild(num);
   return row;
 }
 
