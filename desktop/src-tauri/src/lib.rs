@@ -6,6 +6,8 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::sync::Mutex;
+
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -108,11 +110,11 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
     let w = WebviewWindowBuilder::new(&app, FLOAT, WebviewUrl::App("index.html?mode=float".into()))
         .title("LLM Proxy")
         // 折叠态就是一个 56px 的球，窗口与内容严格等大。展开由前端 hover 时调
-        // set_float_size 撑开。
+        // expand_float 撑开。
         //
         // 不留"阴影余量"：阴影由 macOS 画在窗口**外面**，留了边距反而制造一圈看不
         // 见、却会拦截桌面点击的死区。
-        .inner_size(56.0, 56.0)
+        .inner_size(BALL, BALL)
         .resizable(false) // 尺寸由展开/折叠状态决定，手动拉扯只会拉出一片透明
         .decorations(false)      // 无边框，才像挂件而不是浏览器
         .always_on_top(true)
@@ -129,15 +131,79 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
     Ok(true)
 }
 
-/// 悬浮球 hover 展开/收回时改窗口尺寸。
+/// 球折叠态的边长；展开/收回都以这个为锚。
+const BALL: f64 = 56.0;
+
+/// 展开时窗口被挪动了多少（dx, dy）。收回时要原路挪回去，否则球会从右下角跳到
+/// 左上角——用户把球放在哪个角，收回后就该回到哪里。
 ///
-/// 走 Rust 而不是前端直接调 `window.setSize`：后者属于 core 插件命令，要在
-/// capabilities 里显式放行 `core:window:allow-set-size`，而自定义命令天生可用。
-/// 少一处能静默失效的配置。
+/// 存偏移而不是绝对坐标：展开状态下卡片头部还能拖动，绝对坐标会立刻过期。
+static FLOAT_SHIFT: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
+
+/// hover 展开：撑开窗口，并且**朝屏幕内侧展开**。
+///
+/// 球通常被摆在屏幕右下角，一律向右下长的话卡片会整片跑到屏幕外——这是实际用起来
+/// 第一个被撞到的问题。所以先看当前位置离哪条边近，再决定往左/往上翻。
+///
+/// 用 work_area 而不是 monitor.size：前者排除了菜单栏和 Dock，否则卡片会钻到 Dock
+/// 底下。
+///
+/// 走 Rust 而不是前端调 `window.setSize`：后者属于 core 插件命令，要在 capabilities
+/// 里显式放行 `core:window:allow-set-size`，少一处能静默失效的配置。
 #[tauri::command]
-fn set_float_size(app: AppHandle, width: f64, height: f64) {
-    if let Some(w) = app.get_webview_window(FLOAT) {
-        let _ = w.set_size(tauri::LogicalSize::new(width, height));
+fn expand_float(app: AppHandle, width: f64, height: f64) {
+    let Some(w) = app.get_webview_window(FLOAT) else {
+        return;
+    };
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let Ok(outer) = w.outer_position() else {
+        return;
+    };
+    let pos = outer.to_logical::<f64>(scale);
+    let (mut x, mut y) = (pos.x, pos.y);
+    let (mut dx, mut dy) = (0.0, 0.0);
+
+    if let Ok(Some(mon)) = w.current_monitor() {
+        let area = mon.work_area();
+        let a_pos = area.position.to_logical::<f64>(scale);
+        let a_size = area.size.to_logical::<f64>(scale);
+        if x + width > a_pos.x + a_size.width {
+            dx = width - BALL;
+            x -= dx;
+        }
+        if y + height > a_pos.y + a_size.height {
+            dy = height - BALL;
+            y -= dy;
+        }
+        // 翻过去之后也可能顶到另一边（屏幕比卡片还窄时），夹回可视区并同步偏移，
+        // 否则收回时会按错的偏移把球挪飞。
+        if x < a_pos.x {
+            dx -= a_pos.x - x;
+            x = a_pos.x;
+        }
+        if y < a_pos.y {
+            dy -= a_pos.y - y;
+            y = a_pos.y;
+        }
+    }
+
+    *FLOAT_SHIFT.lock().unwrap() = (dx, dy);
+    let _ = w.set_size(tauri::LogicalSize::new(width, height));
+    let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// 收回成球，并把它放回展开前那个角。
+#[tauri::command]
+fn collapse_float(app: AppHandle) {
+    let Some(w) = app.get_webview_window(FLOAT) else {
+        return;
+    };
+    let (dx, dy) = std::mem::replace(&mut *FLOAT_SHIFT.lock().unwrap(), (0.0, 0.0));
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let _ = w.set_size(tauri::LogicalSize::new(BALL, BALL));
+    if let Ok(outer) = w.outer_position() {
+        let pos = outer.to_logical::<f64>(scale);
+        let _ = w.set_position(tauri::LogicalPosition::new(pos.x + dx, pos.y + dy));
     }
 }
 
@@ -174,7 +240,8 @@ pub fn run() {
             set_tray_title,
             toggle_float,
             set_float_on_top,
-            set_float_size,
+            expand_float,
+            collapse_float,
             hide_panel,
             detect_env_config
         ])

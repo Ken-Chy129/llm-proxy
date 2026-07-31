@@ -31,8 +31,15 @@ type trayAccount struct {
 	WeeklyPercent  *float64 `json:"weekly_percent,omitempty"`
 	// Both reset times are "MM/DD HH:MM" in server-local time, empty when the
 	// upstream quota payload did not carry one.
-	SessionResetAt string `json:"session_reset_at,omitempty"`
-	WeeklyResetAt  string `json:"weekly_reset_at,omitempty"`
+	//
+	// The *Unix twins exist because the widget shows a countdown ("42m until
+	// capacity returns"), and deriving that from "07/31 16:50" means guessing the
+	// year and re-deriving the timezone — which breaks across new year and DST.
+	// Send the instant; let the client format it.
+	SessionResetAt   string `json:"session_reset_at,omitempty"`
+	SessionResetUnix int64  `json:"session_reset_unix,omitempty"`
+	WeeklyResetAt    string `json:"weekly_reset_at,omitempty"`
+	WeeklyResetUnix  int64  `json:"weekly_reset_unix,omitempty"`
 
 	RateLimited      bool   `json:"rate_limited,omitempty"`
 	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
@@ -118,11 +125,13 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 						v := q.Primary.RemainingPercent
 						acc.SessionPercent = &v
 						acc.SessionResetAt = q.Primary.ResetAt
+						acc.SessionResetUnix = q.Primary.ResetUnix
 					}
 					if q.Secondary != nil {
 						v := q.Secondary.RemainingPercent
 						acc.WeeklyPercent = &v
 						acc.WeeklyResetAt = q.Secondary.ResetAt
+						acc.WeeklyResetUnix = q.Secondary.ResetUnix
 					}
 					for _, w := range []*auth.RateWindow{q.Primary, q.Secondary} {
 						if w.Exhausted(now) && w.ResetUnix > 0 {

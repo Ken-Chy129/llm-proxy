@@ -104,11 +104,16 @@ function notificationAPI() {
 }
 
 function setDot(state) {
-  // 悬浮球没有顶栏，状态灯在球内数字下方；两个都写，省掉一处分支判断
-  for (const id of ['live-dot', 'ball-dot']) {
-    const dot = document.getElementById(id);
-    if (dot) dot.className = `dot ${state}`;
-  }
+  const dot = document.getElementById('live-dot');
+  if (dot) dot.className = `dot ${state}`;
+  if (!IS_FLOAT) return;
+  // 悬浮球第二行平时是"下次回血"的倒计时；取不到数据时改写成状态——上面那个百分比
+  // 已经是旧值了，必须让人看出来，而倒计时此刻也不再有意义。
+  const ball = document.getElementById('ball');
+  const eta = document.getElementById('ball-eta');
+  const offline = state !== 'live';
+  if (ball) ball.classList.toggle('offline', offline);
+  if (eta && offline) eta.textContent = state === 'dead' ? '离线' : '过期';
 }
 
 /* 悬浮卡只有一行状态位，而面板有两条（错误条 + 告警条）。这两个变量把"当前该
@@ -238,6 +243,7 @@ async function refresh(manual = false) {
 
     showError('');
     if (IS_FLOAT) {
+      lastData = data;
       renderFloat(data);
       // 账号数变了展开卡就会变高，折叠态量不到就没法正确撑开窗口
       syncFloatSize();
@@ -265,6 +271,8 @@ const BALL_BOX = 56;    // 与球等大；阴影由原生窗口画在窗口外�
 const CARD_BOX_W = 228; // 与卡等宽
 let collapseTimer = null;
 let floatExpanded = false;
+let etaTimer = null;
+let lastData = null; // 倒计时自转时复用上一轮数据，不额外发请求
 
 /** 量出展开卡的真实高度。卡片是 visibility:hidden（有布局）所以随时可测。 */
 function floatCardBox() {
@@ -277,7 +285,7 @@ function floatCardBox() {
 function syncFloatSize() {
   if (!floatExpanded) return;
   const { w, h } = floatCardBox();
-  invoke('set_float_size', { width: w, height: h });
+  invoke('expand_float', { width: w, height: h });
 }
 
 async function expandFloat() {
@@ -285,7 +293,8 @@ async function expandFloat() {
   if (floatExpanded) return;
   floatExpanded = true;
   const { w, h } = floatCardBox();
-  await invoke('set_float_size', { width: w, height: h });
+  // Rust 侧决定往哪个方向长：球多半摆在屏幕右下角，一律向右下展开会整片跑出屏幕
+  await invoke('expand_float', { width: w, height: h });
   document.body.classList.add('expanded');
 }
 
@@ -296,7 +305,8 @@ function collapseFloat() {
     if (!floatExpanded) return;
     floatExpanded = false;
     document.body.classList.remove('expanded');
-    await invoke('set_float_size', { width: BALL_BOX, height: BALL_BOX });
+    // collapse 会把球放回展开前那个角
+    await invoke('collapse_float');
   }, 200);
 }
 
@@ -304,6 +314,14 @@ function restartTimer() {
   if (timer) clearInterval(timer);
   const sec = Math.max(10, Number(config.interval) || 60);
   timer = setInterval(() => refresh(false), sec * 1000);
+
+  // 倒计时必须独立自转：轮询间隔可以被设成几分钟，那时球上的"42m"会长时间不动，
+  // 而它恰好是挂件上唯一随时间变化的信息。30s 重画一次，不发请求。
+  if (!IS_FLOAT) return;
+  if (etaTimer) clearInterval(etaTimer);
+  etaTimer = setInterval(() => {
+    if (lastData) renderFloat(lastData);
+  }, 30000);
 }
 
 function openSettings() {

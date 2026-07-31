@@ -163,25 +163,76 @@ export function bindingWindow(a) {
 }
 
 /**
- * 整个池子还剩多少可用。
+ * 一个窗口（5h 或 7d）在整个池子里的总余量。
  *
- * 跨账号取**最大**而不是最小：代理自动挑账号，只要还有一个账号有余量就能继续干
- * 活。取最小得到的是"最先干涸的那个账号"——那是告警该管的事（见 alertFor），而
- * 不是"我现在还能不能放心用"的答案。菜单栏标题用的是最小值，口径不同是刻意的：
- * 一个负责预警，一个负责当下可用性。
+ * 各账号的窗口是**独立结算**的，所以"还能用多少"是各账号剩余百分比之**和**：三个
+ * 账号分别剩 100/98/51，总量就是 249%（约两个半账号的量）。取最大只能回答"最宽裕
+ * 的那个还剩多少"，取最小是"最先干涸的那个"——两个都不是"我还能用多少"。
  *
- * 被停用、被限流、还没抓到真实数据的账号都不计入——它们此刻服务不了流量。
- * 一个都不剩时返回 null，调用方必须显式表达"未知"，不能拿 0 或 100 顶替。
+ * cap 只统计有该窗口数据的账号，否则某个账号缺数据会把百分比整体压低，看着像掉了
+ * 额度。被停用的账号不计入（它服务不了流量）；被限流的**要**计入——它的余量此刻
+ * 就是接近 0，而它的重置时间正是"多久后回血"的答案。
+ *
+ * 一个账号都没有时返回 null，调用方必须显式表达"未知"。
  */
-export function poolHeadroom(accounts) {
+export function poolWindow(accounts, key) {
+  let sum = 0;
+  let count = 0;
+  for (const a of accounts || []) {
+    if (a.status === 'disabled' || !a.has_real_data) continue;
+    const p = a[key];
+    if (p === null || p === undefined) continue;
+    sum += p;
+    count += 1;
+  }
+  if (!count) return null;
+  const cap = count * 100;
+  return { sum, cap, count, pct: (sum / cap) * 100 };
+}
+
+/**
+ * 下一次会回血的重置：所有账号、两个窗口里最早的未来重置时刻。
+ *
+ * 这比任何百分比都更直接决定"现在要不要停手"。附带 gain（该窗口会补回多少）是因为
+ * 最早的那次重置未必有意义——一个已经 98% 的 5h 窗口重置只补 2%，看到 gain 才知道
+ * 值不值得等。
+ */
+export function nextReset(accounts, nowMs) {
+  const now = nowMs === undefined ? Date.now() : nowMs;
   let best = null;
   for (const a of accounts || []) {
-    if (a.status === 'disabled' || a.status === 'rate_limited' || !a.has_real_data) continue;
-    const b = bindingWindow(a);
-    if (!b) continue;
-    if (!best || b.pct > best.pct) best = { ...b, email: a.email || '' };
+    if (a.status === 'disabled' || !a.has_real_data) continue;
+    for (const [win, unix, at, pct] of [
+      ['5h', a.session_reset_unix, a.session_reset_at, a.session_percent],
+      ['7d', a.weekly_reset_unix, a.weekly_reset_at, a.weekly_percent],
+    ]) {
+      if (!unix) continue;
+      const ms = unix * 1000;
+      if (ms <= now) continue; // 已过期的快照，等下一轮抓取纠正
+      if (!best || ms < best.ms) {
+        best = {
+          ms,
+          win,
+          at: at || '',
+          email: a.email || '',
+          gain: pct === null || pct === undefined ? null : Math.max(0, 100 - pct),
+        };
+      }
+    }
   }
   return best;
+}
+
+/** 倒计时：<1m 显示"即将"，然后 42m / 3h20m / 3d。 */
+export function fmtEta(ms) {
+  if (ms === null || ms === undefined || ms <= 0) return '';
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return '即将';
+  if (min < 60) return `${min}m`;
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h < 24) return m ? `${h}h${m}m` : `${h}h`;
+  return `${Math.round(h / 24)}d`;
 }
 
 function el(tag, cls, text) {

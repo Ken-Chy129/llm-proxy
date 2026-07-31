@@ -27,19 +27,20 @@
 
   <!-- 悬浮挂件（仅 ?mode=float）：折叠是一个球，鼠标移上去原地展开成紧凑卡。
        跟上面的面板刻意不同源——常驻桌面只回答"现在还能不能放心用"。 -->
-  <div id="ball" data-tauri-drag-region title="额度">
+  <div id="ball" data-tauri-drag-region>
     <span class="ball-pct" id="ball-pct">–</span>
-    <span class="dot" id="ball-dot"></span>
+    <span class="ball-eta" id="ball-eta"></span>
   </div>
 
   <section id="fcard">
     <div class="fcard-head" data-tauri-drag-region>
-      <span class="fcard-pct" id="fcard-pct">–</span>
-      <span class="fcard-cap">可用</span>
+      <span class="fcard-title">额度池</span>
       <span class="fcard-tokens" id="fcard-tokens"></span>
       <button class="icon-btn" id="btn-pin-float" title="取消置顶">▲</button>
     </div>
     <div id="fcard-rows"></div>
+    <!-- 下一次回血：时间 + 哪个账号的哪个窗口 + 能补多少 -->
+    <div id="fcard-next" class="fcard-next hidden"></div>
     <div id="fcard-err" class="fcard-err hidden"></div>
   </section>
 

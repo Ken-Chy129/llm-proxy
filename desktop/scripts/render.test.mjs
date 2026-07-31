@@ -14,7 +14,7 @@ const src = readFileSync(resolve(__dirname, '../src/render.js'), 'utf8');
 const mod = await import(
   'data:text/javascript;base64,' + Buffer.from(src).toString('base64')
 );
-const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset, bindingWindow, poolHeadroom } = mod;
+const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset, bindingWindow, poolWindow, nextReset, fmtEta } = mod;
 
 test('fmtNum 加千分位，空值不显示 NaN', () => {
   assert.equal(fmtNum(25969045), '25,969,045');
@@ -285,33 +285,69 @@ test('bindingWindow 取 5h 与周里更紧的那个', () => {
   assert.equal(bindingWindow(null), null);
 });
 
-test('poolHeadroom 跨账号取最大，且排除不能服务流量的账号', () => {
+
+
+test('poolWindow 把各账号余量相加：窗口是独立结算的', () => {
   const acct = (o) => ({ has_real_data: true, status: 'active', email: 'x@y.com', ...o });
+  // 用户的真实场景：三个账号 5h 分别剩 100/98/51
+  const s = poolWindow([
+    acct({ session_percent: 100 }), acct({ session_percent: 98 }), acct({ session_percent: 51 }),
+  ], 'session_percent');
+  assert.equal(s.sum, 249);
+  assert.equal(s.cap, 300);
+  assert.equal(s.count, 3);
+  assert.equal(Math.round(s.pct), 83);
 
-  // 代理自动挑账号：只要有一个账号宽裕，就还能干活 → 取最大
-  const pool = poolHeadroom([
-    acct({ email: 'a@x.com', session_percent: 100, weekly_percent: 71 }),
-    acct({ email: 'b@x.com', session_percent: 5, weekly_percent: 90 }),
-  ]);
-  assert.equal(pool.pct, 71);
-  assert.equal(pool.win, '周');
-  assert.equal(pool.email, 'a@x.com');
+  // 被限流的账号要计入：它此刻的余量就是接近 0，掩盖它会让总量虚高
+  const withLimited = poolWindow([
+    acct({ status: 'rate_limited', session_percent: 0 }), acct({ session_percent: 60 }),
+  ], 'session_percent');
+  assert.equal(withLimited.sum, 60);
+  assert.equal(withLimited.cap, 200);
 
-  // 限流 / 停用 / 无真实数据的账号此刻服务不了流量，不能计入
-  assert.equal(
-    poolHeadroom([
-      acct({ status: 'rate_limited', session_percent: 100, weekly_percent: 100 }),
-      acct({ session_percent: 30, weekly_percent: 60 }),
-    ]).pct,
-    30
-  );
-  assert.equal(poolHeadroom([acct({ status: 'disabled', session_percent: 90 })]), null);
-  assert.equal(poolHeadroom([acct({ has_real_data: false, session_percent: 90 })]), null);
+  // 停用的不计入，连 cap 也不占——它服务不了流量
+  const withDisabled = poolWindow([
+    acct({ status: 'disabled', session_percent: 100 }), acct({ session_percent: 60 }),
+  ], 'session_percent');
+  assert.equal(withDisabled.cap, 100);
+  assert.equal(withDisabled.sum, 60);
 
-  // 一个可用账号都没有时必须返回 null，让 UI 显式表达"未知"而不是画成 0% 或满格
-  assert.equal(poolHeadroom([]), null);
-  assert.equal(poolHeadroom(undefined), null);
+  // 缺这个窗口数据的账号不占 cap，否则百分比会被无端压低
+  const partial = poolWindow([acct({ session_percent: 80 }), acct({ weekly_percent: 50 })], 'session_percent');
+  assert.equal(partial.cap, 100);
 
-  // 全部用光是 0，不是 null——"用光了"和"不知道"必须能区分
-  assert.equal(poolHeadroom([acct({ session_percent: 0, weekly_percent: 0 })]).pct, 0);
+  assert.equal(poolWindow([], 'session_percent'), null);
+  assert.equal(poolWindow(undefined, 'session_percent'), null);
+});
+
+test('nextReset 取最早的未来重置，并给出能补回多少', () => {
+  const now = 1_800_000_000_000; // 固定时刻，避免测试随时间漂移
+  const acct = (o) => ({ has_real_data: true, status: 'active', ...o });
+  const r = nextReset([
+    acct({ email: 'a@x.com', session_percent: 98, session_reset_unix: now / 1000 + 2520,
+           session_reset_at: '07/31 16:50', weekly_percent: 74, weekly_reset_unix: now / 1000 + 400000 }),
+    acct({ email: 'b@x.com', session_percent: 51, session_reset_unix: now / 1000 + 7200 }),
+  ], now);
+  assert.equal(r.email, 'a@x.com');
+  assert.equal(r.win, '5h');
+  assert.equal(r.at, '07/31 16:50');
+  // 98% 的窗口重置只补 2%——不给出 gain 的话，用户会以为等 42 分钟就宽裕了
+  assert.equal(r.gain, 2);
+
+  // 已经过去的重置时间是过期快照，必须忽略，否则倒计时会显示负数
+  assert.equal(nextReset([acct({ session_reset_unix: now / 1000 - 60 })], now), null);
+  // 没有时间戳时返回 null，而不是拿 0 当 1970 年
+  assert.equal(nextReset([acct({ session_percent: 50 })], now), null);
+  assert.equal(nextReset([], now), null);
+});
+
+test('fmtEta 分钟/小时/天，且不出现 0m', () => {
+  assert.equal(fmtEta(42 * 60000), '42m');
+  assert.equal(fmtEta(30000), '即将');       // 不到 1 分钟别显示 0m
+  assert.equal(fmtEta(60 * 60000), '1h');    // 整点小时不带 0m
+  assert.equal(fmtEta(200 * 60000), '3h20m');
+  assert.equal(fmtEta(50 * 3600000), '2d');
+  assert.equal(fmtEta(0), '');
+  assert.equal(fmtEta(-5000), '');           // 时间已过就什么都不显示
+  assert.equal(fmtEta(null), '');
 });
