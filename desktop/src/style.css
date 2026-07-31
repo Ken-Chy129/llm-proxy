@@ -261,7 +261,7 @@ body.float .bar, body.float #panel, body.float #error, body.float #alert { displ
    所以 Rust 侧关掉了它，这里用 CSS 沿圆形画。 */
 #ball, #fcard { display: none; }
 body.float #ball {
-  display: grid; place-items: center; position: relative;
+  display: flex; align-items: center; justify-content: center; position: relative;
   /* 兜底色：renderFloat 还没跑或没有额度数据时，环该是灰的而不是一片诡异的白 */
   --ring: var(--fg-faint);
   width: 56px; height: 56px;
@@ -281,20 +281,23 @@ body.float #ball::after {
 body.float #ball.ok { --ring: var(--ok); }
 body.float #ball.warn { --ring: var(--warn); }
 body.float #ball.bad { --ring: var(--bad); }
+/* 球内两行：上面是 5h 池的余量，下面是下一次重置的倒计时。
+   place-items:center 已经居中，这里只需要把两行叠起来。 */
+body.float #ball { flex-direction: column; gap: 0; }
 .ball-pct {
   position: relative; z-index: 1;
-  font-size: 16px; font-weight: 650; letter-spacing: -.3px;
+  font-size: 14px; font-weight: 650; letter-spacing: -.3px; line-height: 1.1;
   font-variant-numeric: tabular-nums;
 }
-/* 取数状态灯：球上的数字可能是上一轮的，"连不上"必须看得见。
-   放在数字下方的球内——挂在右下角会跑到圆形之外，看着像个脏点。
-   一切正常时不显示：常驻挂件上的绿灯是纯噪音，只有异常才值得占像素。 */
-body.float #ball .dot {
-  position: absolute; left: 50%; bottom: 9px; z-index: 2;
-  transform: translateX(-50%);
-  width: 5px; height: 5px; box-shadow: none;
+.ball-eta {
+  position: relative; z-index: 1;
+  font-size: 9px; line-height: 1.1; color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
 }
-body.float #ball .dot.live { display: none; }
+/* 取不到数据时，球上的数字就是上一轮的旧值——第二行的倒计时改写成"离线"，
+   这比加一颗状态点清楚：倒计时本来就是"等一等会变好"，而离线时它没有意义。
+   一切正常时不额外显示任何状态：常驻挂件上的绿灯是纯噪音。 */
+body.float #ball.offline .ball-eta { color: var(--bad); }
 
 /* ---------- 展开卡 ----------
    这里和球都**不能**写 box-shadow：窗口与内容等大，CSS 阴影会被窗口边界裁成一条
@@ -317,25 +320,21 @@ body.float.expanded #ball { display: none; }
   cursor: grab;
 }
 .fcard-head:active { cursor: grabbing; }
-.fcard-pct { font-size: 15px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.fcard-cap { font-size: 9.5px; color: var(--fg-faint); }
+.fcard-title { font-size: 10px; font-weight: 600; letter-spacing: .5px; color: var(--fg-dim); }
 .fcard-tokens { margin-left: auto; font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 /* 置顶按钮离 token 数远一点，否则 "今日 332.7K ▲" 会被读成一个整体 */
 .fcard-head .icon-btn { font-size: 9px; padding: 0 1px; margin-left: 4px; opacity: .55; }
 .fcard-head .icon-btn:hover { opacity: 1; }
-.frow {
-  display: flex; align-items: center; gap: 6px;
-  height: 22px; font-size: 11px;
+/* 一个窗口一行：5h 和 7d。数字列宽固定，两行的小数点严格对齐才好比较。 */
+.wrow { display: flex; align-items: center; gap: 6px; height: 22px; font-size: 11px; }
+.wrow-tag { width: 20px; flex-shrink: 0; font-size: 10px; color: var(--fg-dim); }
+.wrow-pct { width: 34px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.wrow-sum { width: 56px; text-align: right; font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+/* 下次回血：整个挂件里唯一"等一等就会变好"的信息，给它一条独立的行 */
+.fcard-next {
+  margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line);
+  font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* 88px 而不是 62px：两个账号的 local part 共享 "chenyaneng" 这样的长前缀，
-   截得太早会把 chenyanheng12949 和 chenyanheng 显示成同一个 "chenyanh…"。
-   截断点必须落在共同前缀之后。完整邮箱在 title 里。 */
-.frow-name { width: 88px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-dim); }
-.frow-pct { width: 30px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 550; }
-.frow-win { width: 16px; font-size: 9px; color: var(--fg-faint); }
-.frow-flag { font-size: 9px; color: var(--fg-faint); }
-.frow-flag.bad { color: var(--bad); }
-/* 状态行：错误红、告警黄。同一行复用是因为卡片只有 228px 宽，两条并存会把
-   账号列表挤出可视区。 */
 .fcard-err { margin-top: 5px; font-size: 10px; color: var(--bad); line-height: 1.35; }
 .fcard-err.warn { color: var(--warn); }
