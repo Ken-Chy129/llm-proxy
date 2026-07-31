@@ -3,6 +3,8 @@ package stats
 import (
 	"testing"
 	"time"
+
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
 // insertAt records a request at a specific UTC instant so calendar-day and
@@ -13,6 +15,20 @@ func insertAt(t *testing.T, d *DB, when time.Time, key string, prompt, completio
 		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens, stream, api_key_name)
 		VALUES (?, 'test-model', 'test', 100, 200, ?, ?, 0, ?)`,
 		when.UTC().Format(time.RFC3339Nano), prompt, completion, key)
+	if err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+}
+
+// insertFull records a request with the full token breakdown, including the
+// cache buckets that insertAt leaves at zero.
+func insertFull(t *testing.T, d *DB, when time.Time, key string, prompt, completion, cacheRead, cacheWrite, reasoning int) {
+	t.Helper()
+	_, err := d.db.Exec(`
+		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, api_key_name)
+		VALUES (?, 'test-model', 'test', 100, 200, ?, ?, ?, ?, ?, 0, ?)`,
+		when.UTC().Format(time.RFC3339Nano), prompt, completion, cacheRead, cacheWrite, reasoning, key)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
@@ -66,8 +82,8 @@ func TestDayUsageIsCalendarDayNotRolling24h(t *testing.T) {
 
 	// Sanity: the rolling summary sees both, which is exactly the discrepancy
 	// the tray endpoint avoids.
-	if reqs, _, _, _ := db.StatsSummary(1, "", ""); reqs != 2 {
-		t.Errorf("StatsSummary(1) = %d, want 2 — test fixture no longer demonstrates the difference", reqs)
+	if s := db.StatsSummary(1, "", ""); s.Requests != 2 {
+		t.Errorf("StatsSummary(1) = %d, want 2 — test fixture no longer demonstrates the difference", s.Requests)
 	}
 }
 
@@ -206,6 +222,55 @@ func TestHourlyTodayBucketsByLocalHour(t *testing.T) {
 	}
 	if buckets[0] != 0 {
 		t.Errorf("hour 0 = %d, want 0", buckets[0])
+	}
+}
+
+// TestDayUsageTotalIncludesCache is the whole point of the breakdown work: a
+// cache-heavy request must report the cache tokens it actually moved, not just
+// the sliver of prompt that missed the cache.
+func TestDayUsageTotalIncludesCache(t *testing.T) {
+	db := newTestDB(t)
+	const tz = 480
+	loc := time.FixedZone("test", tz*60)
+	nowLocal := time.Now().In(loc)
+	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 4, 0, 0, 0, loc)
+
+	// A typical Claude Code turn: tiny fresh prompt, huge cache hit.
+	insertFull(t, db, today, "k", 1200, 800, 95000, 3000, types.ReasoningUnknown)
+
+	got, err := db.DayUsage(0, tz)
+	if err != nil {
+		t.Fatalf("DayUsage: %v", err)
+	}
+	if want := 1200 + 800 + 95000 + 3000; got.TotalTokens != want {
+		t.Errorf("total = %d, want %d (cache buckets dropped from the sum?)", got.TotalTokens, want)
+	}
+	if got.CacheReadTokens != 95000 || got.CacheWriteTokens != 3000 {
+		t.Errorf("cache = read %d / write %d, want 95000/3000", got.CacheReadTokens, got.CacheWriteTokens)
+	}
+	if got.PromptTokens != 1200 || got.CompletionTokens != 800 {
+		t.Errorf("input/output = %d/%d, want 1200/800", got.PromptTokens, got.CompletionTokens)
+	}
+	// -1 rows must clamp to 0 in the sum, never subtract.
+	if got.ReasoningTokens != 0 {
+		t.Errorf("reasoning = %d, want 0 (unknown rows must clamp, not subtract)", got.ReasoningTokens)
+	}
+
+	// The per-key rollup uses the same accounting as the day total.
+	if len(got.ByKey) != 1 || got.ByKey[0].TotalTokens != got.TotalTokens {
+		t.Errorf("by_key total = %v, want it to match the day total %d", got.ByKey, got.TotalTokens)
+	}
+}
+
+// TestTokensTodayForKeyStaysCacheExclusive locks the deliberate divergence: the
+// daily token limit must not start counting cache reads, or every existing key
+// would suddenly rate-limit roughly ten times sooner.
+func TestTokensTodayForKeyStaysCacheExclusive(t *testing.T) {
+	db := newTestDB(t)
+	insertFull(t, db, time.Now().UTC(), "k", 1200, 800, 95000, 3000, 400)
+
+	if got, want := db.TokensTodayForKey("k"), 2000; got != want {
+		t.Errorf("TokensTodayForKey = %d, want %d — enforcement must stay on the cache-exclusive figure", got, want)
 	}
 }
 

@@ -12,6 +12,72 @@ function escapeHTML(value) {
   })[ch]);
 }
 
+// --- token breakdown -------------------------------------------------------
+// The four buckets are disjoint and sum to the total; reasoning is a subset of
+// output, so it is reported but never added. A reasoning value of -1 means the
+// upstream doesn't split it out (Anthropic folds thinking into output_tokens),
+// which is a different fact from "it thought nothing" — rendered as "—".
+const REASONING_UNKNOWN = -1;
+const TOKEN_KINDS = [
+  { key: 'prompt_tokens', label: 'Input', color: 'var(--green)' },
+  { key: 'completion_tokens', label: 'Output', color: 'var(--red)' },
+  { key: 'cache_tokens', label: 'Cache', color: 'var(--yellow)' },
+];
+const REASONING_KIND = { key: 'reasoning_tokens', label: 'Thinking', color: 'var(--cyan)' };
+const REASONING_HINT = 'Anthropic folds thinking tokens into output_tokens and never reports them separately';
+
+// tokens normalises any object carrying the breakdown (a log row, a bucket, a
+// dimension row, the summary) into one shape, collapsing cache read+write.
+function tokens(o) {
+  const read = o?.cache_read_tokens || 0, write = o?.cache_write_tokens || 0;
+  const t = {
+    prompt_tokens: o?.prompt_tokens || 0,
+    completion_tokens: o?.completion_tokens || 0,
+    cache_tokens: read + write,
+    cache_read_tokens: read,
+    cache_write_tokens: write,
+    reasoning_tokens: o?.reasoning_tokens ?? REASONING_UNKNOWN,
+  };
+  t.total = t.prompt_tokens + t.completion_tokens + t.cache_tokens;
+  return t;
+}
+
+// tokenBar is the inline 3-segment proportion strip shown next to a total.
+function tokenBar(t) {
+  if (!t.total) return '';
+  const segs = TOKEN_KINDS
+    .filter(k => t[k.key] > 0)
+    .map(k => `<i style="width:${(t[k.key] / t.total * 100).toFixed(2)}%;background:${k.color}"></i>`)
+    .join('');
+  return `<span class="tok-bar" title="${escapeHTML(tokenTitle(t))}">${segs}</span>`;
+}
+
+function tokenTitle(t) {
+  const think = t.reasoning_tokens === REASONING_UNKNOWN ? 'not reported' : t.reasoning_tokens.toLocaleString();
+  return `input ${t.prompt_tokens.toLocaleString()} · output ${t.completion_tokens.toLocaleString()}` +
+    ` · cache ${t.cache_tokens.toLocaleString()} (read ${t.cache_read_tokens.toLocaleString()} / write ${t.cache_write_tokens.toLocaleString()})` +
+    ` · thinking ${think}`;
+}
+
+// tokenChips is the expanded legend-style readout (the four labelled pills).
+function tokenChips(t) {
+  const chip = (k, val, extra = '', title = '') =>
+    `<span class="tok-chip"${title ? ` title="${escapeHTML(title)}"` : ''}>` +
+    `<i class="tok-dot" style="background:${k.color}"></i>${k.label} <b>${val}</b>` +
+    (extra ? `<em>${extra}</em>` : '') + '</span>';
+  const cacheDetail = t.cache_tokens
+    ? `read ${fmtCompact(t.cache_read_tokens)} / write ${fmtCompact(t.cache_write_tokens)}`
+    : '';
+  return [
+    chip(TOKEN_KINDS[0], t.prompt_tokens.toLocaleString()),
+    chip(TOKEN_KINDS[1], t.completion_tokens.toLocaleString()),
+    chip(TOKEN_KINDS[2], t.cache_tokens.toLocaleString(), cacheDetail),
+    t.reasoning_tokens === REASONING_UNKNOWN
+      ? chip(REASONING_KIND, '—', '', REASONING_HINT)
+      : chip(REASONING_KIND, t.reasoning_tokens.toLocaleString(), '', 'subset of output, not added to the total'),
+  ].join('');
+}
+
 async function loadStatus() {
   const r = await apiFetch('/api/status');
   if (r.status === 401) { window.location.href = '/login'; return; }
@@ -230,7 +296,7 @@ async function loadLogs() {
   document.getElementById('page-info').textContent = (logPage + 1) + ' / ' + Math.max(1, Math.ceil(d.total / logLimit));
   document.getElementById('log-body').innerHTML = (d.logs || []).map(l => {
     const t = new Date(l.time).toLocaleString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', day: '2-digit', month: 'short' });
-    const tok = (l.prompt_tokens || 0) + (l.completion_tokens || 0);
+    const tk = tokens(l);
     const sc = l.status < 400 ? 'text-green' : 'text-red';
     const keyTag = l.api_key_name ? '<span style="font-size:10px;color:var(--accent);margin-left:4px">[' + l.api_key_name + ']</span>' : '';
     const acct = l.account || '-';
@@ -238,8 +304,21 @@ async function loadLogs() {
       ? ` <span style="color:var(--yellow);font-size:10px;cursor:help" title="failed over from: ${l.failover_from}">↩</span>`
       : '';
     const errRow = l.error ? `<tr class="log-err-row"><td colspan="7"><div class="log-err" title="${escAttr(l.error)}">${escHtml(l.error)}</div></td></tr>` : '';
-    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tok}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
+    // The per-request breakdown is one click away rather than always on: the
+    // table is scanned for anomalies, and four numbers per row would bury them.
+    const detailRow = tk.total
+      ? `<tr class="log-tok-row hidden" data-tok="${l.id}"><td colspan="7"><div class="tok-chips">${tokenChips(tk)}</div></td></tr>`
+      : '';
+    const tokCell = tk.total
+      ? `<span class="tok-total">${fmtCompact(tk.total)}</span>${tokenBar(tk)}`
+      : '<span class="text-muted">–</span>';
+    return `<tr class="${tk.total ? 'log-row-x' : ''}" ${tk.total ? `onclick="toggleLogTokens(${l.id})"` : ''}><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td class="tok-cell">${tokCell}</td><td class="${sc}">${l.status}</td></tr>${detailRow}${errRow}`;
   }).join('') || '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:24px">' + (logErrorsOnly || logSearch ? 'No matching requests' : 'No requests yet') + '</td></tr>';
+}
+
+function toggleLogTokens(id) {
+  const row = document.querySelector(`.log-tok-row[data-tok="${id}"]`);
+  if (row) row.classList.toggle('hidden');
 }
 
 function prevPage() { if (logPage > 0) { logPage--; loadLogs(); } }
@@ -382,12 +461,17 @@ function renderSummary() {
   const s = statsData.summary || { requests: 0, tokens: 0, errors: 0, avg_latency_ms: 0 };
   const errPct = s.requests ? (s.errors / s.requests * 100).toFixed(1) : '0';
   const scope = statsFilter.dim ? ` · ${DIM_LABELS[statsFilter.dim]}: ${escHtml(statsFilter.val)}` : '';
+  const tk = tokens(s);
   document.getElementById('stats-summary').innerHTML =
     `<span><b>${s.requests.toLocaleString()}</b> requests</span>` +
-    `<span><b>${s.tokens.toLocaleString()}</b> tokens</span>` +
+    `<span title="${escapeHTML(tokenTitle(tk))}"><b>${s.tokens.toLocaleString()}</b> tokens</span>` +
     `<span><b class="${s.errors ? 'text-red' : ''}">${errPct}%</b> errors</span>` +
     `<span><b>${Math.round(s.avg_latency_ms)}</b> ms avg</span>` +
     `<span class="sum-scope">${statsRange}${scope}</span>`;
+  // The breakdown lives on its own line: it is the legend for every colour used
+  // in the logs table and the bars below, so it should not compete for space in
+  // the totals strip.
+  document.getElementById('stats-tokens').innerHTML = tk.total ? tokenChips(tk) : '';
 }
 
 // --- axis helpers (local time, matching the tz-shifted SQLite bucket keys) ---
@@ -398,7 +482,7 @@ const hourKey = d => `${dayKey(d)}T${pad2(d.getHours())}:00`;
 function buildAxis(series) {
   const map = {};
   (series || []).forEach(s => { map[s.bucket] = s; });
-  const zero = b => map[b] || { bucket: b, request_count: 0, prompt_tokens: 0, completion_tokens: 0, error_count: 0 };
+  const zero = b => map[b] || { bucket: b, request_count: 0, total_tokens: 0, error_count: 0 };
   let keys = [];
   if (statsRange === 'all') {
     keys = (series || []).map(s => s.bucket); // unbounded: plot returned buckets as-is
@@ -413,7 +497,9 @@ function buildAxis(series) {
   return keys.map(zero);
 }
 
-const metricVal = p => statsMetric === 'tokens' ? (p.prompt_tokens + p.completion_tokens) : statsMetric === 'errors' ? p.error_count : p.request_count;
+// total_tokens comes from the server already summed across the four buckets, so
+// the chart can't drift from the totals strip the way a client-side add would.
+const metricVal = p => statsMetric === 'tokens' ? (p.total_tokens || 0) : statsMetric === 'errors' ? p.error_count : p.request_count;
 const metricLabel = () => statsMetric === 'tokens' ? 'Tokens' : statsMetric === 'errors' ? 'Errors' : 'Requests';
 const xLabel = b => statsData && statsData.granularity === 'hour' ? b.slice(11, 16) : b.slice(5);
 
@@ -422,7 +508,7 @@ function renderCalendar() {
   if (!statsData) return;
   const map = {};
   (statsData.calendar || []).forEach(c => { map[c.bucket] = c; });
-  const valOf = c => statsMetric === 'tokens' ? (c.prompt_tokens + c.completion_tokens) : statsMetric === 'errors' ? c.error_count : c.request_count;
+  const valOf = c => statsMetric === 'tokens' ? (c.total_tokens || 0) : statsMetric === 'errors' ? c.error_count : c.request_count;
   const pfx = statsMetric === 'errors' ? 'cal-e' : 'cal-l';
   document.getElementById('cal-wrap').classList.toggle('errors', statsMetric === 'errors');
 
@@ -593,11 +679,13 @@ function renderBreakdown() {
   const isStatus = statsDim === 'status';
   // The status (errors) breakdown always counts failed requests; other
   // dimensions follow the active metric.
+  const showTokens = !isStatus && statsMetric === 'tokens';
   const rows = (statsData['by_' + statsDim] || []).slice()
     .map(r => ({
       label: r.label,
       val: isStatus ? r.request_count : statsMetric === 'tokens' ? r.total_tokens : statsMetric === 'errors' ? r.error_count : r.request_count,
       err: r.error_count,
+      tok: showTokens ? tokens(r) : null,
     }))
     .filter(r => r.val > 0)
     .sort((a, b) => b.val - a.val)
@@ -613,10 +701,17 @@ function renderBreakdown() {
   el.innerHTML = rows.map(r => {
     const disp = isStatus ? `${escHtml(r.label)}${STATUS_LABELS[r.label] ? ' · ' + STATUS_LABELS[r.label] : ''}` : escHtml(r.label);
     const tail = isStatus ? '' : `<div class="bar-err ${r.err ? 'text-red' : 'text-muted'}">${r.err}</div>`;
+    // In tokens mode the fill is split by bucket, so a row that is mostly cache
+    // reads reads differently at a glance from one that is mostly fresh input.
+    const fill = r.tok && r.tok.total
+      ? TOKEN_KINDS.filter(k => r.tok[k.key] > 0).map(k =>
+          `<i style="width:${(r.tok[k.key] / r.tok.total * 100).toFixed(2)}%;background:${k.color}"></i>`).join('')
+      : '';
+    const barTitle = r.tok && r.tok.total ? tokenTitle(r.tok) : `Filter by ${r.label}`;
     return `
-    <div class="bar-row${r.label === active ? ' bar-active' : ''}" title="Filter by ${escAttr(r.label)}" onclick="filterToBar('${escAttr(r.label)}')">
+    <div class="bar-row${r.label === active ? ' bar-active' : ''}" title="${escAttr(barTitle)}" onclick="filterToBar('${escAttr(r.label)}')">
       <div class="bar-label">${disp}</div>
-      <div class="bar-track"><div class="bar-fill" style="width:${Math.max(2, r.val / max * 100)}%"></div></div>
+      <div class="bar-track"><div class="bar-fill${fill ? ' bar-split' : ''}" style="width:${Math.max(2, r.val / max * 100)}%">${fill}</div></div>
       <div class="bar-val">${fmtCompact(r.val)}</div>
       ${tail}
     </div>`;
@@ -1096,8 +1191,14 @@ async function loadKeys() {
   body.innerHTML = d.keys.map(k => {
     const tokLimit = k.token_limit_daily ? k.token_limit_daily.toLocaleString() + ' tok' : '∞ tok';
     const reqLimit = k.request_limit_daily ? k.request_limit_daily.toLocaleString() + ' req' : '∞ req';
-    const tokColor = limitColorFor(k.tokens_today, k.token_limit_daily);
+    // Colour by quota_used_today, not tokens_today: the daily limit is enforced
+    // on the cache-exclusive figure, so grading the larger display total against
+    // it would warn about a limit that is nowhere near being hit.
+    const tokColor = limitColorFor(k.quota_used_today, k.token_limit_daily);
     const reqColor = limitColorFor(k.requests_today, k.request_limit_daily);
+    const tokTitle = k.token_limit_daily
+      ? `${(k.quota_used_today || 0).toLocaleString()} / ${k.token_limit_daily.toLocaleString()} counted against the daily limit (cache reads excluded)`
+      : 'includes cache tokens; the daily limit counts only non-cache input + output';
     const dis = k.disabled;
     const toggleBtn = '<button class="btn-row" style="' + (dis ? 'border-color:var(--accent);color:var(--accent)' : '') + '" onclick="toggleKey(\'' + k.id + '\')">' + (dis ? '▶ Enable' : '⏸ Disable') + '</button>';
     return '<tr style="' + (dis ? 'opacity:0.5' : '') + '">'
@@ -1105,7 +1206,7 @@ async function loadKeys() {
       + '<td class="text-muted text-mono" style="font-size:11px"><span style="vertical-align:middle">' + k.key.slice(0,10) + '...' + k.key.slice(-4) + '</span> <button class="icon-btn" title="Copy key" onclick="copyKeyInline(this, \'' + k.key + '\')">&#x2398;</button></td>'
       + '<td>' + (k.request_count || 0).toLocaleString() + '</td>'
       + '<td style="' + (reqColor ? 'color:'+reqColor : '') + '">' + (k.requests_today || 0).toLocaleString() + '</td>'
-      + '<td style="' + (tokColor ? 'color:'+tokColor : '') + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
+      + '<td style="' + (tokColor ? 'color:'+tokColor : '') + '" title="' + escapeHTML(tokTitle) + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
       + '<td>' + (k.total_tokens || 0).toLocaleString() + '</td>'
       + '<td style="line-height:1.5"><div>' + reqLimit + '</div><div>' + tokLimit + '</div></td>'
       + '<td style="white-space:nowrap"><button class="btn-row" onclick="editKey(\'' + k.id + '\')">&#x270E; Edit</button> ' + toggleBtn + ' <button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'

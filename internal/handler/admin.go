@@ -656,6 +656,10 @@ func (h *AdminHandler) ListKeys(c *gin.Context) {
 			entry["tokens_today"] = s.TokensToday
 			entry["requests_today"] = s.RequestsToday
 			entry["error_count"] = s.ErrorCount
+			// The figure token_limit_daily is actually enforced against — smaller
+			// than tokens_today, which includes cache. The UI grades the limit by
+			// this one and displays the other.
+			entry["quota_used_today"] = s.QuotaUsedToday
 		}
 		result[i] = entry
 	}
