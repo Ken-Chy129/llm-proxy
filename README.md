@@ -216,8 +216,9 @@ curl https://your-domain/v1/images/generations \
 ```yaml
 server:
   port: 9090
-  admin_user: "admin"                  # 仪表板登录用户名
-  admin_password: "password"           # 仪表板登录密码
+  admin_user: "admin"                  # 仪表板登录用户名（留空则拒绝所有登录）
+  admin_password: "password"           # 仪表板登录密码（同上；可用 LLM_PROXY_ADMIN_USER/PASSWORD 环境变量兜底）
+  tray_token: "tray-..."               # 桌面挂件专用只读令牌（/api/tray），留空则挂件无法访问
   cert_file: "/path/to/cert.pem"       # 可选：启用 HTTPS
   key_file: "/path/to/key.pem"
 

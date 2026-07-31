@@ -2,8 +2,17 @@
 # claude_oauth.token_dir: "/data" so all state persists in the data volume.
 server:
   port: 9090
-  # admin_user: "admin"
-  # admin_password: "changeme"
+  # Dashboard login. Required: if either half is empty the dashboard refuses every
+  # login attempt (blank credentials would otherwise be matched by a blank form).
+  # LLM_PROXY_ADMIN_USER / LLM_PROXY_ADMIN_PASSWORD work as a fallback when you
+  # would rather keep secrets out of this file.
+  admin_user: "admin"
+  admin_password: "changeme"
+  # Read-only credential for the desktop tray widget's /api/tray polls. Generate
+  # one from the dashboard (Config -> Admin -> Tray token). Not an API key: it
+  # cannot spend quota, and the keys from the Keys page are rejected there.
+  # Leave unset to keep the widget locked out.
+  # tray_token: "tray-..."
   # cert_file: "/path/to/cert.pem"   # enable HTTPS
   # key_file: "/path/to/key.pem"
 

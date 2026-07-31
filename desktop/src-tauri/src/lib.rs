@@ -11,9 +11,71 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WebviewWindow, WebviewWindowBuilder, WebviewUrl,
 };
+// 定位能力来自这个 trait；插件里的 `move_window` 是私有 command，只给 JS 用。
+use tauri_plugin_positioner::{Position, WindowExt};
 
 const PANEL: &str = "panel";
 const FLOAT: &str = "float";
+
+/// 前缀哨兵：shell 的 rc 文件里可能有 neofetch / fortune 之类往 stdout 打东西的
+/// 东西，所以不能假定 stdout 只有我们的输出，得把自己那行捞出来。
+const SENTINEL: &str = "__LLM_PROXY_TRAY__";
+
+#[derive(serde::Serialize)]
+struct DetectedConfig {
+    base: String,
+    token: String,
+}
+
+/// 从用户的登录 shell 环境里探测代理地址和 tray token，省掉手填。
+///
+/// 为什么必须真起一个 shell：从 Finder / Dock 启动的 GUI 应用**不继承任何 shell
+/// 环境**，`std::env::var` 拿到的永远是空——export 写在 rc 文件里，只有跑一遍
+/// rc 才看得见。`-i` 让 zsh/bash 读 ~/.zshrc（export 通常在那儿），`-l` 让它读
+/// ~/.zprofile，两个都给才能覆盖两种写法。
+///
+/// stdin 接 null 是防挂的关键：rc 里若有 `read` 之类，拿到 EOF 会立刻返回而不是
+/// 无限等；再加 3 秒超时兜底。超时后子进程可能短暂残留，但 stdin 已关，它自己会退。
+#[tauri::command]
+async fn detect_env_config() -> Option<DetectedConfig> {
+    use std::process::{Command, Stdio};
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    // LLM_PROXY_BASE_URL 优先，退回 ANTHROPIC_BASE_URL——后者本来就指向这个代理，
+    // 是绝大多数人已经配好的那一个。
+    let script = format!(
+        r#"printf '{SENTINEL}%s\t%s\n' "${{LLM_PROXY_BASE_URL:-$ANTHROPIC_BASE_URL}}" "$LLM_PROXY_TRAY_TOKEN""#
+    );
+
+    let child = Command::new(&shell)
+        .args(["-ilc", &script])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null()) // 交互式 shell 常在无 tty 时抱怨作业控制，与我们无关
+        .spawn()
+        .ok()?;
+
+    // wait_with_output 在独立线程里跑：它会边等边读管道，避免 rc 输出撑满管道缓冲
+    // 区导致死锁；主线程只按超时取结果。
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let out = rx
+        .recv_timeout(std::time::Duration::from_secs(3))
+        .ok()?
+        .ok()?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let line = stdout.lines().find_map(|l| l.strip_prefix(SENTINEL))?;
+    let mut parts = line.splitn(2, '\t');
+    let base = parts.next().unwrap_or("").trim().to_string();
+    let token = parts.next().unwrap_or("").trim().to_string();
+    if base.is_empty() && token.is_empty() {
+        return None;
+    }
+    Some(DetectedConfig { base, token })
+}
 
 /// 前端每次轮询后回调，把最紧张的额度写到菜单栏文字上。
 #[tauri::command]
@@ -68,7 +130,11 @@ fn hide_panel(app: AppHandle) {
 }
 
 /// 点击托盘图标：把面板定位到图标下方再显示，模拟原生菜单栏弹窗。
+///
+/// `move_window_constrained` 在图标靠屏幕边缘时会把窗口拉回屏内；托盘位置
+/// 尚未被记录时（用户从未碰过图标）会返回 Err，此时保持窗口原位直接显示。
 fn show_panel_near_tray(win: &WebviewWindow) {
+    let _ = win.move_window_constrained(Position::TrayBottomCenter);
     let _ = win.show();
     let _ = win.set_focus();
 }
@@ -81,7 +147,8 @@ pub fn run() {
             set_tray_title,
             toggle_float,
             set_float_on_top,
-            hide_panel
+            hide_panel,
+            detect_env_config
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -126,10 +193,6 @@ pub fn run() {
                             if w.is_visible().unwrap_or(false) {
                                 let _ = w.hide();
                             } else {
-                                let _ = tauri_plugin_positioner::move_window(
-                                    &w,
-                                    tauri_plugin_positioner::Position::TrayCenter,
-                                );
                                 show_panel_near_tray(&w);
                             }
                         }

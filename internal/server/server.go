@@ -1,8 +1,11 @@
 package server
 
 import (
+	"crypto/subtle"
 	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
@@ -67,13 +70,14 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.POST("/keys/:id/toggle", adminHandler.ToggleKey)
 	admin.DELETE("/keys/:id", adminHandler.DeleteKey)
 
-	// Tray API — compact snapshot for the desktop widget. Accepts either a
-	// managed API key (Bearer/x-api-key) or a dashboard session cookie, because
-	// sessions live in memory and are wiped on every restart; a long-polling
-	// tray needs a credential that survives redeploys.
+	// Tray API — compact snapshot for the desktop widget. Guarded by
+	// server.tray_token (see TrayAuth), a read-only credential separate from the
+	// /v1 API keys: sessions live in memory and are wiped on every restart, so a
+	// widget polling every 60s needs something that survives redeploys, but it
+	// has no business holding a key that can spend quota.
 	// DesktopCORS runs first so the browser preflight (which carries no auth
-	// header) is answered before APIKeyAuth would reject it.
-	engine.GET("/api/tray", DesktopCORS(), APIKeyAuth(keyStore), adminHandler.Tray)
+	// header) is answered before TrayAuth would reject it.
+	engine.GET("/api/tray", DesktopCORS(), TrayAuth(cfg), adminHandler.Tray)
 	engine.OPTIONS("/api/tray", DesktopCORS())
 
 	// OAuth login (session protected)
@@ -144,6 +148,15 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Printf("models: %v\n", r.AllModels())
+	// Loud, because the symptom is silent: the dashboard just refuses every login
+	// and nothing explains why.
+	if !cfg.AdminConfigured() {
+		fmt.Printf("WARNING: dashboard login disabled — no admin credentials. Set server.admin_user + server.admin_password in %s, or %s / %s in the environment.\n",
+			configPath, config.EnvAdminUser, config.EnvAdminPassword)
+	}
+	if cfg.TrayToken() == "" {
+		fmt.Println("note: server.tray_token is unset — the desktop tray widget cannot authenticate (dashboard Config → Admin → Tray token)")
+	}
 	if cfg.Server.CertFile != "" && cfg.Server.KeyFile != "" {
 		fmt.Printf("llm-proxy listening on %s (HTTPS)\n", addr)
 		return engine.RunTLS(addr, cfg.Server.CertFile, cfg.Server.KeyFile)
@@ -157,7 +170,10 @@ func loginPage() gin.HandlerFunc {
 		errMsg := c.Query("error")
 		errHTML := ""
 		if errMsg != "" {
-			errHTML = `<div class="err">! ` + errMsg + `</div>`
+			// Escaped: this is attacker-controlled query text spliced into a raw
+			// HTML string, i.e. reflected XSS on an unauthenticated page if left
+			// alone — a phishing link could inject a fake login form.
+			errHTML = `<div class="err">! ` + html.EscapeString(errMsg) + `</div>`
 		}
 		c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
@@ -207,7 +223,26 @@ func loginHandler(cfg *config.Config) gin.HandlerFunc {
 		username := c.PostForm("username")
 		password := c.PostForm("password")
 
-		if username == cfg.Server.AdminUser && password == cfg.Server.AdminPassword {
+		// Read through the accessor: the dashboard can rewrite these two while
+		// this handler is running. Constant-time compare so a wrong password
+		// takes the same time regardless of how many leading bytes matched.
+		wantUser, wantPass := cfg.AdminCreds()
+
+		// Unconfigured credentials must lock the dashboard, not open it.
+		// config.example.yaml ships with admin_user/admin_password commented out,
+		// so a fresh install has both empty — and comparing "" against an empty
+		// form field succeeds, which would hand the console to anyone who finds
+		// the port. Same rule as an empty tray_token: blank means off.
+		if wantUser == "" || wantPass == "" {
+			c.Redirect(http.StatusFound, "/login?error="+url.QueryEscape(
+				"Dashboard login is not configured — set server.admin_user and server.admin_password, or "+
+					config.EnvAdminUser+" / "+config.EnvAdminPassword))
+			return
+		}
+
+		userOK := subtle.ConstantTimeCompare([]byte(username), []byte(wantUser)) == 1
+		passOK := subtle.ConstantTimeCompare([]byte(password), []byte(wantPass)) == 1
+		if userOK && passOK {
 			token := sessions.Create()
 			secure := cfg.Server.CertFile != ""
 			c.SetCookie("session", token, 86400*7, "/", "", secure, true)

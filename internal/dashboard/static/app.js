@@ -733,7 +733,24 @@ async function loadConfig() {
   if (!kimiModels.length) addKimiRow('', '');
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
   document.getElementById('cfg-admin-pass').value = '';
+  document.getElementById('cfg-tray-token').value = d.server?.tray_token || '';
   setCfgStatus('', '');
+}
+
+// Prefixed rather than random-looking so it is never mistaken for an `sk-` API
+// key from the Keys page — the two credentials guard different planes.
+function genTrayToken() {
+  const buf = new Uint8Array(24);
+  crypto.getRandomValues(buf);
+  const hex = [...buf].map(b => b.toString(16).padStart(2, '0')).join('');
+  document.getElementById('cfg-tray-token').value = 'tray-' + hex;
+  setCfgStatus('Token generated — hit Save Config, then paste it into the widget.', '');
+}
+
+function copyTrayToken(btn) {
+  const val = document.getElementById('cfg-tray-token').value.trim();
+  if (!val) { setCfgStatus('Nothing to copy — generate a token first.', 'err'); return; }
+  copyKeyInline(btn, val);
 }
 
 async function saveConfig() {
@@ -755,6 +772,9 @@ async function saveConfig() {
     server: {
       admin_user: document.getElementById('cfg-admin-user').value.trim(),
       admin_password: document.getElementById('cfg-admin-pass').value,
+      // Always sent, including empty: the box is prefilled, so clearing it means
+      // revoke. The server treats a missing key (not an empty one) as "keep".
+      tray_token: document.getElementById('cfg-tray-token').value.trim(),
     },
   };
   setCfgStatus('Saving…', '');

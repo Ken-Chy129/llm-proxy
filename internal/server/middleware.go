@@ -2,6 +2,7 @@ package server
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
+	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 )
 
@@ -44,7 +46,7 @@ func (s *sessionStore) Valid(token string) bool {
 // fails at the preflight with no useful error.
 //
 // Origins are whitelisted rather than mirrored back, and credentials are never
-// allowed: the widget authenticates with a Bearer key, so permitting cookies
+// allowed: the widget authenticates with a Bearer token, so permitting cookies
 // would let any origin listed here ride on a live dashboard session. Echoing
 // arbitrary origins plus allow-credentials is the classic mistake that turns a
 // convenience header into CSRF against every admin route.
@@ -78,6 +80,17 @@ func DesktopCORS() gin.HandlerFunc {
 	}
 }
 
+// credentialFromHeaders pulls a bearer credential out of a request. Anthropic
+// clients send x-api-key, OpenAI-style ones send Authorization: Bearer, and the
+// desktop widget sends the former shape too — so every credential-checking
+// middleware accepts both.
+func credentialFromHeaders(c *gin.Context) string {
+	if h := c.GetHeader("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+	}
+	return strings.TrimSpace(c.GetHeader("x-api-key"))
+}
+
 // APIKeyAuth protects /v1/* endpoints with Bearer token OR session cookie.
 // Validates against managed keys issued from the dashboard Keys page.
 func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
@@ -86,15 +99,7 @@ func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
 			c.Next()
 			return
 		}
-		// Extract key from headers
-		apiKey := ""
-		authHeader := c.GetHeader("Authorization")
-		if t := strings.TrimPrefix(authHeader, "Bearer "); t != authHeader {
-			apiKey = t
-		}
-		if apiKey == "" {
-			apiKey = c.GetHeader("x-api-key")
-		}
+		apiKey := credentialFromHeaders(c)
 
 		if apiKey != "" {
 			// Check managed keys first
@@ -121,6 +126,46 @@ func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
 		}
 		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 			"error": gin.H{"message": "invalid api key", "type": "invalid_request_error"},
+		})
+	}
+}
+
+// TrayAuth protects /api/tray, the read-only snapshot the desktop widget polls.
+//
+// That endpoint is admin-plane data (account emails, quota headroom, per-key
+// usage), so it deliberately does NOT accept the managed /v1 API keys: a
+// credential that can spend quota and a credential that can read the console
+// are different things, and letting one stand in for the other is exactly the
+// confusion this middleware exists to undo. It accepts:
+//
+//   - server.tray_token, via Authorization: Bearer or x-api-key
+//   - a live dashboard session cookie, so the endpoint stays debuggable in a
+//     logged-in browser
+//
+// An empty tray_token locks the endpoint down instead of opening it — the
+// opposite of APIKeyAuth's "no keys configured, let everyone through" rule,
+// which on a fresh install would leave this data world-readable.
+func TrayAuth(cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// Compared in constant time: the token is a fixed secret checked on a
+		// public endpoint every 60s, which is the shape byte-by-byte timing
+		// attacks like.
+		if want := cfg.TrayToken(); want != "" {
+			got := credentialFromHeaders(c)
+			if got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1 {
+				c.Next()
+				return
+			}
+		}
+		if cookie, err := c.Cookie("session"); err == nil && sessions.Valid(cookie) {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+			"error": gin.H{
+				"message": "invalid tray token — generate one under Config → Admin → Tray token in the dashboard",
+				"type":    "invalid_request_error",
+			},
 		})
 	}
 }

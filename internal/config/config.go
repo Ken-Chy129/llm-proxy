@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,6 +14,21 @@ type Config struct {
 	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
 	Codex       CodexConfig       `yaml:"codex"`
 	Kimi        KimiConfig        `yaml:"kimi"`
+
+	// mu guards only the ServerConfig fields the dashboard can rewrite while the
+	// server is serving: Port, AdminUser, AdminPassword, TrayToken. Everything
+	// else is written once by Load and read-only afterwards, so it needs no
+	// synchronisation.
+	//
+	// Read and write those four through the accessors below, never directly —
+	// a bare `cfg.Server.AdminPassword` read in a request handler races with a
+	// concurrent config save (`go test -race` will say so).
+	//
+	// Locking is per-field, not per-save: two dashboard saves racing each other
+	// interleave field-by-field rather than one winning wholesale. That is
+	// acceptable for a single-admin console and much cheaper than threading a
+	// transaction through the whole update path.
+	mu sync.RWMutex
 }
 
 type ServerConfig struct {
@@ -21,6 +37,16 @@ type ServerConfig struct {
 	KeyFile       string `yaml:"key_file"`
 	AdminUser     string `yaml:"admin_user"`
 	AdminPassword string `yaml:"admin_password"`
+	// TrayToken authenticates the desktop widget's polls of /api/tray.
+	//
+	// It is deliberately NOT one of the managed API keys from the Keys page:
+	// those live on the traffic plane (they can spend quota and carry daily
+	// limits), while /api/tray is admin-plane data — account emails, quota
+	// headroom, per-key usage. One credential per plane keeps "can read my
+	// dashboard" from silently implying "can spend my quota".
+	//
+	// Empty means the widget cannot authenticate at all; see server.TrayAuth.
+	TrayToken string `yaml:"tray_token"`
 	// AccountStrategy selects how a provider's accounts are picked per request:
 	// "weekly_expiry" (default) — quota-aware: prefer the usable account whose
 	// weekly window resets soonest, so perishable weekly budget is burned first;
@@ -61,6 +87,74 @@ type KimiConfig struct {
 	Models    []ModelConfig `yaml:"models"`
 }
 
+// Environment fallbacks for the dashboard credentials. Containerised deploys
+// inject secrets as env vars instead of editing a mounted YAML, and shipping
+// config.example.yaml with these commented out is exactly how an install ends up
+// with no credentials at all.
+const (
+	EnvAdminUser     = "LLM_PROXY_ADMIN_USER"
+	EnvAdminPassword = "LLM_PROXY_ADMIN_PASSWORD"
+)
+
+// AdminConfigured reports whether dashboard login is usable at all. Both halves
+// must be set: a blank half would otherwise be matched by a blank form field.
+func (c *Config) AdminConfigured() bool {
+	user, password := c.AdminCreds()
+	return user != "" && password != ""
+}
+
+// AdminCreds returns the dashboard login credentials.
+func (c *Config) AdminCreds() (user, password string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Server.AdminUser, c.Server.AdminPassword
+}
+
+// SetAdminCreds updates the dashboard login credentials, ignoring empty values.
+// "" means "keep current" here because the dashboard's password box is never
+// prefilled — an empty box means the admin did not touch it.
+func (c *Config) SetAdminCreds(user, password string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if user != "" {
+		c.Server.AdminUser = user
+	}
+	if password != "" {
+		c.Server.AdminPassword = password
+	}
+}
+
+// TrayToken returns the desktop widget's credential ("" = widget locked out).
+func (c *Config) TrayToken() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Server.TrayToken
+}
+
+// SetTrayToken stores the value verbatim, including "" — unlike the admin
+// password, the dashboard prefills this box with the current token, so a
+// cleared box is a deliberate "revoke it". Callers that mean "leave unchanged"
+// must not call this at all.
+func (c *Config) SetTrayToken(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Server.TrayToken = token
+}
+
+// Port returns the configured listen port. The running listener keeps its
+// original port until restart; this is the value a later restart will use.
+func (c *Config) Port() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.Server.Port
+}
+
+func (c *Config) SetPort(port int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.Server.Port = port
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -73,14 +167,28 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
+	// The config file wins when both are present — it is the more explicit of the
+	// two, and silently preferring an inherited env var would make a checked-in
+	// value lie about what the server is actually using.
+	if cfg.Server.AdminUser == "" {
+		cfg.Server.AdminUser = os.Getenv(EnvAdminUser)
+	}
+	if cfg.Server.AdminPassword == "" {
+		cfg.Server.AdminPassword = os.Getenv(EnvAdminPassword)
+	}
 	return &cfg, nil
 }
 
 // Save writes cfg back to path as YAML. The write is atomic (temp file + rename)
 // so a crash mid-write never leaves a truncated config. Note: this re-marshals
 // the whole struct, so any comments in the original file are lost.
+//
+// Marshalling reads every field, including the runtime-mutable ones, so it takes
+// the read lock. Callers must not already hold it.
 func Save(path string, cfg *Config) error {
+	cfg.mu.RLock()
 	data, err := yaml.Marshal(cfg)
+	cfg.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}

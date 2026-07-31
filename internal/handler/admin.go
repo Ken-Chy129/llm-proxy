@@ -318,10 +318,14 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 }
 
 func (h *AdminHandler) Config(c *gin.Context) {
+	adminUser, _ := h.cfg.AdminCreds()
 	c.JSON(http.StatusOK, gin.H{
 		"server": gin.H{
-			"port":       h.cfg.Server.Port,
-			"admin_user": h.cfg.Server.AdminUser,
+			"port":       h.cfg.Port(),
+			"admin_user": adminUser,
+			// Echoed in full, unlike admin_password: the widget's token has to be
+			// copyable from here, and this route already sits behind SessionAuth.
+			"tray_token": h.cfg.TrayToken(),
 		},
 		"vertex": gin.H{
 			"project_id": h.cfg.Vertex.ProjectID,
@@ -408,6 +412,11 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			Port          int    `json:"port"`
 			AdminUser     string `json:"admin_user"`
 			AdminPassword string `json:"admin_password"`
+			// Pointer, not string: this field is prefilled in the dashboard, so an
+			// empty string is a deliberate revoke. Absent (nil) must still mean
+			// "leave it alone", otherwise any client that PUTs a config without
+			// this key silently locks out the desktop widget.
+			TrayToken *string `json:"tray_token"`
 		} `json:"server"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -447,7 +456,7 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 
 	// --- detect restart-required changes before mutating cfg ---
 	var restart []string
-	if req.Server.Port != 0 && req.Server.Port != h.cfg.Server.Port {
+	if req.Server.Port != 0 && req.Server.Port != h.cfg.Port() {
 		restart = append(restart, "port")
 	}
 
@@ -471,11 +480,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			h.router.Register(h.kimiExec, "kimi")
 		}
 	}
-	if req.Server.AdminUser != "" {
-		h.cfg.Server.AdminUser = req.Server.AdminUser
-	}
-	if req.Server.AdminPassword != "" {
-		h.cfg.Server.AdminPassword = req.Server.AdminPassword
+	h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
+	if req.Server.TrayToken != nil {
+		h.cfg.SetTrayToken(strings.TrimSpace(*req.Server.TrayToken))
 	}
 
 	// --- update in-memory cfg, then persist ---
@@ -486,7 +493,7 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		h.cfg.Kimi.Models = kimiModels
 	}
 	if req.Server.Port != 0 {
-		h.cfg.Server.Port = req.Server.Port
+		h.cfg.SetPort(req.Server.Port)
 	}
 
 	if err := config.Save(h.configPath, h.cfg); err != nil {

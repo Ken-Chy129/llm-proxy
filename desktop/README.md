@@ -45,20 +45,41 @@ xattr -dr com.apple.quarantine "/Applications/LLM Proxy.app"
 
 ## 首次配置
 
-启动后面板会自动打开设置页，填三项：
+先在服务端生成令牌：**Dashboard → Config → Admin → Tray token → Generate → Save Config**（也可以直接写 `config.yaml` 的 `server.tray_token`）。
 
-- **代理地址** — 你的 llm-proxy 地址，例如 `https://proxy.example.com`（不要带尾斜杠，带了也会自动去掉）
-- **API Key** — 在 llm-proxy Dashboard → Keys 页面创建或复制一个（`sk-...`）
-- **刷新间隔 / 告警阈值** — 默认 60 秒 / 20%
+然后二选一：
 
-配置存在 WebView 的 localStorage 里，只在本机与你的代理之间传输。
+**A. 零手填（推荐）** — 把令牌 export 到 shell 配置里，挂件启动时自动读：
 
-> **为什么用 API Key 而不是登录密码？**
-> llm-proxy 的 dashboard session 存在内存里，服务一重启（比如你 `./deploy.sh`）所有 cookie 就失效了。托盘每分钟轮询一次，靠 cookie 会动不动掉线；API Key 则能一直用。
+```bash
+# ~/.zshrc
+export LLM_PROXY_TRAY_TOKEN="tray-xxxx"
+# 地址复用你已有的 ANTHROPIC_BASE_URL；想分开配就设 LLM_PROXY_BASE_URL
+```
+
+**B. 手填** — 面板右上角 ⚙，填代理地址 + Tray Token。
+
+另外两项默认值够用：**刷新间隔 / 告警阈值** = 60 秒 / 20%。
+
+配置存在 WebView 的 localStorage 里，只在本机与你的代理之间传输。手填过的值优先级高于环境变量 —— 自动探测只补空缺的字段，不会覆盖你的设置。
+
+> **为什么是 Tray Token，而不是 API Key，也不是登录密码？**
+>
+> 三者对应三种权限，llm-proxy 刻意分开：
+>
+> | 凭证 | 平面 | 能做什么 |
+> |---|---|---|
+> | `sk-...`（Keys 页面） | 流量 | 打 `/v1/*`，**消耗你的额度**，受日限额约束 |
+> | admin 用户名/密码 | 管理 | 登录 dashboard，改配置、删账号 |
+> | `tray-...`（本项目） | 管理（只读） | 仅 `/api/tray`，看不到也改不了别的 |
+>
+> 挂件要的只是最后一种。用 API Key 会让一个每 60 秒发请求、明文存在 localStorage 里的桌面程序握着能花钱的钥匙；用登录密码则不行——dashboard session 存在内存里，服务一重启（`./deploy.sh`）就全失效，而挂件需要能跨重启存活的凭证。
+>
+> `/api/tray` 已不再接受 `sk-` API Key（`TrayAuth` 中间件），旧版挂件升级后会 401，重新配一次 tray token 即可。
 
 ## 后端接口
 
-依赖 llm-proxy 的 `GET /api/tray?tz=<分钟偏移>`，认 `Authorization: Bearer <key>` 或 dashboard session cookie。
+依赖 llm-proxy 的 `GET /api/tray?tz=<分钟偏移>`，认 `Authorization: Bearer <tray_token>`（或 `x-api-key`），也接受 dashboard session cookie 以便在浏览器里调试。`server.tray_token` 为空时一律 401 —— 空值等于关闭，不等于放行。
 
 响应是刻意压小的（托盘要每分钟拉一次），只含：
 
@@ -93,7 +114,7 @@ xattr -dr com.apple.quarantine "/Applications/LLM Proxy.app"
 两点刻意的设计：
 
 - **白名单而非回显 Origin。** 回显任意来源等于让任何网站都能读你的用量数据。
-- **绝不发 `Allow-Credentials`。** 挂件用 Bearer key 认证，不需要 cookie；一旦允许携带凭据，白名单里的来源就能盗用你已登录的 dashboard session。
+- **绝不发 `Allow-Credentials`。** 挂件用 Bearer 令牌认证，不需要 cookie；一旦允许携带凭据，白名单里的来源就能盗用你已登录的 dashboard session。
 
 预检（OPTIONS）在鉴权之前响应 —— 预检请求不带 `Authorization` 头，鉴权在前会导致永远 401。这几条行为都有测试锁住（`internal/server/cors_test.go`），改动前先看测试。
 
@@ -121,7 +142,7 @@ desktop/
 
 ```bash
 # 抓一份真实数据
-curl -H "Authorization: Bearer sk-..." \
+curl -H "Authorization: Bearer tray-..." \
      "https://proxy.example.com/api/tray?tz=480" -o /tmp/tray.json
 
 node scripts/preview.mjs /tmp/tray.json /tmp/pv.html --dark --hour 11

@@ -5,7 +5,9 @@ import { render, trayTitle, alertFor } from './render.js';
 
 const DEFAULTS = {
   base: '',
-  key: '',
+  // 代理的 tray token（server.tray_token），不是 Keys 页面那种 sk- API Key：
+  // 后者属于流量平面、能花额度，/api/tray 已经不再接受它。
+  token: '',
   interval: 60,
   threshold: 20,
   notify: true,
@@ -23,6 +25,16 @@ function loadConfig() {
 
 function saveConfig(cfg) {
   localStorage.setItem(LS_KEY, JSON.stringify(cfg));
+}
+
+/**
+ * 代理根地址：去掉尾斜杠，也去掉尾部的 /v1。
+ *
+ * /v1 那一步是给自动探测用的：ANTHROPIC_BASE_URL 有人会写成 https://host/v1，
+ * 而我们要拼的是 {base}/api/tray，不处理就会变成 /v1/api/tray 打到 404。
+ */
+function normalizeBase(raw) {
+  return (raw || '').trim().replace(/\/+$/, '').replace(/\/v1$/, '');
 }
 
 let config = loadConfig();
@@ -148,8 +160,8 @@ async function maybeNotify(d) {
 }
 
 async function refresh(manual = false) {
-  if (!config.base || !config.key) {
-    showError('还没配置代理地址和 API Key，点右上角 ⚙ 设置。');
+  if (!config.base || !config.token) {
+    showError('还没配置代理地址和 Tray Token，点右上角 ⚙ 设置。');
     setDot('dead');
     openSettings();
     return;
@@ -164,11 +176,12 @@ async function refresh(manual = false) {
 
   try {
     const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${config.key}` },
+      headers: { Authorization: `Bearer ${config.token}` },
       cache: 'no-store',
     });
     if (res.status === 401 || res.status === 403) {
-      throw new Error('API Key 无效或已停用（401/403）');
+      // 最常见的原因是拿旧的 sk- API Key 来打：/api/tray 现在只认 tray token。
+      throw new Error('Tray Token 无效（401/403），去 Dashboard → Config → Admin 取');
     }
     if (!res.ok) {
       throw new Error(`代理返回 ${res.status}`);
@@ -198,7 +211,7 @@ function restartTimer() {
 
 function openSettings() {
   document.getElementById('in-base').value = config.base;
-  document.getElementById('in-key').value = config.key;
+  document.getElementById('in-token').value = config.token;
   document.getElementById('in-interval').value = config.interval;
   document.getElementById('in-threshold').value = config.threshold;
   document.getElementById('in-notify').checked = !!config.notify;
@@ -236,8 +249,8 @@ function wire() {
   document.getElementById('btn-cancel').addEventListener('click', closeSettings);
   document.getElementById('btn-save').addEventListener('click', () => {
     config = {
-      base: document.getElementById('in-base').value.trim(),
-      key: document.getElementById('in-key').value.trim(),
+      base: normalizeBase(document.getElementById('in-base').value),
+      token: document.getElementById('in-token').value.trim(),
       interval: Math.max(10, Number(document.getElementById('in-interval').value) || 60),
       threshold: Math.min(99, Math.max(1, Number(document.getElementById('in-threshold').value) || 20)),
       notify: document.getElementById('in-notify').checked,
@@ -263,7 +276,29 @@ function wire() {
   window.__refresh = () => refresh(true);
 }
 
+/**
+ * 首次启动时从 shell 环境补齐配置，省掉手填。
+ *
+ * 只填空缺的字段——手动填过的值永远优先，否则用户的覆盖会被环境变量默默抹掉。
+ * 探测失败（浏览器预览、没设变量、shell 超时）就静默跳过，refresh 会照旧引导去
+ * 设置页；这一步是省事，不是必要条件。
+ */
+async function autofillConfig() {
+  if (config.base && config.token) return;
+  const got = await tauri((T) => T.invoke('detect_env_config'));
+  if (!got) return;
+
+  const base = normalizeBase(got.base);
+  const token = (got.token || '').trim();
+  if (!config.base && base) config.base = base;
+  if (!config.token && token) config.token = token;
+  if (config.base || config.token) saveConfig(config);
+}
+
 wire();
 if (IS_FLOAT) document.body.classList.add('float');
-restartTimer();
-refresh(true);
+// 探测要起一个 shell（最多 3 秒），所以先 await 再首刷，免得白报一次"未配置"。
+autofillConfig().finally(() => {
+  restartTimer();
+  refresh(true);
+});

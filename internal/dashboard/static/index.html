@@ -276,6 +276,15 @@
             <input id="cfg-admin-pass" type="password" autocomplete="new-password" placeholder="leave blank to keep current">
           </div>
         </div>
+        <div class="cfg-field" style="margin-top:14px">
+          <label>Tray token <span class="cfg-badge cfg-live">● live</span></label>
+          <p class="cfg-hint">Read-only credential for the desktop widget's <code>/api/tray</code> polls. Not an API key — it cannot spend quota, and the keys on the Keys page no longer work here. Blank locks the widget out.</p>
+          <div class="cfg-row">
+            <input id="cfg-tray-token" type="text" autocomplete="off" spellcheck="false" placeholder="blank = widget locked out">
+            <button type="button" class="btn-add" onclick="genTrayToken()">Generate</button>
+            <button type="button" class="icon-btn" title="Copy token" onclick="copyTrayToken(this)">&#x2398;</button>
+          </div>
+        </div>
       </div>
     </div>
 
