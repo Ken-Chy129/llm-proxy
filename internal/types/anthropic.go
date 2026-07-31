@@ -64,9 +64,34 @@ type AnthropicResponse struct {
 	Usage        AnthropicUsage          `json:"usage"`
 }
 
+// AnthropicUsage mirrors the Messages API usage object. input_tokens here
+// excludes both cache buckets — the three input fields are disjoint and only
+// sum to the real prompt size when added together.
 type AnthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+}
+
+// MergeNonZero folds a later usage object into u, keeping already-populated
+// fields. Anthropic splits usage across message_start (input + cache) and
+// message_delta (output, and in newer API versions the full object again), so a
+// plain overwrite would let the delta's zeroed input fields erase the real
+// numbers from message_start.
+func (u *AnthropicUsage) MergeNonZero(next AnthropicUsage) {
+	if next.InputTokens != 0 {
+		u.InputTokens = next.InputTokens
+	}
+	if next.OutputTokens != 0 {
+		u.OutputTokens = next.OutputTokens
+	}
+	if next.CacheCreationInputTokens != 0 {
+		u.CacheCreationInputTokens = next.CacheCreationInputTokens
+	}
+	if next.CacheReadInputTokens != 0 {
+		u.CacheReadInputTokens = next.CacheReadInputTokens
+	}
 }
 
 type AnthropicStreamEvent struct {

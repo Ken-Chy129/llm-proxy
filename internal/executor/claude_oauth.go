@@ -215,6 +215,9 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	})
 
 	var usage types.Usage
+	// Anthropic splits usage across message_start (input + cache buckets) and
+	// message_delta (output), so accumulate the upstream object and convert once.
+	var au types.AnthropicUsage
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var hasToolCalls bool
@@ -237,7 +240,8 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 		switch event.Type {
 		case "message_start":
 			if event.Message != nil {
-				usage.PromptTokens = event.Message.Usage.InputTokens
+				au.MergeNonZero(event.Message.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 
 		case "content_block_start":
@@ -288,8 +292,8 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 
 		case "message_delta":
 			if event.Usage != nil {
-				usage.CompletionTokens = event.Usage.OutputTokens
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				au.MergeNonZero(*event.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 			finishReason := "stop"
 			if hasToolCalls {

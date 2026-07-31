@@ -337,6 +337,8 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	})
 
 	var usage types.Usage
+	// See claude_oauth.go: usage arrives in two events, accumulate then convert.
+	var au types.AnthropicUsage
 	var hasToolCalls bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -352,7 +354,8 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 		switch event.Type {
 		case "message_start":
 			if event.Message != nil {
-				usage.PromptTokens = event.Message.Usage.InputTokens
+				au.MergeNonZero(event.Message.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 		case "content_block_start":
 			if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
@@ -403,8 +406,8 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 			}
 		case "message_delta":
 			if event.Usage != nil {
-				usage.CompletionTokens = event.Usage.OutputTokens
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				au.MergeNonZero(*event.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 			finishReason := "stop"
 			if hasToolCalls {

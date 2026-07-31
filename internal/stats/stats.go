@@ -8,9 +8,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	_ "modernc.org/sqlite"
 )
 
+// RequestLog is one logged request. The four token buckets are disjoint and
+// additive — PromptTokens here is cache-*exclusive*, unlike the OpenAI wire
+// field of the same name. types.TokenUsage is the source of these values;
+// SetUsage is the only sanctioned way to populate them.
 type RequestLog struct {
 	ID               int64     `json:"id"`
 	Time             time.Time `json:"time"`
@@ -18,8 +23,11 @@ type RequestLog struct {
 	Backend          string    `json:"backend"`
 	LatencyMs        int64     `json:"latency_ms"`
 	Status           int       `json:"status"`
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
+	PromptTokens     int       `json:"prompt_tokens"`     // input tokens excluding both cache buckets
+	CompletionTokens int       `json:"completion_tokens"` // all output, reasoning included
+	CacheReadTokens  int       `json:"cache_read_tokens"`
+	CacheWriteTokens int       `json:"cache_write_tokens"`
+	ReasoningTokens  int       `json:"reasoning_tokens"` // subset of CompletionTokens; -1 = upstream didn't report
 	Stream           bool      `json:"stream"`
 	Error            string    `json:"error,omitempty"`
 	APIKeyName       string    `json:"api_key_name,omitempty"`
@@ -27,13 +35,56 @@ type RequestLog struct {
 	FailoverFrom     string    `json:"failover_from,omitempty"` // comma-separated accounts that 429'd before the serving one
 }
 
+// SetUsage copies a canonical breakdown into the log entry.
+func (l *RequestLog) SetUsage(u types.TokenUsage) {
+	l.PromptTokens = u.Input
+	l.CompletionTokens = u.Output
+	l.CacheReadTokens = u.CacheRead
+	l.CacheWriteTokens = u.CacheWrite
+	l.ReasoningTokens = u.Reasoning
+}
+
+// TokenBreakdown is the four-bucket split attached to any aggregate row, so the
+// UI can render input/output/cache/thinking wherever it shows a total.
+type TokenBreakdown struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	ReasoningTokens  int `json:"reasoning_tokens"`
+}
+
+// totalTokensExpr is the display accounting: the four disjoint buckets added up.
+// Reasoning is deliberately absent — it is a subset of completion_tokens, and
+// adding it would double-count. Every user-visible total goes through this.
+const totalTokensExpr = "(prompt_tokens + cache_read_tokens + cache_write_tokens + completion_tokens)"
+
+// breakdownCols selects the five per-bucket sums in TokenBreakdown field order.
+// reasoning_tokens is -1 on rows whose upstream never reported it, so the sum
+// clamps each row to 0 rather than subtracting.
+const breakdownCols = `COALESCE(SUM(prompt_tokens), 0),
+	COALESCE(SUM(completion_tokens), 0),
+	COALESCE(SUM(cache_read_tokens), 0),
+	COALESCE(SUM(cache_write_tokens), 0),
+	COALESCE(SUM(MAX(reasoning_tokens, 0)), 0)`
+
+// scanArgs returns the destinations for breakdownCols, in order.
+func (b *TokenBreakdown) scanArgs() []any {
+	return []any{&b.PromptTokens, &b.CompletionTokens, &b.CacheReadTokens, &b.CacheWriteTokens, &b.ReasoningTokens}
+}
+
 type KeyStats struct {
-	KeyName         string `json:"key_name"`
-	RequestCount    int    `json:"request_count"`
-	TotalTokens     int    `json:"total_tokens"`
-	ErrorCount      int    `json:"error_count"`
-	TokensToday     int    `json:"tokens_today"`
-	RequestsToday   int    `json:"requests_today"`
+	KeyName       string `json:"key_name"`
+	RequestCount  int    `json:"request_count"`
+	TotalTokens   int    `json:"total_tokens"`
+	ErrorCount    int    `json:"error_count"`
+	TokensToday   int    `json:"tokens_today"`
+	RequestsToday int    `json:"requests_today"`
+	// QuotaUsedToday is the cache-exclusive figure the daily token limit is
+	// actually enforced against (see TokensTodayForKey). TokensToday is the
+	// larger display total; colouring the row by that one would warn about a
+	// limit that is nowhere near being hit.
+	QuotaUsedToday int `json:"quota_used_today"`
 }
 
 type ModelStats struct {
@@ -55,11 +106,11 @@ type DailyStats struct {
 
 // BucketStats is one point on the time-series trend (hourly or daily bucket).
 type BucketStats struct {
-	Bucket           string `json:"bucket"`
-	RequestCount     int    `json:"request_count"`
-	PromptTokens     int    `json:"prompt_tokens"`
-	CompletionTokens int    `json:"completion_tokens"`
-	ErrorCount       int    `json:"error_count"`
+	Bucket       string `json:"bucket"`
+	RequestCount int    `json:"request_count"`
+	TotalTokens  int    `json:"total_tokens"`
+	ErrorCount   int    `json:"error_count"`
+	TokenBreakdown
 }
 
 // DimStats is one row of a generic dimension breakdown (per model/key/backend/account).
@@ -69,6 +120,16 @@ type DimStats struct {
 	TotalTokens  int     `json:"total_tokens"`
 	ErrorCount   int     `json:"error_count"`
 	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	TokenBreakdown
+}
+
+// Summary is the range-scoped total strip above the charts.
+type Summary struct {
+	Requests     int     `json:"requests"`
+	Tokens       int     `json:"tokens"`
+	Errors       int     `json:"errors"`
+	AvgLatencyMs float64 `json:"avg_latency_ms"`
+	TokenBreakdown
 }
 
 // dimensionColumns whitelists the groupable columns so the dimension name can be
@@ -145,6 +206,9 @@ func migrate(db *sql.DB) error {
 			status            INTEGER,
 			prompt_tokens     INTEGER DEFAULT 0,
 			completion_tokens INTEGER DEFAULT 0,
+			cache_read_tokens  INTEGER DEFAULT 0,
+			cache_write_tokens INTEGER DEFAULT 0,
+			reasoning_tokens   INTEGER DEFAULT -1,
 			stream            BOOLEAN DEFAULT 0,
 			error             TEXT DEFAULT '',
 			api_key_name      TEXT DEFAULT '',
@@ -163,15 +227,26 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE request_logs ADD COLUMN account TEXT DEFAULT ''")
 	// Add failover_from column if missing (existing DBs)
 	db.Exec("ALTER TABLE request_logs ADD COLUMN failover_from TEXT DEFAULT ''")
+	// Token breakdown columns (existing DBs). Rows written before this migration
+	// have no cache data and never will — it was dropped on the floor, not
+	// recorded as zero — so totals step up on the day this ships. reasoning
+	// defaults to -1 ("upstream didn't report") rather than 0 ("it thought
+	// nothing"), which is the honest value for history.
+	db.Exec("ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER DEFAULT 0")
+	db.Exec("ALTER TABLE request_logs ADD COLUMN reasoning_tokens INTEGER DEFAULT -1")
 	return nil
 }
 
 func (d *DB) Record(log *RequestLog) error {
 	_, err := d.db.Exec(`
-		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens, stream, error, api_key_name, account, failover_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.Time.UTC().Format(time.RFC3339), log.Model, log.Backend, log.LatencyMs,
-		log.Status, log.PromptTokens, log.CompletionTokens, log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom,
+		log.Status, log.PromptTokens, log.CompletionTokens,
+		log.CacheReadTokens, log.CacheWriteTokens, log.ReasoningTokens,
+		log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom,
 	)
 	return err
 }
@@ -197,7 +272,8 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 	d.db.QueryRow("SELECT COUNT(*) FROM request_logs "+where, args...).Scan(&total)
 
 	rows, err := d.db.Query(`
-		SELECT id, time, model, backend, latency_ms, status, prompt_tokens, completion_tokens, stream, error, api_key_name, account, failover_from
+		SELECT id, time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from
 		FROM request_logs `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -209,7 +285,8 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 		var l RequestLog
 		var t string
 		if err := rows.Scan(&l.ID, &t, &l.Model, &l.Backend, &l.LatencyMs, &l.Status,
-			&l.PromptTokens, &l.CompletionTokens, &l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom); err != nil {
+			&l.PromptTokens, &l.CompletionTokens, &l.CacheReadTokens, &l.CacheWriteTokens, &l.ReasoningTokens,
+			&l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom); err != nil {
 			continue
 		}
 		l.Time, _ = time.Parse(time.RFC3339, t)
@@ -288,9 +365,9 @@ func (d *DB) StatsByBucket(daysBack, tzMinutes int, granularity, filterCol, filt
 	rows, err := d.db.Query(`
 		SELECT `+bucketExpr+` as b,
 			COUNT(*),
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM`+totalTokensExpr+`, 0),
+			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0),
+			`+breakdownCols+`
 		FROM request_logs
 		WHERE time >= ?`+fc+`
 		GROUP BY b
@@ -303,7 +380,7 @@ func (d *DB) StatsByBucket(daysBack, tzMinutes int, granularity, filterCol, filt
 	var result []BucketStats
 	for rows.Next() {
 		var s BucketStats
-		rows.Scan(&s.Bucket, &s.RequestCount, &s.PromptTokens, &s.CompletionTokens, &s.ErrorCount)
+		rows.Scan(append([]any{&s.Bucket, &s.RequestCount, &s.TotalTokens, &s.ErrorCount}, s.scanArgs()...)...)
 		result = append(result, s)
 	}
 	return result, nil
@@ -331,9 +408,10 @@ func (d *DB) StatsByDimension(dimension string, daysBack int, filterCol, filterV
 	rows, err := d.db.Query(`
 		SELECT `+colExpr+` as label,
 			COUNT(*),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0),
+			COALESCE(SUM`+totalTokensExpr+`, 0),
 			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0),
-			COALESCE(AVG(latency_ms), 0)
+			COALESCE(AVG(latency_ms), 0),
+			`+breakdownCols+`
 		FROM request_logs
 		WHERE `+where+fc+`
 		GROUP BY label
@@ -346,7 +424,7 @@ func (d *DB) StatsByDimension(dimension string, daysBack int, filterCol, filterV
 	var result []DimStats
 	for rows.Next() {
 		var s DimStats
-		rows.Scan(&s.Label, &s.RequestCount, &s.TotalTokens, &s.ErrorCount, &s.AvgLatencyMs)
+		rows.Scan(append([]any{&s.Label, &s.RequestCount, &s.TotalTokens, &s.ErrorCount, &s.AvgLatencyMs}, s.scanArgs()...)...)
 		if s.Label == "" {
 			s.Label = "(none)"
 		}
@@ -357,25 +435,27 @@ func (d *DB) StatsByDimension(dimension string, daysBack int, filterCol, filterV
 
 // StatsSummary returns range-scoped totals, optionally filtered to one
 // dimension value. Powers the summary strip above the charts.
-func (d *DB) StatsSummary(daysBack int, filterCol, filterVal string) (requests, tokens, errors int, avgLatencyMs float64) {
+func (d *DB) StatsSummary(daysBack int, filterCol, filterVal string) Summary {
 	since := time.Now().AddDate(0, 0, -daysBack).UTC().Format(time.RFC3339)
 	fc, fargs := filterClause(filterCol, filterVal)
+	var s Summary
 	d.db.QueryRow(`
 		SELECT COALESCE(COUNT(*),0),
-			COALESCE(SUM(prompt_tokens + completion_tokens),0),
+			COALESCE(SUM`+totalTokensExpr+`,0),
 			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END),0),
-			COALESCE(AVG(latency_ms),0)
+			COALESCE(AVG(latency_ms),0),
+			`+breakdownCols+`
 		FROM request_logs
 		WHERE time >= ?`+fc, append([]any{since}, fargs...)...).
-		Scan(&requests, &tokens, &errors, &avgLatencyMs)
-	return
+		Scan(append([]any{&s.Requests, &s.Tokens, &s.Errors, &s.AvgLatencyMs}, s.scanArgs()...)...)
+	return s
 }
 
 func (d *DB) StatsByKey() ([]KeyStats, error) {
 	rows, err := d.db.Query(`
 		SELECT api_key_name,
 			COUNT(*),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0),
+			COALESCE(SUM` + totalTokensExpr + `, 0),
 			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0)
 		FROM request_logs
 		WHERE api_key_name != ''
@@ -392,14 +472,22 @@ func (d *DB) StatsByKey() ([]KeyStats, error) {
 		var s KeyStats
 		rows.Scan(&s.KeyName, &s.RequestCount, &s.TotalTokens, &s.ErrorCount)
 		d.db.QueryRow(`
-			SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0), COUNT(*)
+			SELECT COALESCE(SUM`+totalTokensExpr+`, 0),
+				COALESCE(SUM(prompt_tokens + completion_tokens), 0),
+				COUNT(*)
 			FROM request_logs WHERE api_key_name = ? AND date(time) = ?`,
-			s.KeyName, today).Scan(&s.TokensToday, &s.RequestsToday)
+			s.KeyName, today).Scan(&s.TokensToday, &s.QuotaUsedToday, &s.RequestsToday)
 		result = append(result, s)
 	}
 	return result, nil
 }
 
+// TokensTodayForKey feeds the per-key daily token limit in
+// server/middleware.go, and deliberately does NOT use totalTokensExpr: it stays
+// on the cache-exclusive accounting the limits were configured against. Folding
+// cache reads in would make identical traffic trip a limit roughly ten times
+// sooner, silently rate-limiting keys nobody reconfigured. The display total and
+// the enforcement total are different numbers on purpose.
 func (d *DB) TokensTodayForKey(keyName string) int {
 	today := time.Now().UTC().Format("2006-01-02")
 	var tokens int
@@ -422,7 +510,7 @@ func (d *DB) RequestsTodayForKey(keyName string) int {
 
 func (d *DB) TotalStats() (requests int, tokens int, err error) {
 	err = d.db.QueryRow(`
-		SELECT COALESCE(COUNT(*), 0), COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+		SELECT COALESCE(COUNT(*), 0), COALESCE(SUM` + totalTokensExpr + `, 0)
 		FROM request_logs`).Scan(&requests, &tokens)
 	return
 }

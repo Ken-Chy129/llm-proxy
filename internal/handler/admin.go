@@ -297,7 +297,7 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 	// Year-long daily buckets for the contribution heatmap (independent of the
 	// selected range; the frontend always renders ~52 weeks).
 	calendar, _ := h.statsDB.StatsByBucket(366, tzMinutes, "day", filterCol, filterVal)
-	reqs, toks, errs, avgLat := h.statsDB.StatsSummary(days, filterCol, filterVal)
+	summary := h.statsDB.StatsSummary(days, filterCol, filterVal)
 	// Error breakdown by HTTP status code (failed rows only).
 	byStatus, _ := h.statsDB.StatsByDimension("status", days, filterCol, filterVal)
 
@@ -305,7 +305,7 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 		"range":       rangeParam,
 		"granularity": granularity,
 		"filter":      gin.H{"dim": filterDim, "val": filterVal},
-		"summary":     gin.H{"requests": reqs, "tokens": toks, "errors": errs, "avg_latency_ms": avgLat},
+		"summary":     summary,
 		"series":      series,
 		"calendar":    calendar,
 		"facets":      facets,

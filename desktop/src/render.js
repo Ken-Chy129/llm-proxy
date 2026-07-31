@@ -420,10 +420,8 @@ export function renderFloat(d, opts = {}) {
   if (ball) {
     ball.style.setProperty('--p', session ? Math.max(0, Math.min(100, session.pct)) : 0);
     ball.className = cls;
-    ball.title = session
-      ? `5h 池 ${Math.round(session.sum)}% / ${session.cap}%` +
-        (next ? `\n${eta} 后 ${next.email.split('@')[0]} 的 ${next.win} 重置` : '')
-      : '暂无额度数据';
+    // 刻意不设 title：鼠标停在球上本来就会展开卡片，再弹一个系统 tooltip 是同一份
+    // 信息说两遍，而且它会盖住球下方的桌面。
   }
   if (q('ball-pct')) q('ball-pct').textContent = session ? `${Math.round(session.pct)}%` : '–';
   // 第二行是倒计时而不是别的数字：它是唯一"等一等就会变好"的信息
@@ -459,7 +457,16 @@ export function renderFloat(d, opts = {}) {
     const r = nextReset(accounts, nowMs, key);
     const cell = el('span', 'wrow-reset');
     if (r) {
-      const gain = r.gain === null ? '' : ` +${Math.round(r.gain)}%`;
+      // gain 必须和这一行的百分比同口径：那个账号补满是 +52 个"账号百分点"，但池子
+      // 是 240/300，它只让池子涨 52/300 ≈ 17 点。两个口径混在一行会被读成
+      // "80% + 52% = 132%"。账号级的原始数字留在 title 里。
+      const poolGain = r.gain === null ? null : (r.gain / w.cap) * 100;
+      const gain =
+        poolGain === null
+          ? ''
+          : poolGain > 0 && poolGain < 0.5
+            ? ' +<1%' // 四舍五入成 +0% 会让人以为"白等"，但它确实不是零
+            : ` +${Math.round(poolGain)}%`;
       // 今天的重置报时刻（"18:10"，你会照它安排接下来做什么），跨天的报倒计时
       // （"2d"）——"08/01 21:59" 既占不下这一列，也不是你会拿来决策的形式。
       const short = shortReset(r.at, d.today?.date);
@@ -468,7 +475,9 @@ export function renderFloat(d, opts = {}) {
       // 前面长度不同的时刻推得参差不齐，扫一眼比不了。
       cell.appendChild(el('span', 'wrow-when', when));
       cell.appendChild(el('span', 'wrow-gain', gain.trim()));
-      cell.title = `${r.email.split('@')[0]} 的 ${label} 窗口 ${r.at} 重置（${fmtEta(r.ms - nowMs)} 后）${gain}`;
+      cell.title =
+        `${r.email.split('@')[0]} 的 ${label} 窗口 ${r.at} 重置（${fmtEta(r.ms - nowMs)} 后）` +
+        (r.gain === null ? '' : `\n该账号补满 +${Math.round(r.gain)}%，池子${gain}`);
     } else {
       // 没有重置时间：窗口还没启用（余量满）或上游没给。两者都不该编个时间出来。
       cell.appendChild(el('span', 'wrow-when', '–'));

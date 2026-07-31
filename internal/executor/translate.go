@@ -128,6 +128,9 @@ func FromAnthropicResponse(resp *types.AnthropicResponse, model string) *types.C
 
 	finishReason := mapStopReason(resp.StopReason)
 
+	usage := &types.Usage{}
+	usage.SetBreakdown(resp.Usage.Breakdown())
+
 	return &types.ChatCompletionResponse{
 		ID:      fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24]),
 		Object:  "chat.completion",
@@ -136,11 +139,7 @@ func FromAnthropicResponse(resp *types.AnthropicResponse, model string) *types.C
 		Choices: []types.ChatCompletionChoice{
 			{Index: 0, Message: result, FinishReason: &finishReason},
 		},
-		Usage: &types.Usage{
-			PromptTokens:     resp.Usage.InputTokens,
-			CompletionTokens: resp.Usage.OutputTokens,
-			TotalTokens:      resp.Usage.InputTokens + resp.Usage.OutputTokens,
-		},
+		Usage: usage,
 	}
 }
 

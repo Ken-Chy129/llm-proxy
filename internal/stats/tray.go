@@ -18,6 +18,7 @@ type TrayDayUsage struct {
 	RequestCount int            `json:"request_count"`
 	TotalTokens  int            `json:"total_tokens"`
 	ByKey        []TrayKeyUsage `json:"by_key,omitempty"`
+	TokenBreakdown
 }
 
 // tzOffset renders a tzMinutes offset as a SQLite datetime modifier, clamped to
@@ -46,10 +47,11 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 	err := d.db.QueryRow(`
 		SELECT `+targetExpr+`,
 			COALESCE(COUNT(*), 0),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+			COALESCE(SUM`+totalTokensExpr+`, 0),
+			`+breakdownCols+`
 		FROM request_logs
 		WHERE `+dayExpr+` = `+targetExpr).
-		Scan(&out.Date, &out.RequestCount, &out.TotalTokens)
+		Scan(append([]any{&out.Date, &out.RequestCount, &out.TotalTokens}, out.scanArgs()...)...)
 	if err != nil {
 		return out, err
 	}
@@ -57,12 +59,12 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 	rows, err := d.db.Query(`
 		SELECT api_key_name,
 			COUNT(*),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+			COALESCE(SUM` + totalTokensExpr + `, 0)
 		FROM request_logs
 		WHERE ` + dayExpr + ` = ` + targetExpr + `
 			AND api_key_name != ''
 		GROUP BY api_key_name
-		ORDER BY SUM(prompt_tokens + completion_tokens) DESC`)
+		ORDER BY SUM` + totalTokensExpr + ` DESC`)
 	if err != nil {
 		return out, err
 	}
@@ -92,7 +94,7 @@ func (d *DB) DailyAverage(days, tzMinutes int) (avgRequests, avgTokens float64, 
 	var reqs, toks int
 	err = d.db.QueryRow(`
 		SELECT COALESCE(COUNT(*), 0),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+			COALESCE(SUM`+totalTokensExpr+`, 0)
 		FROM request_logs
 		WHERE `+dayExpr+` < `+todayExpr+`
 			AND `+dayExpr+` >= `+fmt.Sprintf("date('now'%s, '-%d days')", tzMod, days)).
@@ -110,7 +112,7 @@ func (d *DB) HourlyToday(tzMinutes int) ([]int, error) {
 	tzMod := tzOffset(tzMinutes)
 	rows, err := d.db.Query(`
 		SELECT CAST(strftime('%H', time` + tzMod + `) AS INTEGER),
-			COALESCE(SUM(prompt_tokens + completion_tokens), 0)
+			COALESCE(SUM`+totalTokensExpr+`, 0)
 		FROM request_logs
 		WHERE date(time` + tzMod + `) = date('now'` + tzMod + `)
 		GROUP BY 1`)

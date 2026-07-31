@@ -282,6 +282,8 @@ func (e *VertexExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompl
 	})
 
 	var usage types.Usage
+	// See claude_oauth.go: usage arrives in two events, accumulate then convert.
+	var au types.AnthropicUsage
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var hasToolCalls bool
@@ -305,7 +307,8 @@ func (e *VertexExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompl
 		switch event.Type {
 		case "message_start":
 			if event.Message != nil {
-				usage.PromptTokens = event.Message.Usage.InputTokens
+				au.MergeNonZero(event.Message.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 
 		case "content_block_start":
@@ -359,8 +362,8 @@ func (e *VertexExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompl
 
 		case "message_delta":
 			if event.Usage != nil {
-				usage.CompletionTokens = event.Usage.OutputTokens
-				usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
+				au.MergeNonZero(*event.Usage)
+				usage.SetBreakdown(au.Breakdown())
 			}
 			finishReason := "stop"
 			if hasToolCalls {

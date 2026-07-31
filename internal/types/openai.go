@@ -74,10 +74,48 @@ type ChatResult struct {
 	ToolCalls        []ToolCall `json:"tool_calls,omitempty"`
 }
 
+// Usage keeps OpenAI wire semantics: PromptTokens *includes* cached tokens, and
+// PromptTokensDetails.CachedTokens is the subset of it. Call Breakdown() to get
+// the disjoint accounting used for storage — do not hand-roll the subtraction.
+//
+// The details structs are pointers with omitempty so a nil breakdown serialises
+// exactly as before for clients that predate them.
 type Usage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens            int                      `json:"prompt_tokens"`
+	CompletionTokens        int                      `json:"completion_tokens"`
+	TotalTokens             int                      `json:"total_tokens"`
+	PromptTokensDetails     *PromptTokensDetails     `json:"prompt_tokens_details,omitempty"`
+	CompletionTokensDetails *CompletionTokensDetails `json:"completion_tokens_details,omitempty"`
+}
+
+type PromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+	// CacheWriteTokens carries Anthropic's cache_creation_input_tokens. OpenAI
+	// has no equivalent (its automatic caching charges nothing to write), so
+	// this is a proxy extension and stays omitted on OpenAI-served requests.
+	CacheWriteTokens int `json:"cache_write_tokens,omitempty"`
+}
+
+type CompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
+// SetBreakdown writes a canonical TokenUsage back into OpenAI wire shape,
+// re-adding the cached subset into PromptTokens. Used by executors that read an
+// Anthropic upstream but must return an OpenAI-shaped usage object.
+func (u *Usage) SetBreakdown(b TokenUsage) {
+	u.PromptTokens = b.Input + b.CacheRead + b.CacheWrite
+	u.CompletionTokens = b.Output
+	u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	if b.CacheRead != 0 || b.CacheWrite != 0 {
+		u.PromptTokensDetails = &PromptTokensDetails{
+			CachedTokens:     b.CacheRead,
+			CacheWriteTokens: b.CacheWrite,
+		}
+	}
+	if b.Reasoning != ReasoningUnknown {
+		u.CompletionTokensDetails = &CompletionTokensDetails{ReasoningTokens: b.Reasoning}
+	}
 }
 
 type ChatCompletionChunk struct {
