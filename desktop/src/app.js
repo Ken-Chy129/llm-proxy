@@ -1,7 +1,7 @@
 // 应用层：配置持久化、轮询、Tauri 托盘/通知桥接。
 // 渲染逻辑全在 render.js 里（纯函数，可离线预览）。
 
-import { render, trayTitle, alertFor } from './render.js';
+import { render, renderFloat, trayTitle, alertFor } from './render.js';
 
 const DEFAULTS = {
   base: '',
@@ -104,18 +104,37 @@ function notificationAPI() {
 }
 
 function setDot(state) {
-  const dot = document.getElementById('live-dot');
-  dot.className = `dot ${state}`;
+  // 悬浮球没有顶栏，状态灯在球内数字下方；两个都写，省掉一处分支判断
+  for (const id of ['live-dot', 'ball-dot']) {
+    const dot = document.getElementById(id);
+    if (dot) dot.className = `dot ${state}`;
+  }
+}
+
+/* 悬浮卡只有一行状态位，而面板有两条（错误条 + 告警条）。这两个变量把"当前该
+   显示什么"集中在一处：取不到数据比额度偏低更紧急，所以错误优先。 */
+let lastErrMsg = '';
+let lastAlertMsg = '';
+
+/** 把状态画到悬浮卡那一行。折叠态（56px）放不下文字，靠球上的状态灯表达。 */
+function paintFloatStatus() {
+  const box = document.getElementById('fcard-err');
+  if (!box) return;
+  const msg = lastErrMsg || lastAlertMsg;
+  box.textContent = msg;
+  box.className = `fcard-err${lastErrMsg ? '' : ' warn'}${msg ? '' : ' hidden'}`;
+  // 多/少一行会改变卡片高度，展开着的话得同步窗口，否则这行会被切掉
+  syncFloatSize();
 }
 
 function showError(msg) {
+  lastErrMsg = msg || '';
   const box = document.getElementById('error');
-  if (!msg) {
-    box.classList.add('hidden');
-    return;
+  if (box) {
+    box.textContent = msg || '';
+    box.classList.toggle('hidden', !msg);
   }
-  box.textContent = msg;
-  box.classList.remove('hidden');
+  paintFloatStatus();
 }
 
 /**
@@ -124,6 +143,8 @@ function showError(msg) {
  * 提示会在下一轮刷新时被抹掉且不再重现。
  */
 function showAlert(msg) {
+  lastAlertMsg = msg || '';
+  paintFloatStatus();
   const box = document.getElementById('alert');
   if (!msg) {
     box.classList.add('hidden');
@@ -187,9 +208,10 @@ async function maybeNotify(d) {
 
 async function refresh(manual = false) {
   if (!config.base || !config.token) {
-    showError('还没配置代理地址和 Tray Token，点右上角 ⚙ 设置。');
+    // 悬浮球里没有设置页——56px 装不下表单，也不该在桌面挂件上配凭证
+    showError(IS_FLOAT ? '未配置，去菜单栏面板里设置' : '还没配置代理地址和 Tray Token，点右上角 ⚙ 设置。');
     setDot('dead');
-    openSettings();
+    if (!IS_FLOAT) openSettings();
     return;
   }
 
@@ -215,7 +237,13 @@ async function refresh(manual = false) {
     const data = await res.json();
 
     showError('');
-    render(data);
+    if (IS_FLOAT) {
+      renderFloat(data);
+      // 账号数变了展开卡就会变高，折叠态量不到就没法正确撑开窗口
+      syncFloatSize();
+    } else {
+      render(data);
+    }
     setDot('live');
 
     const title = trayTitle(data);
@@ -227,6 +255,49 @@ async function refresh(manual = false) {
   } finally {
     if (manual) setTimeout(() => btn.classList.remove('spin'), 400);
   }
+}
+
+/* ---------- 悬浮球的折叠/展开 ----------
+   窗口尺寸就是交互本身：折叠态 64x64 只装得下球，鼠标移上去把窗口撑到卡片大小。
+   顺序很讲究——展开必须"先撑窗口、再显示卡"，否则卡会先画在 64px 的窗口外被裁掉
+   闪一下；收回则相反，先隐藏再缩窗口。 */
+const BALL_BOX = 64;   // 球 56 + 两侧各 4px 阴影余量
+const CARD_BOX_W = 236; // 卡 228 + 边距
+let collapseTimer = null;
+let floatExpanded = false;
+
+/** 量出展开卡的真实高度。卡片是 visibility:hidden（有布局）所以随时可测。 */
+function floatCardBox() {
+  const card = document.getElementById('fcard');
+  const h = card ? Math.ceil(card.getBoundingClientRect().height) : 120;
+  return { w: CARD_BOX_W, h: h + 8 };
+}
+
+/** 展开态下账号数变化后同步窗口高度，否则新增的行会被窗口切掉。 */
+function syncFloatSize() {
+  if (!floatExpanded) return;
+  const { w, h } = floatCardBox();
+  invoke('set_float_size', { width: w, height: h });
+}
+
+async function expandFloat() {
+  clearTimeout(collapseTimer);
+  if (floatExpanded) return;
+  floatExpanded = true;
+  const { w, h } = floatCardBox();
+  await invoke('set_float_size', { width: w, height: h });
+  document.body.classList.add('expanded');
+}
+
+function collapseFloat() {
+  clearTimeout(collapseTimer);
+  // 200ms 缓冲：鼠标从球滑到卡、或擦着边缘走过时不该来回抽搐
+  collapseTimer = setTimeout(async () => {
+    if (!floatExpanded) return;
+    floatExpanded = false;
+    document.body.classList.remove('expanded');
+    await invoke('set_float_size', { width: BALL_BOX, height: BALL_BOX });
+  }, 200);
 }
 
 function restartTimer() {
@@ -251,24 +322,27 @@ function closeSettings() {
 }
 
 function wire() {
-  // 面板模式和悬浮模式的按钮职责不同：面板上的 ⧉ 用来召出挂件，
-  // 挂件上则换成置顶开关（它本身就已经"浮"着了）。
-  const btnFloat = document.getElementById('btn-float');
-  const btnPin = document.getElementById('btn-pin');
   if (IS_FLOAT) {
-    btnFloat.classList.add('hidden');
+    // 悬浮模式没有顶栏，交互全在球身上：hover 展开、拖拽移动、置顶开关在展开卡里。
+    document.documentElement.addEventListener('mouseenter', expandFloat);
+    document.documentElement.addEventListener('mouseleave', collapseFloat);
+
+    const btnPin = document.getElementById('btn-pin-float');
     btnPin.addEventListener('click', () => {
       floatOnTop = !floatOnTop;
       btnPin.style.opacity = floatOnTop ? '1' : '0.4';
       btnPin.title = floatOnTop ? '取消置顶' : '保持置顶';
       invoke('set_float_on_top', { onTop: floatOnTop });
     });
-  } else {
-    btnPin.classList.add('hidden');
-    btnFloat.addEventListener('click', () => {
-      invoke('toggle_float');
-    });
+    // 悬浮模式不需要下面这些面板专属的绑定，提前返回免得去找不存在的按钮
+    window.__refresh = () => refresh(true);
+    return;
   }
+
+  document.getElementById('btn-pin').classList.add('hidden');
+  document.getElementById('btn-float').addEventListener('click', () => {
+    invoke('toggle_float');
+  });
 
   document.getElementById('btn-refresh').addEventListener('click', () => refresh(true));
   document.getElementById('btn-settings').addEventListener('click', openSettings);

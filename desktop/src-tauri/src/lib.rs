@@ -107,17 +107,33 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
 
     let w = WebviewWindowBuilder::new(&app, FLOAT, WebviewUrl::App("index.html?mode=float".into()))
         .title("LLM Proxy")
-        .inner_size(320.0, 460.0)
-        .resizable(true)
+        // 折叠态就是一个 56px 的球（外加 4px 阴影余量）。展开由前端 hover 时调
+        // set_float_size 撑开，所以初始尺寸只需装下球。
+        .inner_size(64.0, 64.0)
+        .resizable(false) // 尺寸由展开/折叠状态决定，手动拉扯只会拉出一片透明
         .decorations(false)      // 无边框，才像挂件而不是浏览器
         .always_on_top(true)
         .skip_taskbar(true)
         .transparent(true)
-        .shadow(true)
+        // 关掉原生阴影：窗口是矩形的，圆球外面会套一圈方形阴影。阴影由 CSS 沿
+        // 着圆形自己画。
+        .shadow(false)
         .build()
         .map_err(|e| e.to_string())?;
     let _ = w.show();
     Ok(true)
+}
+
+/// 悬浮球 hover 展开/收回时改窗口尺寸。
+///
+/// 走 Rust 而不是前端直接调 `window.setSize`：后者属于 core 插件命令，要在
+/// capabilities 里显式放行 `core:window:allow-set-size`，而自定义命令天生可用。
+/// 少一处能静默失效的配置。
+#[tauri::command]
+fn set_float_size(app: AppHandle, width: f64, height: f64) {
+    if let Some(w) = app.get_webview_window(FLOAT) {
+        let _ = w.set_size(tauri::LogicalSize::new(width, height));
+    }
 }
 
 /// 悬浮窗默认置顶；允许前端临时取消，方便用户临时让它退到后面。
@@ -153,6 +169,7 @@ pub fn run() {
             set_tray_title,
             toggle_float,
             set_float_on_top,
+            set_float_size,
             hide_panel,
             detect_env_config
         ])

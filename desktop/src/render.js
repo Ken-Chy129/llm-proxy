@@ -146,6 +146,44 @@ export function alertFor(d, threshold = 20) {
   return null;
 }
 
+/**
+ * 单个账号的瓶颈窗口：5h 与 周 里更紧的那个。
+ *
+ * 两个百分比里只有小的那个决定这个账号现在能不能服务请求，另一个是冗余信息。
+ * 常驻挂件只显示瓶颈，完整两条留给点开的面板。没有任何数据时返回 null。
+ */
+export function bindingWindow(a) {
+  const pairs = [
+    ['5h', a && a.session_percent],
+    ['周', a && a.weekly_percent],
+  ].filter(([, p]) => p !== null && p !== undefined);
+  if (!pairs.length) return null;
+  const [win, pct] = pairs.reduce((lo, cur) => (cur[1] < lo[1] ? cur : lo));
+  return { win, pct };
+}
+
+/**
+ * 整个池子还剩多少可用。
+ *
+ * 跨账号取**最大**而不是最小：代理自动挑账号，只要还有一个账号有余量就能继续干
+ * 活。取最小得到的是"最先干涸的那个账号"——那是告警该管的事（见 alertFor），而
+ * 不是"我现在还能不能放心用"的答案。菜单栏标题用的是最小值，口径不同是刻意的：
+ * 一个负责预警，一个负责当下可用性。
+ *
+ * 被停用、被限流、还没抓到真实数据的账号都不计入——它们此刻服务不了流量。
+ * 一个都不剩时返回 null，调用方必须显式表达"未知"，不能拿 0 或 100 顶替。
+ */
+export function poolHeadroom(accounts) {
+  let best = null;
+  for (const a of accounts || []) {
+    if (a.status === 'disabled' || a.status === 'rate_limited' || !a.has_real_data) continue;
+    const b = bindingWindow(a);
+    if (!b) continue;
+    if (!best || b.pct > best.pct) best = { ...b, email: a.email || '' };
+  }
+  return best;
+}
+
 function el(tag, cls, text) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -302,6 +340,77 @@ function renderSpark(container, hourly, nowHour, axisEl) {
 }
 
 /** 把一份 /api/tray 响应画到页面上。*/
+/**
+ * 悬浮挂件的渲染：折叠是一个球，展开是一张紧凑卡。
+ *
+ * 刻意跟面板不同源。常驻桌面的东西只该回答一个问题——"现在还能不能放心用"，
+ * 逐小时曲线、Key 分摊、请求数这些诊断信息属于"出事了才看"，留给点开的面板。
+ * 每个账号只显示瓶颈窗口（见 bindingWindow），信息量减半而决策力不变。
+ */
+export function renderFloat(d, opts = {}) {
+  const doc = opts.doc || document;
+  const q = (id) => doc.getElementById(id);
+
+  const pool = poolHeadroom(d && d.accounts);
+  const cls = pctClass(pool ? pool.pct : null);
+  const txt = pool ? `${Math.round(pool.pct)}` : '–';
+
+  const ball = q('ball');
+  if (ball) {
+    // 环的长度用 CSS 变量喂给 conic-gradient；没数据时环为空，不能画成满格
+    ball.style.setProperty('--p', pool ? Math.max(0, Math.min(100, pool.pct)) : 0);
+    ball.className = cls;
+    ball.title = pool
+      ? `可用 ${Math.round(pool.pct)}%（${pool.email.split('@')[0]} 的${pool.win}窗口最宽裕）`
+      : '暂无额度数据';
+  }
+  if (q('ball-pct')) q('ball-pct').textContent = txt;
+
+  if (q('fcard-pct')) {
+    q('fcard-pct').textContent = pool ? `${Math.round(pool.pct)}%` : '–';
+    q('fcard-pct').className = `fcard-pct ${cls}`;
+  }
+  if (q('fcard-tokens')) {
+    q('fcard-tokens').textContent = d.today?.total_tokens
+      ? `今日 ${fmtCompact(d.today.total_tokens)}`
+      : '';
+  }
+
+  const rows = q('fcard-rows');
+  if (!rows) return;
+  rows.textContent = '';
+  const accounts = d.accounts || [];
+  if (!accounts.length) {
+    rows.appendChild(el('div', 'empty', '没有已登录的账号'));
+    return;
+  }
+  for (const a of accounts) {
+    const b = bindingWindow(a);
+    const rcls = pctClass(b ? b.pct : null);
+    const row = el('div', 'frow');
+    const name = el('span', 'frow-name', (a.email || '').split('@')[0]);
+    // 列宽有限，截断难免；完整邮箱挂在 title 上，悬停可看
+    name.title = a.email || '';
+    row.appendChild(name);
+
+    const meter = el('div', 'meter');
+    if (b && b.pct <= 0) meter.classList.add('empty-bad');
+    const fill = el('span', rcls);
+    fill.style.width = b ? `${Math.max(2, Math.min(100, b.pct))}%` : '0%';
+    meter.appendChild(fill);
+    row.appendChild(meter);
+
+    row.appendChild(el('span', `frow-pct ${rcls}`, b ? `${Math.round(b.pct)}%` : '?'));
+    // 标出是哪个窗口卡住的——同一个 63% 是 5h 还是周，等待成本差一个数量级
+    row.appendChild(el('span', 'frow-win', b ? b.win : ''));
+    // 限流/停用的账号已被 poolHeadroom 排除，必须让用户看见原因，
+    // 否则"三个账号都有余量，可用数字却很低"会显得像 bug
+    if (a.status === 'rate_limited') row.appendChild(el('span', 'frow-flag bad', '限'));
+    else if (a.status === 'disabled') row.appendChild(el('span', 'frow-flag', '停'));
+    rows.appendChild(row);
+  }
+}
+
 export function render(d, opts = {}) {
   const doc = opts.doc || document;
   const q = (id) => doc.getElementById(id);
