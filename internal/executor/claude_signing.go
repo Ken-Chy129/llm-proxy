@@ -86,10 +86,7 @@ func injectClaudeCodeSystemBlocks(body []byte) []byte {
 		return body
 	}
 
-	// Collect existing system text
-	existingSystem := gjson.GetBytes(body, "system").String()
-
-	// Build system array: [billing, agent, existing_system_as_user_context]
+	// Build system array: [billing, agent, ...whatever the caller sent]
 	billingBlock := map[string]interface{}{
 		"type": "text",
 		"text": generateBillingHeader(body, claudeCodeVersion),
@@ -101,10 +98,25 @@ func injectClaudeCodeSystemBlocks(body []byte) []byte {
 
 	systemBlocks := []interface{}{billingBlock, agentBlock}
 
-	if existingSystem != "" {
+	// The caller's system is appended block by block, verbatim.
+	//
+	// This used to be gjson.Get(body, "system").String() dropped into the text of
+	// a single block — and gjson returns *raw JSON* for an array, so a client that
+	// sent proper system blocks got the whole array stringified into one block.
+	// Two consequences, both silent: every cache_control the client had placed on
+	// its system prompt was destroyed (so the upstream could not cache that
+	// prefix), and the prompt itself arrived as escaped JSON, paying extra tokens
+	// to say the same thing less clearly.
+	existing := gjson.GetBytes(body, "system")
+	switch {
+	case existing.IsArray():
+		for _, block := range existing.Array() {
+			systemBlocks = append(systemBlocks, json.RawMessage(block.Raw))
+		}
+	case existing.Type == gjson.String && existing.String() != "":
 		systemBlocks = append(systemBlocks, map[string]interface{}{
 			"type": "text",
-			"text": existingSystem,
+			"text": existing.String(),
 		})
 	}
 

@@ -13,10 +13,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	internaltls "github.com/Ken-Chy129/llm-proxy/internal/tls"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/google/uuid"
 )
 
 type ClaudeOAuthExecutor struct {
@@ -139,6 +139,8 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 
 func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
 	ar := ToAnthropicRequest(req, req.Model)
+	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
+	ApplyCacheBreakpoints(ar)
 	ar.Stream = false
 	ar.AnthropicVersion = ""
 	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
@@ -178,6 +180,8 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 
 func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
 	ar := ToAnthropicRequest(req, req.Model)
+	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
+	ApplyCacheBreakpoints(ar)
 	ar.Stream = true
 	ar.AnthropicVersion = ""
 	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
@@ -248,8 +252,8 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 			if event.ContentBlock != nil && event.ContentBlock.Type == "tool_use" {
 				hasToolCalls = true
 				tc := types.ToolCall{
-					ID:   event.ContentBlock.ID,
-					Type: "function",
+					ID:       event.ContentBlock.ID,
+					Type:     "function",
 					Function: types.ToolCallFunction{Name: event.ContentBlock.Name},
 				}
 				writeSSEChunk(w, types.ChatCompletionChunk{

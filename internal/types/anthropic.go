@@ -2,17 +2,39 @@ package types
 
 import "encoding/json"
 
+// CacheControl marks a prompt-caching breakpoint. Anthropic caches the prefix up
+// to and including the block that carries it, so placement decides what gets
+// reused; "ephemeral" (5-minute TTL) is the only kind the API accepts today.
+//
+// Caching is opt-in on the wire: a request without a single cache_control is
+// treated as cold no matter how much of the prompt repeats.
+type CacheControl struct {
+	Type string `json:"type"`
+}
+
+// Ephemeral returns the only breakpoint kind Anthropic currently accepts.
+func Ephemeral() *CacheControl { return &CacheControl{Type: "ephemeral"} }
+
+// AnthropicSystemBlock is one block of the system prompt. System has to be an
+// array rather than a plain string: a string has nowhere to hang cache_control,
+// which is what made every translated request uncacheable.
+type AnthropicSystemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
+}
+
 type AnthropicRequest struct {
-	Model         string             `json:"model,omitempty"`
-	Messages      []AnthropicMessage `json:"messages"`
-	System        string             `json:"system,omitempty"`
-	MaxTokens     int                `json:"max_tokens"`
-	Stream        bool               `json:"stream,omitempty"`
-	Thinking      *ThinkingConfig    `json:"thinking,omitempty"`
-	Temperature   *float64           `json:"temperature,omitempty"`
-	TopP          *float64           `json:"top_p,omitempty"`
-	StopSequences []string           `json:"stop_sequences,omitempty"`
-	Tools         []AnthropicTool    `json:"tools,omitempty"`
+	Model         string                 `json:"model,omitempty"`
+	Messages      []AnthropicMessage     `json:"messages"`
+	System        []AnthropicSystemBlock `json:"system,omitempty"`
+	MaxTokens     int                    `json:"max_tokens"`
+	Stream        bool                   `json:"stream,omitempty"`
+	Thinking      *ThinkingConfig        `json:"thinking,omitempty"`
+	Temperature   *float64               `json:"temperature,omitempty"`
+	TopP          *float64               `json:"top_p,omitempty"`
+	StopSequences []string               `json:"stop_sequences,omitempty"`
+	Tools         []AnthropicTool        `json:"tools,omitempty"`
 
 	AnthropicVersion string `json:"anthropic_version,omitempty"`
 }
@@ -36,6 +58,9 @@ type AnthropicContentBlock struct {
 	ToolUseID string                `json:"tool_use_id,omitempty"`
 	Content   string                `json:"content,omitempty"`
 	Source    *AnthropicMediaSource `json:"source,omitempty"`
+	// CacheControl on the last block of the last message is how a growing
+	// conversation gets its prefix cached.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 // AnthropicMediaSource is the payload of an image or document content block.
@@ -51,6 +76,10 @@ type AnthropicTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	InputSchema json.RawMessage `json:"input_schema"`
+	// CacheControl on the last tool caches the whole toolset. That prefix is
+	// identical across every request from one client, so it survives even between
+	// unrelated conversations — the cheapest breakpoint there is.
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type AnthropicResponse struct {

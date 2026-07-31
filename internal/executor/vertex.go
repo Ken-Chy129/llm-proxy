@@ -12,9 +12,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/google/uuid"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 )
@@ -203,6 +203,8 @@ func (e *VertexExecutor) buildURL(model string, stream bool) string {
 func (e *VertexExecutor) Execute(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
 	vertexModel := e.resolveModel(req.Model)
 	ar := ToAnthropicRequest(req, vertexModel)
+	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
+	ApplyCacheBreakpoints(ar)
 	ar.Stream = false
 	ar.Model = "" // Vertex rawPredict: model is in URL, not body
 
@@ -244,6 +246,8 @@ func (e *VertexExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 func (e *VertexExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
 	vertexModel := e.resolveModel(req.Model)
 	ar := ToAnthropicRequest(req, vertexModel)
+	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
+	ApplyCacheBreakpoints(ar)
 	ar.Stream = true
 	ar.Model = "" // Vertex rawPredict: model is in URL, not body
 

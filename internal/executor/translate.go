@@ -6,8 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/google/uuid"
+	"github.com/tidwall/sjson"
 )
 
 func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.AnthropicRequest {
@@ -30,7 +31,10 @@ func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.A
 		}
 	}
 	if len(systemParts) > 0 {
-		ar.System = strings.Join(systemParts, "\n\n")
+		ar.System = []types.AnthropicSystemBlock{{
+			Type: "text",
+			Text: strings.Join(systemParts, "\n\n"),
+		}}
 	}
 
 	for _, msg := range req.Messages {
@@ -83,6 +87,98 @@ func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.A
 	}
 
 	return ar
+}
+
+// ApplyCacheBreakpoints marks prompt-caching breakpoints on a translated request.
+//
+// Anthropic caching is explicit: with no cache_control anywhere in the body the
+// upstream treats every request as cold no matter how much of the prompt repeats.
+// Nothing in the OpenAI wire format carries that marker, so every client arriving
+// on /v1/* used to pay full price for an identical 100k-token prefix on every
+// call — measured on this proxy: one such client burned 10.7M input tokens in a
+// day at a 0% hit rate, while native /v1/messages traffic (whose client sets its
+// own breakpoints) ran at 99.7%.
+//
+// This is deliberately NOT part of ToAnthropicRequest. That function also feeds
+// Kimi's Anthropic-*compatible* endpoint, which is not Anthropic and has its own
+// caching mechanism; sending it a field it does not model is a regression risk
+// for no gain. Backends that speak real Anthropic (Claude OAuth, Vertex) opt in.
+//
+// Placement follows the order Anthropic concatenates the prompt in — tools, then
+// system, then messages — since a breakpoint caches everything up to and
+// including itself:
+//
+//   - last tool: the toolset is byte-identical across every request from a given
+//     client, so this prefix is reused even between unrelated conversations.
+//   - last system block: caches tools + system. Stable for a conversation's life.
+//   - last message, but only when the request already contains an assistant turn.
+//     A cache write costs 1.25x the tokens it covers, so marking a one-shot
+//     request makes it *more* expensive to serve a prefix nobody will read back.
+//     Agent loops, where each request is the previous one plus a turn, are
+//     exactly where the write pays for itself.
+//
+// Anthropic allows at most 4 breakpoints; this uses at most 3.
+func ApplyCacheBreakpoints(ar *types.AnthropicRequest) {
+	if ar == nil {
+		return
+	}
+	if n := len(ar.Tools); n > 0 {
+		ar.Tools[n-1].CacheControl = types.Ephemeral()
+	}
+	if n := len(ar.System); n > 0 {
+		ar.System[n-1].CacheControl = types.Ephemeral()
+	}
+	if n := len(ar.Messages); n > 0 && hasAssistantTurn(ar.Messages) {
+		ar.Messages[n-1].Content = markLastContentBlock(ar.Messages[n-1].Content)
+	}
+}
+
+// hasAssistantTurn reports whether this looks like a continuation rather than a
+// fresh one-shot request.
+func hasAssistantTurn(msgs []types.AnthropicMessage) bool {
+	for _, m := range msgs {
+		if m.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+// markLastContentBlock hangs a breakpoint on the final content block.
+//
+// Content is kept as raw JSON on purpose, so the marker is set with sjson rather
+// than by unmarshalling into AnthropicContentBlock and back: that struct does not
+// model every shape the API accepts (a tool_result whose content is an array of
+// blocks, for one), and a round-trip would quietly drop whatever it cannot see.
+func markLastContentBlock(raw json.RawMessage) json.RawMessage {
+	// A plain string has nowhere to put the marker; promote it to one text block.
+	var text string
+	if json.Unmarshal(raw, &text) == nil {
+		out, err := json.Marshal([]types.AnthropicContentBlock{{
+			Type:         "text",
+			Text:         text,
+			CacheControl: types.Ephemeral(),
+		}})
+		if err != nil {
+			return raw
+		}
+		return out
+	}
+
+	var blocks []json.RawMessage
+	if json.Unmarshal(raw, &blocks) != nil || len(blocks) == 0 {
+		return raw
+	}
+	last, err := sjson.SetRawBytes(blocks[len(blocks)-1], "cache_control", []byte(`{"type":"ephemeral"}`))
+	if err != nil {
+		return raw
+	}
+	blocks[len(blocks)-1] = last
+	out, err := json.Marshal(blocks)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 func buildAssistantBlocks(msg types.ChatMessage) []types.AnthropicContentBlock {
