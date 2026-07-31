@@ -308,12 +308,28 @@ body.float #ball.offline .ball-eta { color: var(--bad); }
    隐藏——display:none 没有布局，量不出来。 */
 body.float #fcard {
   display: block; visibility: hidden;
-  position: absolute; top: 0; left: 0; width: 228px;
+  /* fixed 而非 absolute：absolute 会去找最近的定位祖先，找不到就用初始包含块——实测
+     那个块比窗口高（球被摆到 y=232 而窗口只有 220），球直接掉到窗口外面看不见了。
+     fixed 永远相对视口，而这里视口就是窗口，正是我们要的。 */
+  position: fixed; top: 0; left: 0; width: 228px;
   background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px;
   padding: 7px 9px 9px;
 }
+/* ---------- 展开布局 ----------
+   球**不消失**：hover 只是在它旁边浮出卡片，球留在原地不动。整片替换掉会让人失去
+   位置感（"我刚才的球在哪"），而且鼠标落点会突然指向别的东西。
+   窗口此时同时装着球和卡，谁在哪个角由 Rust 按屏幕边缘算好（见 expand_float），
+   前端只负责把 class 翻译成定位。 */
 body.float.expanded #fcard { visibility: visible; }
-body.float.expanded #ball { display: none; }
+body.float.expanded #ball { position: fixed; }
+body.float.expanded.ball-bottom #ball { bottom: 0; top: auto; }
+body.float.expanded.ball-bottom #fcard { top: 0; bottom: auto; }
+body.float.expanded:not(.ball-bottom) #ball { top: 0; bottom: auto; }
+body.float.expanded:not(.ball-bottom) #fcard { bottom: 0; top: auto; }
+body.float.expanded.ball-left #ball { left: 0; right: auto; }
+body.float.expanded.ball-left #fcard { left: 0; right: auto; }
+body.float.expanded:not(.ball-left) #ball { right: 0; left: auto; }
+body.float.expanded:not(.ball-left) #fcard { right: 0; left: auto; }
 .fcard-head {
   display: flex; align-items: baseline; gap: 5px;
   padding-bottom: 6px; margin-bottom: 5px; border-bottom: 1px solid var(--line);
@@ -329,12 +345,6 @@ body.float.expanded #ball { display: none; }
 .wrow { display: flex; align-items: center; gap: 6px; height: 22px; font-size: 11px; }
 .wrow-tag { width: 20px; flex-shrink: 0; font-size: 10px; color: var(--fg-dim); }
 .wrow-pct { width: 34px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-.wrow-sum { width: 56px; text-align: right; font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
-/* 下次回血：整个挂件里唯一"等一等就会变好"的信息，给它一条独立的行 */
-.fcard-next {
-  margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line);
-  font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+.wrow-reset { width: 74px; text-align: right; font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .fcard-err { margin-top: 5px; font-size: 10px; color: var(--bad); line-height: 1.35; }
 .fcard-err.warn { color: var(--warn); }

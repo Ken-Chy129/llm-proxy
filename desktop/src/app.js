@@ -269,6 +269,7 @@ async function refresh(manual = false) {
    闪一下；收回则相反，先隐藏再缩窗口。 */
 const BALL_BOX = 56;    // 与球等大；阴影由原生窗口画在窗口外面
 const CARD_BOX_W = 228; // 与卡等宽
+const FLOAT_GAP = 6;    // 卡片和球之间透出桌面的缝，别让两块贴成一坨
 let collapseTimer = null;
 let floatExpanded = false;
 let etaTimer = null;
@@ -277,8 +278,9 @@ let lastData = null; // 倒计时自转时复用上一轮数据，不额外发�
 /** 量出展开卡的真实高度。卡片是 visibility:hidden（有布局）所以随时可测。 */
 function floatCardBox() {
   const card = document.getElementById('fcard');
-  const h = card ? Math.ceil(card.getBoundingClientRect().height) : 120;
-  return { w: CARD_BOX_W, h };
+  const h = card ? Math.ceil(card.getBoundingClientRect().height) : 90;
+  // 窗口要同时装下卡片和球：球留在原位，卡片浮在它上方，中间留 GAP 透出桌面
+  return { w: CARD_BOX_W, h: h + FLOAT_GAP + BALL_BOX };
 }
 
 /** 展开态下账号数变化后同步窗口高度，否则新增的行会被窗口切掉。 */
@@ -293,8 +295,11 @@ async function expandFloat() {
   if (floatExpanded) return;
   floatExpanded = true;
   const { w, h } = floatCardBox();
-  // Rust 侧决定往哪个方向长：球多半摆在屏幕右下角，一律向右下展开会整片跑出屏幕
-  await invoke('expand_float', { width: w, height: h });
+  // Rust 侧算出球该待在窗口的哪个角（球不动，卡片浮到它旁边），前端只把结果翻译成
+  // 定位 class
+  const layout = await invoke('expand_float', { width: w, height: h });
+  document.body.classList.toggle('ball-bottom', layout ? layout.ball_bottom !== false : true);
+  document.body.classList.toggle('ball-left', layout ? layout.ball_left !== false : true);
   document.body.classList.add('expanded');
 }
 
@@ -345,13 +350,8 @@ function wire() {
     document.documentElement.addEventListener('mouseenter', expandFloat);
     document.documentElement.addEventListener('mouseleave', collapseFloat);
 
-    const btnPin = document.getElementById('btn-pin-float');
-    btnPin.addEventListener('click', () => {
-      floatOnTop = !floatOnTop;
-      btnPin.style.opacity = floatOnTop ? '1' : '0.4';
-      btnPin.title = floatOnTop ? '取消置顶' : '保持置顶';
-      invoke('set_float_on_top', { onTop: floatOnTop });
-    });
+    // 置顶开关删掉了：挂件常驻桌面本来就该压在最上面，56px 的球几乎挡不住东西，
+    // 那个按钮从没被按过却一直占着卡片右上角。真要临时收起来，托盘菜单里有开关。
     // 悬浮模式不需要下面这些面板专属的绑定，提前返回免得去找不存在的按钮
     window.__refresh = () => refresh(true);
     return;

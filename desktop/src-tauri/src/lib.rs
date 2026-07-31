@@ -134,62 +134,64 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
 /// 球折叠态的边长；展开/收回都以这个为锚。
 const BALL: f64 = 56.0;
 
-/// 展开时窗口被挪动了多少（dx, dy）。收回时要原路挪回去，否则球会从右下角跳到
-/// 左上角——用户把球放在哪个角，收回后就该回到哪里。
+/// 球在展开态窗口里的偏移（dx, dy）。收回时按它把窗口挪回球的位置，否则球会跳到
+/// 卡片原来占的那个角。
 ///
 /// 存偏移而不是绝对坐标：展开状态下卡片头部还能拖动，绝对坐标会立刻过期。
 static FLOAT_SHIFT: Mutex<(f64, f64)> = Mutex::new((0.0, 0.0));
 
-/// hover 展开：撑开窗口，并且**朝屏幕内侧展开**。
+/// 展开后球在窗口的哪个角。前端据此把卡片摆到球的另一侧。
+#[derive(serde::Serialize)]
+struct ExpandLayout {
+    /// true = 球贴窗口底边（卡片在球**上方**），false = 球贴顶边（卡片在下方）
+    ball_bottom: bool,
+    /// true = 球贴窗口左边（卡片向右铺开），false = 球贴右边
+    ball_left: bool,
+}
+
+/// hover 展开：撑开窗口，但**球本身一动不动**。
 ///
-/// 球通常被摆在屏幕右下角，一律向右下长的话卡片会整片跑到屏幕外——这是实际用起来
-/// 第一个被撞到的问题。所以先看当前位置离哪条边近，再决定往左/往上翻。
+/// 窗口此时同时装着球和卡片，所以要算的是"把球留在原处的话，窗口该挪到哪"。默认卡片
+/// 浮在球的上方、与球左对齐；上方放不下就翻到下面，右边放不下就靠右对齐。
 ///
 /// 用 work_area 而不是 monitor.size：前者排除了菜单栏和 Dock，否则卡片会钻到 Dock
-/// 底下。
+/// 底下或被菜单栏盖住。
 ///
 /// 走 Rust 而不是前端调 `window.setSize`：后者属于 core 插件命令，要在 capabilities
 /// 里显式放行 `core:window:allow-set-size`，少一处能静默失效的配置。
 #[tauri::command]
-fn expand_float(app: AppHandle, width: f64, height: f64) {
+fn expand_float(app: AppHandle, width: f64, height: f64) -> ExpandLayout {
+    let mut layout = ExpandLayout {
+        ball_bottom: true,
+        ball_left: true,
+    };
     let Some(w) = app.get_webview_window(FLOAT) else {
-        return;
+        return layout;
     };
     let scale = w.scale_factor().unwrap_or(1.0);
     let Ok(outer) = w.outer_position() else {
-        return;
+        return layout;
     };
-    let pos = outer.to_logical::<f64>(scale);
-    let (mut x, mut y) = (pos.x, pos.y);
-    let (mut dx, mut dy) = (0.0, 0.0);
+    // 球当前的屏幕位置——展开前后它必须落在同一个像素上
+    let ball = outer.to_logical::<f64>(scale);
 
     if let Ok(Some(mon)) = w.current_monitor() {
         let area = mon.work_area();
         let a_pos = area.position.to_logical::<f64>(scale);
         let a_size = area.size.to_logical::<f64>(scale);
-        if x + width > a_pos.x + a_size.width {
-            dx = width - BALL;
-            x -= dx;
-        }
-        if y + height > a_pos.y + a_size.height {
-            dy = height - BALL;
-            y -= dy;
-        }
-        // 翻过去之后也可能顶到另一边（屏幕比卡片还窄时），夹回可视区并同步偏移，
-        // 否则收回时会按错的偏移把球挪飞。
-        if x < a_pos.x {
-            dx -= a_pos.x - x;
-            x = a_pos.x;
-        }
-        if y < a_pos.y {
-            dy -= a_pos.y - y;
-            y = a_pos.y;
-        }
+        // 卡片往上放需要 height - BALL 的空间；不够就翻到球下面
+        layout.ball_bottom = ball.y - (height - BALL) >= a_pos.y;
+        // 卡片向右铺开需要 width 的宽度；不够就靠右对齐（卡片向左铺）
+        layout.ball_left = ball.x + width <= a_pos.x + a_size.width;
     }
 
+    let dx = if layout.ball_left { 0.0 } else { width - BALL };
+    let dy = if layout.ball_bottom { height - BALL } else { 0.0 };
+    // 收回时把窗口挪回球的位置
     *FLOAT_SHIFT.lock().unwrap() = (dx, dy);
     let _ = w.set_size(tauri::LogicalSize::new(width, height));
-    let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+    let _ = w.set_position(tauri::LogicalPosition::new(ball.x - dx, ball.y - dy));
+    layout
 }
 
 /// 收回成球，并把它放回展开前那个角。
@@ -204,14 +206,6 @@ fn collapse_float(app: AppHandle) {
     if let Ok(outer) = w.outer_position() {
         let pos = outer.to_logical::<f64>(scale);
         let _ = w.set_position(tauri::LogicalPosition::new(pos.x + dx, pos.y + dy));
-    }
-}
-
-/// 悬浮窗默认置顶；允许前端临时取消，方便用户临时让它退到后面。
-#[tauri::command]
-fn set_float_on_top(app: AppHandle, on_top: bool) {
-    if let Some(w) = app.get_webview_window(FLOAT) {
-        let _ = w.set_always_on_top(on_top);
     }
 }
 
@@ -239,7 +233,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_tray_title,
             toggle_float,
-            set_float_on_top,
             expand_float,
             collapse_float,
             hide_panel,

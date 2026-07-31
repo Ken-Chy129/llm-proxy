@@ -55,9 +55,11 @@ const out = `<!DOCTYPE html>
 ${css}
 /* 预览专用：给截图一点留白，并去掉窗口透明假设 */
 body { margin: 0; padding: 14px; background: #0e1014; }
-/* 预览专用：悬浮卡在真实窗口里是 absolute 定位，这里改成静态流内，
-   否则截图会是一个空白页加一个浮在角上的卡。 */
-body.float #fcard { position: static; }
+/* 悬浮模式下球和卡是相对视口定位的（真实窗口里视口就是窗口）。预览里不能直接靠
+   --window-size 模拟：headless Chrome 有最小窗口高度，比它矮的窗口会把底部裁掉，
+   球看着像"没渲染"。所以造一个与真实窗口等大的定位容器当视口用。 */
+body.float { padding: 0; position: relative; width: 228px; overflow: hidden; }
+body.float #ball, body.float #fcard { position: absolute !important; }
 </style>
 </head><body class="${isFloat ? 'float' : ''}">
 ${body}
@@ -67,9 +69,20 @@ const DATA = ${JSON.stringify(data)};
 // 悬浮模式渲染的是球 + 展开卡（renderFloat），跟面板不是同一套 DOM。
 // 预览里直接摆成展开态——折叠态就是一个球，截图没什么可看的。
 if (${isFloat}) {
-  if (${!isBall}) document.body.classList.add('expanded');
+  // 真实窗口里这两个 class 由 Rust 按屏幕边缘算出来；预览取最常见的一种：
+  // 球在左下角、卡片浮在它上方
+  if (${!isBall}) document.body.classList.add('expanded', 'ball-bottom', 'ball-left');
   renderFloat(DATA);
-  document.getElementById('ball-dot').className = 'dot ${dotState}';
+  // 容器高度 = 卡片 + 缝 + 球，跟 app.js 的 floatCardBox 一致
+  const _c = document.getElementById('fcard');
+  const _h = ${isBall} ? 56 : Math.ceil(_c.getBoundingClientRect().height) + 6 + 56;
+  document.body.style.height = _h + 'px';
+  if (${isBall}) document.body.style.width = '56px';
+  // 状态灯已经并进球内第二行的文案，这里只在异常态模拟一下
+  if ('${dotState}' !== 'live') {
+    document.getElementById('ball').classList.add('offline');
+    document.getElementById('ball-eta').textContent = '${dotState}' === 'dead' ? '离线' : '过期';
+  }
 } else {
   document.getElementById('btn-pin').classList.add('hidden');
   render(DATA, { nowHour: ${nowHour} });

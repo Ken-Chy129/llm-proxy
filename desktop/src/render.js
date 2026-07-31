@@ -191,13 +191,14 @@ export function poolWindow(accounts, key) {
 }
 
 /**
- * 下一次会回血的重置：所有账号、两个窗口里最早的未来重置时刻。
+ * 下一次会回血的重置：最早的未来重置时刻。传 only('5h'/'7d') 只看那个窗口，
+ * 不传就是两个窗口一起比。
  *
  * 这比任何百分比都更直接决定"现在要不要停手"。附带 gain（该窗口会补回多少）是因为
  * 最早的那次重置未必有意义——一个已经 98% 的 5h 窗口重置只补 2%，看到 gain 才知道
  * 值不值得等。
  */
-export function nextReset(accounts, nowMs) {
+export function nextReset(accounts, nowMs, only) {
   const now = nowMs === undefined ? Date.now() : nowMs;
   let best = null;
   for (const a of accounts || []) {
@@ -206,6 +207,7 @@ export function nextReset(accounts, nowMs) {
       ['5h', a.session_reset_unix, a.session_reset_at, a.session_percent],
       ['7d', a.weekly_reset_unix, a.weekly_reset_at, a.weekly_percent],
     ]) {
+      if (only && win !== only) continue;
       if (!unix) continue;
       const ms = unix * 1000;
       if (ms <= now) continue; // 已过期的快照，等下一轮抓取纠正
@@ -436,42 +438,41 @@ export function renderFloat(d, opts = {}) {
   rows.textContent = '';
   if (!session && !weekly) {
     rows.appendChild(el('div', 'empty', '暂无额度数据'));
-  } else {
-    for (const [label, w] of [['5h', session], ['7d', weekly]]) {
-      if (!w) continue;
-      const wcls = pctClass(w.pct);
-      const row = el('div', 'wrow');
-      row.appendChild(el('span', 'wrow-tag', label));
-      const meter = el('div', 'meter');
-      if (w.pct <= 0) meter.classList.add('empty-bad');
-      const fill = el('span', wcls);
-      fill.style.width = `${Math.max(2, Math.min(100, w.pct))}%`;
-      meter.appendChild(fill);
-      row.appendChild(meter);
-      row.appendChild(el('span', `wrow-pct ${wcls}`, `${Math.round(w.pct)}%`));
-      // 原始和也给出来：246/300 比 82% 更能说明"还有两个半账号的量"
-      const sum = el('span', 'wrow-sum', `${Math.round(w.sum)}/${w.cap}`);
-      sum.title = `${w.count} 个账号的剩余量之和`;
-      row.appendChild(sum);
-      rows.appendChild(row);
-    }
+    return;
   }
+  for (const [label, w, key] of [['5h', session, '5h'], ['7d', weekly, '7d']]) {
+    if (!w) continue;
+    const wcls = pctClass(w.pct);
+    const row = el('div', 'wrow');
+    row.appendChild(el('span', 'wrow-tag', label));
+    const meter = el('div', 'meter');
+    if (w.pct <= 0) meter.classList.add('empty-bad');
+    const fill = el('span', wcls);
+    fill.style.width = `${Math.max(2, Math.min(100, w.pct))}%`;
+    meter.appendChild(fill);
+    row.appendChild(meter);
+    row.appendChild(el('span', `wrow-pct ${wcls}`, `${Math.round(w.pct)}%`));
 
-  const nextEl = q('fcard-next');
-  if (nextEl) {
-    if (next) {
-      // gain 必须显示，而且不能被截断：最早的那次重置常常没意义（一个 98% 的窗口
-      // 只补 2%），看到 +2% 才不会白等半小时。所以账号名挪到 title 里——228px 一行
-      // 放不下"时刻 + 倒计时 + 补多少 + 账号名"，而账号名是四者里最不影响决策的。
-      const gain = next.gain === null ? '' : ` +${Math.round(next.gain)}%`;
-      const at = shortReset(next.at, d.today?.date) || '';
-      nextEl.textContent = `下次重置 ${at}（${eta} 后）· ${next.win}${gain}`;
-      nextEl.title = `${next.email.split('@')[0]} 的 ${next.win} 窗口${next.at ? ` ${next.at}` : ''} 重置${gain}`;
-      nextEl.classList.remove('hidden');
+    // 右侧是这个窗口最近一次重置：什么时候 + 能补多少。
+    // gain 不能省——最早的那次重置常常没意义（一个已经剩 98% 的窗口只补 2%），
+    // 只报时间会让人白等半小时。账号名放 title，一行放不下四样东西。
+    const r = nextReset(accounts, nowMs, key);
+    const cell = el('span', 'wrow-reset');
+    if (r) {
+      const gain = r.gain === null ? '' : ` +${Math.round(r.gain)}%`;
+      // 今天的重置报时刻（"18:10"，你会照它安排接下来做什么），跨天的报倒计时
+      // （"2d"）——"08/01 21:59" 既占不下这一列，也不是你会拿来决策的形式。
+      const short = shortReset(r.at, d.today?.date);
+      const when = short && short !== r.at ? short : fmtEta(r.ms - nowMs);
+      cell.textContent = `${when}${gain}`;
+      cell.title = `${r.email.split('@')[0]} 的 ${label} 窗口 ${r.at} 重置（${fmtEta(r.ms - nowMs)} 后）${gain}`;
     } else {
-      nextEl.textContent = '';
-      nextEl.classList.add('hidden');
+      // 没有重置时间：窗口还没启用（余量满）或上游没给。两者都不该编个时间出来。
+      cell.textContent = '–';
+      cell.title = '暂无重置时间';
     }
+    row.appendChild(cell);
+    rows.appendChild(row);
   }
 }
 
