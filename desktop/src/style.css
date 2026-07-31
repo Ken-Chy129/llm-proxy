@@ -333,18 +333,21 @@ body.float.expanded:not(.ball-left) #fcard { right: 0; left: auto; }
 .fcard-head {
   display: flex; align-items: baseline; gap: 5px;
   padding-bottom: 6px; margin-bottom: 5px; border-bottom: 1px solid var(--line);
-  cursor: grab;
 }
-.fcard-head:active { cursor: grabbing; }
 .fcard-title { font-size: 10px; font-weight: 600; letter-spacing: .5px; color: var(--fg-dim); }
 .fcard-tokens { margin-left: auto; font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
 /* 置顶按钮离 token 数远一点，否则 "今日 332.7K ▲" 会被读成一个整体 */
 .fcard-head .icon-btn { font-size: 9px; padding: 0 1px; margin-left: 4px; opacity: .55; }
 .fcard-head .icon-btn:hover { opacity: 1; }
 /* 一个窗口一行：5h 和 7d。数字列宽固定，两行的小数点严格对齐才好比较。 */
-.wrow { display: flex; align-items: center; gap: 6px; height: 22px; font-size: 11px; }
+.wrow { display: flex; align-items: center; gap: 5px; height: 22px; font-size: 11px; }
 .wrow-tag { width: 20px; flex-shrink: 0; font-size: 10px; color: var(--fg-dim); }
-.wrow-pct { width: 34px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
-.wrow-reset { width: 74px; text-align: right; font-size: 9.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wrow-pct { width: 30px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+/* 重置信息分成两个定宽列，两行之间严格对齐；整组离百分比近一点，别在中间空出一条
+   莫名的沟。gain 用 accent 蓝：它不是"当前状态"（那是绿/黄/红那套），而是"等一等会
+   多出来多少"，混进状态色里会被误读成额度本身。 */
+.wrow-reset { display: flex; align-items: baseline; gap: 6px; flex-shrink: 0; font-size: 9.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.wrow-when { width: 36px; text-align: right; color: var(--fg-faint); }
+.wrow-gain { width: 34px; text-align: right; color: var(--accent); }
 .fcard-err { margin-top: 5px; font-size: 10px; color: var(--bad); line-height: 1.35; }
 .fcard-err.warn { color: var(--warn); }

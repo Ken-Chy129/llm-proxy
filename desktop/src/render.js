@@ -464,11 +464,14 @@ export function renderFloat(d, opts = {}) {
       // （"2d"）——"08/01 21:59" 既占不下这一列，也不是你会拿来决策的形式。
       const short = shortReset(r.at, d.today?.date);
       const when = short && short !== r.at ? short : fmtEta(r.ms - nowMs);
-      cell.textContent = `${when}${gain}`;
+      // 时刻和增量拆成两个定宽列：写在一个 span 里，两行的 "+58%" / "+42%" 会被
+      // 前面长度不同的时刻推得参差不齐，扫一眼比不了。
+      cell.appendChild(el('span', 'wrow-when', when));
+      cell.appendChild(el('span', 'wrow-gain', gain.trim()));
       cell.title = `${r.email.split('@')[0]} 的 ${label} 窗口 ${r.at} 重置（${fmtEta(r.ms - nowMs)} 后）${gain}`;
     } else {
       // 没有重置时间：窗口还没启用（余量满）或上游没给。两者都不该编个时间出来。
-      cell.textContent = '–';
+      cell.appendChild(el('span', 'wrow-when', '–'));
       cell.title = '暂无重置时间';
     }
     row.appendChild(cell);

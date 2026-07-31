@@ -264,14 +264,25 @@ async function refresh(manual = false) {
 }
 
 /* ---------- 悬浮球的折叠/展开 ----------
-   窗口尺寸就是交互本身：折叠态 64x64 只装得下球，鼠标移上去把窗口撑到卡片大小。
-   顺序很讲究——展开必须"先撑窗口、再显示卡"，否则卡会先画在 64px 的窗口外被裁掉
-   闪一下；收回则相反，先隐藏再缩窗口。 */
+   窗口尺寸就是交互本身：折叠态 56x56 只装得下球，鼠标移上去把窗口撑到"卡片 + 缝 +
+   球"，球留在原地不动。
+
+   这里最麻烦的不是展开，是**展开和拖拽会互相打架**：
+   - 拖拽中窗口一直在动，hover 事件会被反复触发，展开/收回和 OS 的拖拽抢同一个窗口，
+     手感就是一顿一顿的；
+   - 展开态窗口有 228px 宽，靠屏幕右边缘拖时，窗口右侧撞到边界就再也推不过去，
+     表现为"球没法贴到最右边"；
+   - mouseleave 在 macOS 上不保证送达（窗口刚被挪过之后尤其容易漏），漏一次就永久
+     摊开，鼠标移开也不收。
+   所以规则定死两条：**按下鼠标立刻收回成球**（拖的永远是那个 56px 的小窗口），
+   以及**展开期间用看门狗轮询鼠标位置**，不完全依赖事件。 */
 const BALL_BOX = 56;    // 与球等大；阴影由原生窗口画在窗口外面
 const CARD_BOX_W = 228; // 与卡等宽
 const FLOAT_GAP = 6;    // 卡片和球之间透出桌面的缝，别让两块贴成一坨
 let collapseTimer = null;
+let watchdog = null;
 let floatExpanded = false;
+let dragging = false;
 let etaTimer = null;
 let lastData = null; // 倒计时自转时复用上一轮数据，不额外发请求
 
@@ -292,7 +303,7 @@ function syncFloatSize() {
 
 async function expandFloat() {
   clearTimeout(collapseTimer);
-  if (floatExpanded) return;
+  if (floatExpanded || dragging) return;
   floatExpanded = true;
   const { w, h } = floatCardBox();
   // Rust 侧算出球该待在窗口的哪个角（球不动，卡片浮到它旁边），前端只把结果翻译成
@@ -301,18 +312,32 @@ async function expandFloat() {
   document.body.classList.toggle('ball-bottom', layout ? layout.ball_bottom !== false : true);
   document.body.classList.toggle('ball-left', layout ? layout.ball_left !== false : true);
   document.body.classList.add('expanded');
+
+  // 看门狗：每 300ms 问一次 Rust"鼠标还在窗口里吗"。漏事件的代价太大（永久摊开），
+  // 而这个轮询只在展开期间跑。
+  clearInterval(watchdog);
+  watchdog = setInterval(async () => {
+    if (!floatExpanded) return;
+    const inside = await invoke('cursor_over_float');
+    if (inside === false) collapseNow();
+  }, 300);
+}
+
+/** 立即收回，不走 200ms 缓冲——按下鼠标要拖的时候必须马上变回小球。 */
+async function collapseNow() {
+  clearTimeout(collapseTimer);
+  clearInterval(watchdog);
+  watchdog = null;
+  if (!floatExpanded) return;
+  floatExpanded = false;
+  document.body.classList.remove('expanded');
+  await invoke('collapse_float');
 }
 
 function collapseFloat() {
   clearTimeout(collapseTimer);
   // 200ms 缓冲：鼠标从球滑到卡、或擦着边缘走过时不该来回抽搐
-  collapseTimer = setTimeout(async () => {
-    if (!floatExpanded) return;
-    floatExpanded = false;
-    document.body.classList.remove('expanded');
-    // collapse 会把球放回展开前那个角
-    await invoke('collapse_float');
-  }, 200);
+  collapseTimer = setTimeout(collapseNow, 200);
 }
 
 function restartTimer() {
@@ -346,9 +371,28 @@ function closeSettings() {
 
 function wire() {
   if (IS_FLOAT) {
-    // 悬浮模式没有顶栏，交互全在球身上：hover 展开、拖拽移动、置顶开关在展开卡里。
+    // 悬浮模式没有顶栏，交互全在球身上：hover 展开、按下即拖。
     document.documentElement.addEventListener('mouseenter', expandFloat);
     document.documentElement.addEventListener('mouseleave', collapseFloat);
+
+    // 只有球是拖拽把手。走 start_float_drag 而不是 data-tauri-drag-region：那个属性
+    // 会在收回之前就让系统接管窗口，于是拖的是 228px 的展开态，推不到屏幕右边缘。
+    document.getElementById('ball').addEventListener('mousedown', (e) => {
+      if (e.button !== 0) return;
+      dragging = true;
+      clearTimeout(collapseTimer);
+      clearInterval(watchdog);
+      floatExpanded = false;
+      document.body.classList.remove('expanded');
+      invoke('start_float_drag');
+    });
+    // 拖拽由 OS 接管窗口，期间 webview 未必收得到 mouseup，所以再兜一层：只要看到
+    // 一次"按键已经松开"的移动事件就复位。否则 dragging 卡在 true，hover 永久失效。
+    document.addEventListener('mouseup', () => { dragging = false; });
+    document.addEventListener('mousemove', (e) => {
+      if (dragging && e.buttons === 0) dragging = false;
+    });
+    window.addEventListener('blur', () => { dragging = false; });
 
     // 置顶开关删掉了：挂件常驻桌面本来就该压在最上面，56px 的球几乎挡不住东西，
     // 那个按钮从没被按过却一直占着卡片右上角。真要临时收起来，托盘菜单里有开关。

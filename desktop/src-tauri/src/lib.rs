@@ -194,6 +194,43 @@ fn expand_float(app: AppHandle, width: f64, height: f64) -> ExpandLayout {
     layout
 }
 
+/// 开始拖拽悬浮球：先收回成球，再交给系统拖窗口。
+///
+/// 为什么不用 `data-tauri-drag-region`：那个属性一 mousedown 就让系统接管窗口，而我
+/// 们必须**先**把窗口缩回 56x56 再开始拖。理由有两条，都是实际撞出来的：
+///   - 228px 宽的展开态一碰到屏幕右边界就推不过去了，表现为"球贴不到最右边"；
+///   - 拖拽期间窗口一直在动，hover 事件被反复触发，展开逻辑和系统拖拽抢同一个窗口，
+///     手感一顿一顿的。
+/// 把"收回 + 开始拖"合成一条命令，顺序就由 Rust 保证，不会被 IPC 往返切开。
+#[tauri::command]
+fn start_float_drag(app: AppHandle) {
+    collapse_float(app.clone());
+    if let Some(w) = app.get_webview_window(FLOAT) {
+        let _ = w.start_dragging();
+    }
+}
+
+/// 鼠标此刻是否落在悬浮窗的矩形内。
+///
+/// 展开态需要这个看门狗：mouseleave 在 macOS 上不保证送达——窗口刚被 setSize /
+/// setPosition 挪过之后尤其容易漏，而漏一次的后果是挂件永久摊开着，鼠标移开也不收。
+/// 每隔几百毫秒主动问一次，比信任事件可靠。
+#[tauri::command]
+fn cursor_over_float(app: AppHandle) -> bool {
+    let Some(w) = app.get_webview_window(FLOAT) else {
+        return false;
+    };
+    let (Ok(cursor), Ok(pos), Ok(size)) = (app.cursor_position(), w.outer_position(), w.outer_size())
+    else {
+        // 查不到就报"在里面"，宁可少收一次也不要在鼠标还悬着的时候把卡片抽走
+        return true;
+    };
+    cursor.x >= pos.x as f64
+        && cursor.x <= (pos.x + size.width as i32) as f64
+        && cursor.y >= pos.y as f64
+        && cursor.y <= (pos.y + size.height as i32) as f64
+}
+
 /// 收回成球，并把它放回展开前那个角。
 #[tauri::command]
 fn collapse_float(app: AppHandle) {
@@ -235,6 +272,8 @@ pub fn run() {
             toggle_float,
             expand_float,
             collapse_float,
+            cursor_over_float,
+            start_float_drag,
             hide_panel,
             detect_env_config
         ])
