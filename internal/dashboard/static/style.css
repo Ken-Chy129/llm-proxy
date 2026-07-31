@@ -302,21 +302,10 @@ rect.cal-future{fill:transparent;}
 /* A split fill replaces the flat accent gradient when the metric is tokens, so
    the shape of a row (mostly cache vs mostly fresh input) reads at a glance. */
 .bar-fill.bar-split{display:flex;background:none;box-shadow:none;}
-.bar-fill.bar-split i{height:100%;}
-.log-row-x{cursor:pointer;}
-.log-row-x:hover{background:var(--accent-soft);}
-/* `.log-table td` sets overflow:hidden + ellipsis, and beats a bare `.tok-cell`
-   on specificity — so this has to be qualified, or the proportion strip is the
-   first thing to get chopped off with a "…". */
-.log-table td.tok-cell{white-space:nowrap;overflow:visible;text-overflow:clip;}
-.tok-total{font-variant-numeric:tabular-nums;}
-.tok-bar{display:inline-flex;width:34px;height:5px;margin-left:6px;vertical-align:middle;border-radius:2px;overflow:hidden;background:var(--bg-0);}
-/* min-width keeps a non-zero bucket from rounding away to nothing: on a typical
-   cached request input is well under 1% of the total, and a 0px sliver would
-   read as "no fresh input at all". Overflow past 34px is clipped, which is fine
-   — the strip conveys proportion, the tooltip carries the numbers. */
-.tok-bar i{height:100%;min-width:1px;}
-.log-tok-row td{padding:0 12px 8px;border:none;}
+.bar-fill.bar-split i{height:100%;min-width:1px;}
+/* In the logs table the breakdown is hover-only — cursor:help advertises that
+   the number has something behind it without adding any ink to the row. */
+.tok-total{font-variant-numeric:tabular-nums;cursor:help;}
 .tok-chips{display:flex;flex-wrap:wrap;gap:6px;}
 .tok-chips-strip{margin:0 0 12px;}
 .tok-chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text-1);background:var(--bg-3);border:1px solid var(--border);border-radius:999px;padding:3px 10px;}
