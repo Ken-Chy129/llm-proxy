@@ -211,7 +211,6 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .btn:hover { filter: brightness(1.1); }
 .btn.ghost { background: transparent; color: var(--fg-dim); border: 1px solid var(--line); }
 .btn.ghost:hover { background: var(--bg-hover); color: var(--fg); }
-.hint { font-size: 9.5px; color: var(--fg-faint); line-height: 1.5; }
 
 /* ---------- 悬浮挂件模式 ----------
    窗口是无边框+透明的，所以圆角和边框必须由 CSS 自己画出来，
@@ -222,6 +221,27 @@ html, body { background: transparent; }
   border-radius: 12px;
   overflow: hidden;
   border: 1px solid var(--line);
+}
+
+/* ---------- 高度与滚动 ----------
+   面板窗口是固定 320x520，而卡片高度随账号数/Key 数增长——三个账号就已经撑破
+   520px。如果让 body 去滚，会同时坏三件事：#app 的圆角和描边被滚出视口（弹窗
+   看起来像被切掉一角）、sticky 顶栏之外的内容顶到窗口边缘、以及 macOS 直接在
+   内容上压一条粗滚动条。
+   所以把窗口高度锁死，滚动交给内容区自己，顶栏/错误条/告警条永远留在原位。 */
+html, body { height: 100%; overflow: hidden; }
+#app { height: 100%; display: flex; flex-direction: column; }
+/* min-height:0 是必需的：flex item 的默认 min-height 是 auto，子内容会把它撑到
+   自然高度，overflow 就永远不生效。 */
+#panel, .settings { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+/* 细滚动条，别抢内容的注意力；轨道透明，避免在卡片间画出一条灰带 */
+#panel::-webkit-scrollbar, .settings::-webkit-scrollbar { width: 5px; }
+#panel::-webkit-scrollbar-track, .settings::-webkit-scrollbar-track { background: transparent; }
+#panel::-webkit-scrollbar-thumb, .settings::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 3px;
+}
+#panel::-webkit-scrollbar-thumb:hover, .settings::-webkit-scrollbar-thumb:hover {
+  background: var(--fg-faint);
 }
 body.float #app {
   /* 挂件常年摆在桌面上，给一点阴影和轻微透明，避免压住底下内容 */
