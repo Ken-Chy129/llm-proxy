@@ -308,3 +308,39 @@ func TestLastRequestTimeReturnsNewest(t *testing.T) {
 		t.Errorf("got %v, want ~%v", got.UTC(), newest)
 	}
 }
+
+// TestReasoningUnknownDistinguishedFromZeroInAggregates guards the honesty of
+// the "—" the UI shows: a range containing only rows whose upstream never
+// reported reasoning must be distinguishable from one that genuinely saw zero.
+func TestReasoningUnknownDistinguishedFromZeroInAggregates(t *testing.T) {
+	db := newTestDB(t)
+	const tz = 480
+	loc := time.FixedZone("test", tz*60)
+	nowLocal := time.Now().In(loc)
+	today := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 5, 0, 0, 0, loc)
+
+	// Only Anthropic-shaped rows: reasoning is unknown on every one of them.
+	insertFull(t, db, today, "k", 100, 200, 5000, 0, types.ReasoningUnknown)
+	insertFull(t, db, today.Add(time.Minute), "k", 100, 200, 5000, 0, types.ReasoningUnknown)
+
+	got, err := db.DayUsage(0, tz)
+	if err != nil {
+		t.Fatalf("DayUsage: %v", err)
+	}
+	if got.ReasoningTokens != 0 {
+		t.Errorf("reasoning sum = %d, want 0 (-1 rows clamp)", got.ReasoningTokens)
+	}
+	if got.ReasoningKnownRequests != 0 {
+		t.Errorf("known = %d, want 0 — the UI needs this to render \"—\" instead of \"0\"", got.ReasoningKnownRequests)
+	}
+
+	// One Codex-shaped row reporting a real zero flips it to "known".
+	insertFull(t, db, today.Add(2*time.Minute), "k", 100, 200, 0, 0, 0)
+	got, err = db.DayUsage(0, tz)
+	if err != nil {
+		t.Fatalf("DayUsage: %v", err)
+	}
+	if got.ReasoningKnownRequests != 1 {
+		t.Errorf("known = %d, want 1 (a reported 0 is knowledge, not absence)", got.ReasoningKnownRequests)
+	}
+}

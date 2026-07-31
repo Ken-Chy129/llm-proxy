@@ -52,6 +52,11 @@ type TokenBreakdown struct {
 	CacheReadTokens  int `json:"cache_read_tokens"`
 	CacheWriteTokens int `json:"cache_write_tokens"`
 	ReasoningTokens  int `json:"reasoning_tokens"`
+	// ReasoningKnownRequests counts rows whose upstream actually reported a
+	// reasoning figure. Summing -1 rows to 0 would otherwise make an aggregate of
+	// pure Anthropic traffic claim "0 thinking tokens", when the truth is that
+	// nobody told us — the same distinction the per-row "—" preserves.
+	ReasoningKnownRequests int `json:"reasoning_known_requests"`
 }
 
 // totalTokensExpr is the display accounting: the four disjoint buckets added up.
@@ -59,18 +64,21 @@ type TokenBreakdown struct {
 // adding it would double-count. Every user-visible total goes through this.
 const totalTokensExpr = "(prompt_tokens + cache_read_tokens + cache_write_tokens + completion_tokens)"
 
-// breakdownCols selects the five per-bucket sums in TokenBreakdown field order.
+// breakdownCols selects the per-bucket sums in TokenBreakdown field order.
 // reasoning_tokens is -1 on rows whose upstream never reported it, so the sum
-// clamps each row to 0 rather than subtracting.
+// clamps each row to 0 rather than subtracting, and the trailing count tells the
+// UI whether that 0 means "none" or "unknown".
 const breakdownCols = `COALESCE(SUM(prompt_tokens), 0),
 	COALESCE(SUM(completion_tokens), 0),
 	COALESCE(SUM(cache_read_tokens), 0),
 	COALESCE(SUM(cache_write_tokens), 0),
-	COALESCE(SUM(MAX(reasoning_tokens, 0)), 0)`
+	COALESCE(SUM(MAX(reasoning_tokens, 0)), 0),
+	COALESCE(SUM(reasoning_tokens >= 0), 0)`
 
 // scanArgs returns the destinations for breakdownCols, in order.
 func (b *TokenBreakdown) scanArgs() []any {
-	return []any{&b.PromptTokens, &b.CompletionTokens, &b.CacheReadTokens, &b.CacheWriteTokens, &b.ReasoningTokens}
+	return []any{&b.PromptTokens, &b.CompletionTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
+		&b.ReasoningTokens, &b.ReasoningKnownRequests}
 }
 
 type KeyStats struct {

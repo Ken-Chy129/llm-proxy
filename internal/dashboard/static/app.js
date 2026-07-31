@@ -38,6 +38,10 @@ function tokens(o) {
     cache_write_tokens: write,
     reasoning_tokens: o?.reasoning_tokens ?? REASONING_UNKNOWN,
   };
+  // Aggregates clamp unknown (-1) rows to 0 when summing, so a range of pure
+  // Anthropic traffic arrives as reasoning 0. reasoning_known_requests === 0
+  // means no row in it ever reported a figure — that is "unknown", not "none".
+  if (o?.reasoning_known_requests === 0) t.reasoning_tokens = REASONING_UNKNOWN;
   t.total = t.prompt_tokens + t.completion_tokens + t.cache_tokens;
   return t;
 }
