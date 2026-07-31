@@ -200,8 +200,9 @@ Callers authenticate with `Authorization: Bearer <key>`, from one of two sources
 server:
   port: 9090
   # api_key: "sk-proxy-xxx"            # Optional global key; the Keys tab is usually more flexible
-  admin_user: "admin"                  # Dashboard login
-  admin_password: "password"
+  admin_user: "admin"                  # Dashboard login; empty refuses every login
+  admin_password: "password"            # Fallback: LLM_PROXY_ADMIN_USER / LLM_PROXY_ADMIN_PASSWORD
+  tray_token: "tray-..."               # Read-only credential for the desktop widget (/api/tray); unset locks it out
   cert_file: "/path/to/cert.pem"       # Optional: enable HTTPS
   key_file: "/path/to/key.pem"
 

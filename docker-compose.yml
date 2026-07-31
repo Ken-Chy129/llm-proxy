@@ -15,6 +15,11 @@ services:
       - GOOGLE_APPLICATION_CREDENTIALS=/data/gcp-adc.json
       # Set this in the host shell or a Compose .env file excluded from Git.
       - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
+      # Dashboard login fallback, used only when config.yaml leaves
+      # admin_user/admin_password empty. With neither set, login is refused
+      # outright rather than accepting a blank form.
+      - LLM_PROXY_ADMIN_USER=${LLM_PROXY_ADMIN_USER:-}
+      - LLM_PROXY_ADMIN_PASSWORD=${LLM_PROXY_ADMIN_PASSWORD:-}
     volumes:
       # Single persistent volume: config.yaml + OAuth tokens + keys.json + stats.db
       # + gcp-adc.json all live here. token_dir in config.yaml must be /data.
