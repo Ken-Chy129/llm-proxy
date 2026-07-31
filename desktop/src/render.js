@@ -394,71 +394,84 @@ function renderSpark(container, hourly, nowHour, axisEl) {
 /**
  * 悬浮挂件的渲染：折叠是一个球，展开是一张紧凑卡。
  *
- * 刻意跟面板不同源。常驻桌面的东西只该回答一个问题——"现在还能不能放心用"，
- * 逐小时曲线、Key 分摊、请求数这些诊断信息属于"出事了才看"，留给点开的面板。
- * 每个账号只显示瓶颈窗口（见 bindingWindow），信息量减半而决策力不变。
+ * 只回答两个问题，其它一概不放：
+ *   1. 下一次重置之前，我总共还能用多少（5h 是当下的闸门，7d 是这周的预算）
+ *   2. 下一次回血是什么时候、能补回多少
+ *
+ * 逐账号明细刻意不放——代理自动挑账号，"哪个账号剩多少"不改变你的行动，那是出问题
+ * 时才看的诊断信息，菜单栏面板里有完整两条。
  */
 export function renderFloat(d, opts = {}) {
   const doc = opts.doc || document;
   const q = (id) => doc.getElementById(id);
+  const nowMs = opts.nowMs === undefined ? Date.now() : opts.nowMs;
 
-  const pool = poolHeadroom(d && d.accounts);
-  const cls = pctClass(pool ? pool.pct : null);
-  const txt = pool ? `${Math.round(pool.pct)}` : '–';
+  const accounts = (d && d.accounts) || [];
+  const session = poolWindow(accounts, 'session_percent');
+  const weekly = poolWindow(accounts, 'weekly_percent');
+  const next = nextReset(accounts, nowMs);
+  const eta = next ? fmtEta(next.ms - nowMs) : '';
 
+  // 球上放 5h：它才是"这一小时还能不能干活"的闸门，7d 是预算，放展开里
+  const cls = pctClass(session ? session.pct : null);
   const ball = q('ball');
   if (ball) {
-    // 环的长度用 CSS 变量喂给 conic-gradient；没数据时环为空，不能画成满格
-    ball.style.setProperty('--p', pool ? Math.max(0, Math.min(100, pool.pct)) : 0);
+    ball.style.setProperty('--p', session ? Math.max(0, Math.min(100, session.pct)) : 0);
     ball.className = cls;
-    ball.title = pool
-      ? `可用 ${Math.round(pool.pct)}%（${pool.email.split('@')[0]} 的${pool.win}窗口最宽裕）`
+    ball.title = session
+      ? `5h 池 ${Math.round(session.sum)}% / ${session.cap}%` +
+        (next ? `\n${eta} 后 ${next.email.split('@')[0]} 的 ${next.win} 重置` : '')
       : '暂无额度数据';
   }
-  if (q('ball-pct')) q('ball-pct').textContent = txt;
+  if (q('ball-pct')) q('ball-pct').textContent = session ? `${Math.round(session.pct)}%` : '–';
+  // 第二行是倒计时而不是别的数字：它是唯一"等一等就会变好"的信息
+  if (q('ball-eta')) q('ball-eta').textContent = eta;
 
-  if (q('fcard-pct')) {
-    q('fcard-pct').textContent = pool ? `${Math.round(pool.pct)}%` : '–';
-    q('fcard-pct').className = `fcard-pct ${cls}`;
-  }
   if (q('fcard-tokens')) {
-    q('fcard-tokens').textContent = d.today?.total_tokens
-      ? `今日 ${fmtCompact(d.today.total_tokens)}`
-      : '';
+    q('fcard-tokens').textContent = d.today?.total_tokens ? `今日 ${fmtCompact(d.today.total_tokens)}` : '';
   }
 
   const rows = q('fcard-rows');
   if (!rows) return;
   rows.textContent = '';
-  const accounts = d.accounts || [];
-  if (!accounts.length) {
-    rows.appendChild(el('div', 'empty', '没有已登录的账号'));
-    return;
+  if (!session && !weekly) {
+    rows.appendChild(el('div', 'empty', '暂无额度数据'));
+  } else {
+    for (const [label, w] of [['5h', session], ['7d', weekly]]) {
+      if (!w) continue;
+      const wcls = pctClass(w.pct);
+      const row = el('div', 'wrow');
+      row.appendChild(el('span', 'wrow-tag', label));
+      const meter = el('div', 'meter');
+      if (w.pct <= 0) meter.classList.add('empty-bad');
+      const fill = el('span', wcls);
+      fill.style.width = `${Math.max(2, Math.min(100, w.pct))}%`;
+      meter.appendChild(fill);
+      row.appendChild(meter);
+      row.appendChild(el('span', `wrow-pct ${wcls}`, `${Math.round(w.pct)}%`));
+      // 原始和也给出来：246/300 比 82% 更能说明"还有两个半账号的量"
+      const sum = el('span', 'wrow-sum', `${Math.round(w.sum)}/${w.cap}`);
+      sum.title = `${w.count} 个账号的剩余量之和`;
+      row.appendChild(sum);
+      rows.appendChild(row);
+    }
   }
-  for (const a of accounts) {
-    const b = bindingWindow(a);
-    const rcls = pctClass(b ? b.pct : null);
-    const row = el('div', 'frow');
-    const name = el('span', 'frow-name', (a.email || '').split('@')[0]);
-    // 列宽有限，截断难免；完整邮箱挂在 title 上，悬停可看
-    name.title = a.email || '';
-    row.appendChild(name);
 
-    const meter = el('div', 'meter');
-    if (b && b.pct <= 0) meter.classList.add('empty-bad');
-    const fill = el('span', rcls);
-    fill.style.width = b ? `${Math.max(2, Math.min(100, b.pct))}%` : '0%';
-    meter.appendChild(fill);
-    row.appendChild(meter);
-
-    row.appendChild(el('span', `frow-pct ${rcls}`, b ? `${Math.round(b.pct)}%` : '?'));
-    // 标出是哪个窗口卡住的——同一个 63% 是 5h 还是周，等待成本差一个数量级
-    row.appendChild(el('span', 'frow-win', b ? b.win : ''));
-    // 限流/停用的账号已被 poolHeadroom 排除，必须让用户看见原因，
-    // 否则"三个账号都有余量，可用数字却很低"会显得像 bug
-    if (a.status === 'rate_limited') row.appendChild(el('span', 'frow-flag bad', '限'));
-    else if (a.status === 'disabled') row.appendChild(el('span', 'frow-flag', '停'));
-    rows.appendChild(row);
+  const nextEl = q('fcard-next');
+  if (nextEl) {
+    if (next) {
+      // gain 必须显示，而且不能被截断：最早的那次重置常常没意义（一个 98% 的窗口
+      // 只补 2%），看到 +2% 才不会白等半小时。所以账号名挪到 title 里——228px 一行
+      // 放不下"时刻 + 倒计时 + 补多少 + 账号名"，而账号名是四者里最不影响决策的。
+      const gain = next.gain === null ? '' : ` +${Math.round(next.gain)}%`;
+      const at = shortReset(next.at, d.today?.date) || '';
+      nextEl.textContent = `下次重置 ${at}（${eta} 后）· ${next.win}${gain}`;
+      nextEl.title = `${next.email.split('@')[0]} 的 ${next.win} 窗口${next.at ? ` ${next.at}` : ''} 重置${gain}`;
+      nextEl.classList.remove('hidden');
+    } else {
+      nextEl.textContent = '';
+      nextEl.classList.add('hidden');
+    }
   }
 }
 
