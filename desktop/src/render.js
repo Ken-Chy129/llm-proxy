@@ -40,8 +40,21 @@ export function pctDelta(current, baseline) {
   if (abs >= 1000) {
     return { text: `${arrow}${Math.round(abs / 100)}x`, dir };
   }
-  const mag = abs >= 100 ? Math.round(abs) : abs.toFixed(0);
-  return { text: `${arrow}${mag}%`, dir };
+  // 四舍五入绝不能造出"绝对值"。-99.6% 被舍成 ↓100% 会被读成"今天一个 token 都
+  // 没花"（而 100% 是真实可能的：昨天有量、今天为 0），-0.4% 被舍成 ↓0% 又会被读
+  // 成"没变化"。这两个边界都向内收，宁可说少也不夸大。
+  if (abs >= 100) {
+    // 只有真正的 100%（今天为 0）和 100% 以上的增长会走到这里
+    return { text: `${arrow}${Math.round(abs)}%`, dir };
+  }
+  if (abs >= 99.5) {
+    // floor 而非 toFixed(1)：99.96 会被 toFixed 舍成 "100.0"，又绕回原来的谎
+    return { text: `${arrow}${(Math.floor(abs * 10) / 10).toFixed(1)}%`, dir };
+  }
+  if (abs < 1) {
+    return { text: `${arrow}<1%`, dir };
+  }
+  return { text: `${arrow}${Math.round(abs)}%`, dir };
 }
 
 /**

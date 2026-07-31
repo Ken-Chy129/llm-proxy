@@ -254,3 +254,21 @@ test('shortReset 当天只留时间，跨天保留日期', () => {
   // 日期前缀相同但没有空格分隔时不能截（防 "07/311" 这类脏数据被切成 "1"）
   assert.equal(shortReset('07/3116:00', '2026-07-31'), '07/3116:00');
 });
+
+test('pctDelta 不把接近 100% 的降幅舍成 100%', () => {
+  // 这条是真实踩到的 bug：今天 257.5K、昨天 12.6M，真实降幅 -97.96%
+  assert.equal(pctDelta(257_500, 12_600_000).text, '↓98%');
+  // -99.6% 舍成 ↓100% 会被读成"今天一个 token 都没花"
+  assert.equal(pctDelta(40_000, 10_000_000).text, '↓99.6%');
+  // 99.96% 用 toFixed(1) 会变回 "100.0"，必须 floor
+  assert.equal(pctDelta(4_000, 10_000_000).text, '↓99.9%');
+  // 真的降到 0 时，100% 是准确的，不该被改掉
+  assert.equal(pctDelta(0, 10_000_000).text, '↓100%');
+  // 增长侧超过 100% 不歧义，照常显示
+  assert.equal(pctDelta(25_000, 10_000).text, '↑150%');
+  // 极小变化也不能显示成 0%（会被读成"持平"）
+  assert.equal(pctDelta(9_996, 10_000).text, '↓<1%');
+  assert.equal(pctDelta(10_004, 10_000).text, '↑<1%');
+  // 边界另一侧：1% 及以上仍是整数
+  assert.equal(pctDelta(9_900, 10_000).text, '↓1%');
+});
