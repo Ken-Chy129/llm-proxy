@@ -46,16 +46,6 @@ function tokens(o) {
   return t;
 }
 
-// tokenBar is the inline 3-segment proportion strip shown next to a total.
-function tokenBar(t) {
-  if (!t.total) return '';
-  const segs = TOKEN_KINDS
-    .filter(k => t[k.key] > 0)
-    .map(k => `<i style="width:${(t[k.key] / t.total * 100).toFixed(2)}%;background:${k.color}"></i>`)
-    .join('');
-  return `<span class="tok-bar" title="${escapeHTML(tokenTitle(t))}">${segs}</span>`;
-}
-
 function tokenTitle(t) {
   const think = t.reasoning_tokens === REASONING_UNKNOWN ? 'not reported' : t.reasoning_tokens.toLocaleString();
   return `input ${t.prompt_tokens.toLocaleString()} · output ${t.completion_tokens.toLocaleString()}` +
@@ -87,7 +77,12 @@ async function loadStatus() {
   if (r.status === 401) { window.location.href = '/login'; return; }
   const d = await r.json();
   document.getElementById('total-requests').textContent = (d.total_requests || 0).toLocaleString();
-  document.getElementById('total-tokens').textContent = (d.total_tokens || 0).toLocaleString();
+  // All-time tokens run to nine digits now that cache is counted, and the exact
+  // figure is never what this readout is for — it answers "what order of
+  // magnitude". Full number stays on hover.
+  const tokEl = document.getElementById('total-tokens');
+  tokEl.textContent = fmtCompact(d.total_tokens || 0);
+  tokEl.title = (d.total_tokens || 0).toLocaleString() + ' tokens';
 
   const el = document.getElementById('backends');
   // Entrance animation plays once; later refreshes (e.g. on window focus) skip
@@ -308,21 +303,14 @@ async function loadLogs() {
       ? ` <span style="color:var(--yellow);font-size:10px;cursor:help" title="failed over from: ${l.failover_from}">↩</span>`
       : '';
     const errRow = l.error ? `<tr class="log-err-row"><td colspan="7"><div class="log-err" title="${escAttr(l.error)}">${escHtml(l.error)}</div></td></tr>` : '';
-    // The per-request breakdown is one click away rather than always on: the
-    // table is scanned for anomalies, and four numbers per row would bury them.
-    const detailRow = tk.total
-      ? `<tr class="log-tok-row hidden" data-tok="${l.id}"><td colspan="7"><div class="tok-chips">${tokenChips(tk)}</div></td></tr>`
-      : '';
+    // The breakdown is hover-only. A per-row bar or an expandable chip row both
+    // cost permanent visual weight for a detail that is looked up occasionally,
+    // and the table's job is scanning for anomalies.
     const tokCell = tk.total
-      ? `<span class="tok-total">${fmtCompact(tk.total)}</span>${tokenBar(tk)}`
+      ? `<span class="tok-total" title="${escAttr(tokenTitle(tk))}">${fmtCompact(tk.total)}</span>`
       : '<span class="text-muted">–</span>';
-    return `<tr class="${tk.total ? 'log-row-x' : ''}" ${tk.total ? `onclick="toggleLogTokens(${l.id})"` : ''}><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td class="tok-cell">${tokCell}</td><td class="${sc}">${l.status}</td></tr>${detailRow}${errRow}`;
+    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tokCell}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
   }).join('') || '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:24px">' + (logErrorsOnly || logSearch ? 'No matching requests' : 'No requests yet') + '</td></tr>';
-}
-
-function toggleLogTokens(id) {
-  const row = document.querySelector(`.log-tok-row[data-tok="${id}"]`);
-  if (row) row.classList.toggle('hidden');
 }
 
 function prevPage() { if (logPage > 0) { logPage--; loadLogs(); } }
@@ -640,7 +628,11 @@ function renderTrend() {
 }
 
 function metricMax(pts) { return Math.max(0, ...pts.map(metricVal)); }
+// A B tier matters now that totals include cache: all-time crossed 100M within
+// a day of shipping the breakdown, and "1.3B" beats "1,284,003,915" everywhere
+// this is used (readout, axis labels, bar values).
 function fmtCompact(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(2).replace(/\.?0+$/, '') + 'B';
   if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
   if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
   return String(n);
