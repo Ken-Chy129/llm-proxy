@@ -35,9 +35,15 @@ struct DetectedConfig {
 /// ~/.zprofile，两个都给才能覆盖两种写法。
 ///
 /// stdin 接 null 是防挂的关键：rc 里若有 `read` 之类，拿到 EOF 会立刻返回而不是
-/// 无限等；再加 3 秒超时兜底。超时后子进程可能短暂残留，但 stdin 已关，它自己会退。
+/// 无限等；再加超时兜底。超时后子进程可能短暂残留，但 stdin 已关，它自己会退。
+///
+/// 超时给 5 秒：实测这台机器上 `zsh -ilc true` 约 1.0–1.5 秒（nvm/conda 那类
+/// 初始化会更慢），留 3 倍余量。反正只在配置为空时跑一次。
+///
+/// 刻意是同步命令而非 `async fn`：这里会阻塞等子进程，而 async 命令跑在 tokio
+/// runtime 上，阻塞它会连带卡住其它 IPC；同步命令 Tauri 会丢到线程池执行。
 #[tauri::command]
-async fn detect_env_config() -> Option<DetectedConfig> {
+fn detect_env_config() -> Option<DetectedConfig> {
     use std::process::{Command, Stdio};
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
@@ -62,7 +68,7 @@ async fn detect_env_config() -> Option<DetectedConfig> {
         let _ = tx.send(child.wait_with_output());
     });
     let out = rx
-        .recv_timeout(std::time::Duration::from_secs(3))
+        .recv_timeout(std::time::Duration::from_secs(5))
         .ok()?
         .ok()?;
 

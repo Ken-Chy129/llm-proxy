@@ -45,13 +45,39 @@ let lastAlertKey = ''; // 同一个额度窗口只提醒一次，避免每轮轮
 const IS_FLOAT = new URLSearchParams(location.search).get('mode') === 'float';
 let floatOnTop = true;
 
-/** Tauri API 在浏览器预览里不存在，全部调用都要软失败。 */
-async function tauri(fn) {
+/**
+ * 解析 invoke 函数。
+ *
+ * Tauri v2 的全局对象只导出 {app, core, dpi, event, image, menu, path, tray,
+ * webview, webviewWindow, window} —— invoke 在 `__TAURI__.core.invoke`，**没有**
+ * 顶层的 `__TAURI__.invoke`（那是 v1 的形状）。写死任何一种都会让所有命令静默
+ * 失效：`T.invoke is not a function` 会被 catch 吞掉，于是托盘标题不更新、悬浮窗
+ * 按钮没反应、Esc 关不掉面板，而控制台之外毫无提示。两种都探测。
+ */
+function resolveInvoke() {
+  const T = window.__TAURI__;
+  if (!T) return null; // 浏览器离线预览，属正常情况
+  const fn = (T.core && T.core.invoke) || T.invoke;
+  return typeof fn === 'function' ? fn : null;
+}
+
+/** Tauri 不存在时软失败（浏览器预览）；存在但桥接坏了要吵，不能静默。 */
+let bridgeWarned = false;
+async function invoke(cmd, args) {
+  const fn = resolveInvoke();
+  if (!fn) {
+    // 有 __TAURI__ 却拿不到 invoke = 真的坏了，不是预览环境。
+    if (window.__TAURI__ && !bridgeWarned) {
+      bridgeWarned = true;
+      console.error('Tauri invoke 不可用，托盘标题与窗口控制将失效');
+      showError('Tauri 桥接不可用：托盘标题和悬浮窗按钮无法工作');
+    }
+    return null;
+  }
   try {
-    if (!window.__TAURI__) return null;
-    return await fn(window.__TAURI__);
+    return await fn(cmd, args);
   } catch (e) {
-    console.warn('tauri call failed', e);
+    console.warn(`invoke ${cmd} failed`, e);
     return null;
   }
 }
@@ -193,7 +219,7 @@ async function refresh(manual = false) {
     setDot('live');
 
     const title = trayTitle(data);
-    await tauri((T) => T.invoke('set_tray_title', { title }));
+    await invoke('set_tray_title', { title });
     await maybeNotify(data);
   } catch (e) {
     setDot('dead');
@@ -235,12 +261,12 @@ function wire() {
       floatOnTop = !floatOnTop;
       btnPin.style.opacity = floatOnTop ? '1' : '0.4';
       btnPin.title = floatOnTop ? '取消置顶' : '保持置顶';
-      tauri((T) => T.invoke('set_float_on_top', { onTop: floatOnTop }));
+      invoke('set_float_on_top', { onTop: floatOnTop });
     });
   } else {
     btnPin.classList.add('hidden');
     btnFloat.addEventListener('click', () => {
-      tauri((T) => T.invoke('toggle_float'));
+      invoke('toggle_float');
     });
   }
 
@@ -264,7 +290,7 @@ function wire() {
 
   // Esc 关闭面板（悬浮挂件不该被 Esc 关掉）
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && !IS_FLOAT) tauri((T) => T.invoke('hide_panel'));
+    if (e.key === 'Escape' && !IS_FLOAT) invoke('hide_panel');
   });
 
   // 面板每次弹出时立刻刷新一次，别让用户看着过期数字。
@@ -285,7 +311,7 @@ function wire() {
  */
 async function autofillConfig() {
   if (config.base && config.token) return;
-  const got = await tauri((T) => T.invoke('detect_env_config'));
+  const got = await invoke('detect_env_config');
   if (!got) return;
 
   const base = normalizeBase(got.base);
