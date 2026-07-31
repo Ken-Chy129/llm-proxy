@@ -103,15 +103,6 @@ export function trayTitle(d) {
 export function alertFor(d, threshold = 20) {
   const accounts = (d && d.accounts) || [];
   const limited = accounts.filter((a) => a.status === 'rate_limited');
-  const worst = accounts
-    .filter(
-      (a) =>
-        a.has_real_data &&
-        a.status !== 'disabled' &&
-        a.session_percent !== null &&
-        a.session_percent !== undefined
-    )
-    .sort((a, b) => a.session_percent - b.session_percent)[0];
 
   if (limited.length > 0) {
     // 账号一多就不逐个列举：面板只有 320px 宽，四五个账号会把横幅撑到
@@ -133,13 +124,30 @@ export function alertFor(d, threshold = 20) {
     };
   }
 
-  if (worst && worst.session_percent <= threshold) {
-    // 按 5% 分档，跌得更低会再提醒一次，但同档内反复轮询不会重复打扰
-    const bucket = Math.floor(worst.session_percent / 5) * 5;
+  // 5h 和 7d 都要盯：只看 5h 会漏掉更难受的那种——5h 见底等几小时就回血，
+  // 7d 见底要等到下周。文案里必须点明是哪个窗口，否则收到通知还得点开面板
+  // 才知道该歇一会儿还是该换账号。
+  let worst = null;
+  for (const a of accounts) {
+    if (!a.has_real_data || a.status === 'disabled') continue;
+    for (const [win, pct] of [
+      ['5h', a.session_percent],
+      ['7d', a.weekly_percent],
+    ]) {
+      if (pct === null || pct === undefined) continue;
+      // 严格小于：两个窗口打平时报 5h，跟 bindingWindow 的取舍保持一致
+      if (!worst || pct < worst.pct) worst = { win, pct, email: a.email || '' };
+    }
+  }
+
+  if (worst && worst.pct <= threshold) {
+    // 按 5% 分档，跌得更低会再提醒一次，但同档内反复轮询不会重复打扰。
+    // 窗口也进键里：5h 报过之后 7d 再见底，是另一件事，必须能再响一次。
+    const bucket = Math.floor(worst.pct / 5) * 5;
     return {
-      key: `low:${worst.email}:${bucket}`,
+      key: `low:${worst.email}:${worst.win}:${bucket}`,
       title: 'LLM Proxy 额度偏低',
-      body: `${worst.email.split('@')[0]} 会话额度仅剩 ${Math.round(worst.session_percent)}%`,
+      body: `${worst.email.split('@')[0]} ${worst.win} 额度仅剩 ${Math.round(worst.pct)}%`,
     };
   }
 
@@ -378,11 +386,17 @@ function renderBreakdown(container, day) {
 
   const read = day.cache_read_tokens || 0;
   const write = day.cache_write_tokens || 0;
+  // 聚合求和时 -1 会被 clamp 成 0，所以纯 Anthropic 流量传过来是 reasoning=0。
+  // reasoning_known_requests === 0 表示这一天没有任何一条请求拿到过思考数——
+  // 那是"不知道"，不是"没思考"，仍然要显示 "—"。
+  const reasoning = day.reasoning_known_requests === 0
+    ? REASONING_UNKNOWN
+    : (day.reasoning_tokens ?? REASONING_UNKNOWN);
   const vals = {
     prompt_tokens: day.prompt_tokens || 0,
     completion_tokens: day.completion_tokens || 0,
     cache: read + write,
-    reasoning_tokens: day.reasoning_tokens ?? REASONING_UNKNOWN,
+    reasoning_tokens: reasoning,
   };
 
   for (const k of BREAKDOWN_KINDS) {

@@ -226,7 +226,41 @@ test('alertFor 取最紧张的账号而非第一个', () => {
       acct({ email: 'mid@a.com', session_percent: 50 }),
     ],
   }, 20);
-  assert.match(a.body, /low 会话额度仅剩 7%/);
+  assert.match(a.body, /low 5h 额度仅剩 7%/);
+});
+
+test('alertFor 7d 见底也告警，且文案点明窗口', () => {
+  // 只盯 5h 会漏掉这种：小时窗口很宽裕，但周额度已经快用光
+  const a = alertFor({ accounts: [acct({ email: 'k@a.com', session_percent: 80, weekly_percent: 8 })] }, 20);
+  assert.ok(a, '7d 跌破阈值必须告警');
+  assert.match(a.body, /k 7d 额度仅剩 8%/);
+});
+
+test('alertFor 两个窗口都低时报更紧张的那个', () => {
+  const w = alertFor({ accounts: [acct({ session_percent: 18, weekly_percent: 6 })] }, 20);
+  assert.match(w.body, /7d 额度仅剩 6%/);
+  const s = alertFor({ accounts: [acct({ session_percent: 6, weekly_percent: 18 })] }, 20);
+  assert.match(s.body, /5h 额度仅剩 6%/);
+  // 打平时报 5h，与 bindingWindow 的取舍一致
+  const tie = alertFor({ accounts: [acct({ session_percent: 9, weekly_percent: 9 })] }, 20);
+  assert.match(tie.body, /5h 额度仅剩 9%/);
+});
+
+test('alertFor 去重键区分窗口：5h 报过之后 7d 还能再响', () => {
+  const k = (o) => alertFor({ accounts: [acct(o)] }, 20).key;
+  assert.notEqual(
+    k({ session_percent: 12, weekly_percent: 90 }),
+    k({ session_percent: 90, weekly_percent: 12 }),
+    '同档位但不同窗口是两件事，键不能相同'
+  );
+});
+
+test('alertFor 缺 weekly 数据时只按 5h 判定', () => {
+  const a = alertFor({ accounts: [acct({ session_percent: 12, weekly_percent: null })] }, 20);
+  assert.match(a.body, /5h 额度仅剩 12%/);
+  // 反过来也一样：缺 5h 不能让账号逃过判定
+  const b = alertFor({ accounts: [acct({ session_percent: null, weekly_percent: 12 })] }, 20);
+  assert.match(b.body, /7d 额度仅剩 12%/);
 });
 
 test('alertFor 缺少恢复时间也不产出 undefined 文案', () => {
