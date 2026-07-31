@@ -213,7 +213,10 @@ pub fn run() {
                 WebviewUrl::App("index.html".into()),
             )
             .title("LLM Proxy")
-            .inner_size(320.0, 520.0)
+            // 600 而非 520：三个账号的额度卡就已经把 520 撑破，弹窗一开就得滚。
+            // 600 在最小的 MacBook 逻辑分辨率（~1512x982）上也放得下菜单栏弹窗。
+            // 再高的内容交给 #panel 自己滚（见 style.css 的「高度与滚动」）。
+            .inner_size(320.0, 600.0)
             .resizable(false)
             .decorations(false)
             .always_on_top(true)
