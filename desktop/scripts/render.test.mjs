@@ -14,7 +14,7 @@ const src = readFileSync(resolve(__dirname, '../src/render.js'), 'utf8');
 const mod = await import(
   'data:text/javascript;base64,' + Buffer.from(src).toString('base64')
 );
-const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor } = mod;
+const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset } = mod;
 
 test('fmtNum 加千分位，空值不显示 NaN', () => {
   assert.equal(fmtNum(25969045), '25,969,045');
@@ -238,4 +238,19 @@ test('alertFor 缺少恢复时间也不产出 undefined 文案', () => {
   }, 20);
   assert.ok(!/undefined|null/.test(a.body), `文案不该出现 undefined: ${a.body}`);
   assert.match(a.body, /2 个账号被限流/);
+});
+
+test('shortReset 当天只留时间，跨天保留日期', () => {
+  // 当天：日期是冗余的，5h 窗口绝大多数情况都落在今天
+  assert.equal(shortReset('07/31 16:00', '2026-07-31'), '16:00');
+  // 跨天：必须留日期，否则凌晨 4 点会被读成"已经过去了"
+  assert.equal(shortReset('08/01 04:00', '2026-07-31'), '08/01 04:00');
+  // 月份/日子的补零要严格匹配，别把 08/01 误判成 8/1
+  assert.equal(shortReset('08/01 04:00', '2026-08-01'), '04:00');
+  // 缺任一侧信息时原样返回：宁可啰嗦，也不能显示错的时间
+  assert.equal(shortReset('07/31 16:00', undefined), '07/31 16:00');
+  assert.equal(shortReset('', '2026-07-31'), '');
+  assert.equal(shortReset(undefined, '2026-07-31'), '');
+  // 日期前缀相同但没有空格分隔时不能截（防 "07/311" 这类脏数据被切成 "1"）
+  assert.equal(shortReset('07/3116:00', '2026-07-31'), '07/3116:00');
 });

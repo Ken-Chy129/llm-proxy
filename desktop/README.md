@@ -90,7 +90,10 @@ export LLM_PROXY_TRAY_TOKEN="tray-xxxx"
   "accounts": [{                    // 每个账号的额度、限流状态、重置时间
     "email": "...", "plan_type": "Max 5x", "status": "active",
     "session_percent": 73, "weekly_percent": 91,
-    "weekly_reset_at": "08/01 22:00", "has_real_data": true
+    // 两个窗口的重置时间都是服务端本地时区的 "MM/DD HH:MM"；面板里当天只显示
+    // HH:MM，跨天才带日期（见 render.js 的 shortReset）
+    "session_reset_at": "07/31 16:00", "weekly_reset_at": "08/01 22:00",
+    "has_real_data": true
   }],
   "today":     { "date": "2026-07-30", "request_count": 68,
                  "total_tokens": 2159238, "by_key": [...] },
