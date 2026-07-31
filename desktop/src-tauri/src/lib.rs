@@ -107,17 +107,22 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
 
     let w = WebviewWindowBuilder::new(&app, FLOAT, WebviewUrl::App("index.html?mode=float".into()))
         .title("LLM Proxy")
-        // 折叠态就是一个 56px 的球（外加 4px 阴影余量）。展开由前端 hover 时调
-        // set_float_size 撑开，所以初始尺寸只需装下球。
-        .inner_size(64.0, 64.0)
+        // 折叠态就是一个 56px 的球，窗口与内容严格等大。展开由前端 hover 时调
+        // set_float_size 撑开。
+        //
+        // 不留"阴影余量"：阴影由 macOS 画在窗口**外面**，留了边距反而制造一圈看不
+        // 见、却会拦截桌面点击的死区。
+        .inner_size(56.0, 56.0)
         .resizable(false) // 尺寸由展开/折叠状态决定，手动拉扯只会拉出一片透明
         .decorations(false)      // 无边框，才像挂件而不是浏览器
         .always_on_top(true)
         .skip_taskbar(true)
         .transparent(true)
-        // 关掉原生阴影：窗口是矩形的，圆球外面会套一圈方形阴影。阴影由 CSS 沿
-        // 着圆形自己画。
-        .shadow(false)
+        // 阴影必须交给 macOS：透明窗口的原生阴影是按内容 alpha 形状生成的（面板的
+        // 圆角阴影就是这么来的），而 CSS box-shadow 会被窗口边界裁成一条硬边灰带
+        // ——窗口与内容等大，22px 的模糊根本画不下。实测过：4px 边距里的阴影压在
+        // 白底文档上就是一块灰方块。
+        .shadow(true)
         .build()
         .map_err(|e| e.to_string())?;
     let _ = w.show();

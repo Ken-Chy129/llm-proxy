@@ -261,8 +261,8 @@ async function refresh(manual = false) {
    窗口尺寸就是交互本身：折叠态 64x64 只装得下球，鼠标移上去把窗口撑到卡片大小。
    顺序很讲究——展开必须"先撑窗口、再显示卡"，否则卡会先画在 64px 的窗口外被裁掉
    闪一下；收回则相反，先隐藏再缩窗口。 */
-const BALL_BOX = 64;   // 球 56 + 两侧各 4px 阴影余量
-const CARD_BOX_W = 236; // 卡 228 + 边距
+const BALL_BOX = 56;    // 与球等大；阴影由原生窗口画在窗口外面
+const CARD_BOX_W = 228; // 与卡等宽
 let collapseTimer = null;
 let floatExpanded = false;
 
@@ -270,7 +270,7 @@ let floatExpanded = false;
 function floatCardBox() {
   const card = document.getElementById('fcard');
   const h = card ? Math.ceil(card.getBoundingClientRect().height) : 120;
-  return { w: CARD_BOX_W, h: h + 8 };
+  return { w: CARD_BOX_W, h };
 }
 
 /** 展开态下账号数变化后同步窗口高度，否则新增的行会被窗口切掉。 */

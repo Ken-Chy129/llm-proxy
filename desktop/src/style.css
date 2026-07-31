@@ -37,7 +37,10 @@ body {
   color: var(--fg);
   font: 13px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+  /* WebKit 里 -webkit- 前缀那条才是生效的；只写标准属性时挂件上仍能拖出蓝色
+     选中高亮，看着像渲染故障 */
   user-select: none;
+  -webkit-user-select: none;
   overflow-x: hidden;
 }
 
@@ -261,11 +264,10 @@ body.float #ball {
   display: grid; place-items: center; position: relative;
   /* 兜底色：renderFloat 还没跑或没有额度数据时，环该是灰的而不是一片诡异的白 */
   --ring: var(--fg-faint);
-  width: 56px; height: 56px; margin: 4px;
+  width: 56px; height: 56px;
   border-radius: 50%;
   /* 环 = 剩余额度。--p 由 renderFloat 写入，颜色跟着分档走 */
   background: conic-gradient(from -90deg, var(--ring) calc(var(--p, 0) * 1%), var(--slot) 0);
-  box-shadow: 0 3px 12px rgba(0, 0, 0, .4);
   cursor: grab;
 }
 body.float #ball:active { cursor: grabbing; }
@@ -295,15 +297,17 @@ body.float #ball .dot {
 body.float #ball .dot.live { display: none; }
 
 /* ---------- 展开卡 ----------
+   这里和球都**不能**写 box-shadow：窗口与内容等大，CSS 阴影会被窗口边界裁成一条
+   硬边灰带（实测 4px 边距里画 22px 模糊，压在白底文档上就是一块灰方块）。阴影交给
+   原生窗口，见 lib.rs 的 .shadow(true)。
    宽度写死 228px 而不是跟随窗口：折叠时窗口只有 64px 宽，但卡片必须仍然有正确
    的布局尺寸，app.js 才能量出该把窗口撑到多高。所以用 visibility 而非 display
    隐藏——display:none 没有布局，量不出来。 */
 body.float #fcard {
   display: block; visibility: hidden;
-  position: absolute; top: 4px; left: 4px; width: 228px;
+  position: absolute; top: 0; left: 0; width: 228px;
   background: var(--bg-card); border: 1px solid var(--line); border-radius: 12px;
   padding: 7px 9px 9px;
-  box-shadow: 0 6px 22px rgba(0, 0, 0, .45);
 }
 body.float.expanded #fcard { visibility: visible; }
 body.float.expanded #ball { display: none; }
