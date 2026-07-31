@@ -77,6 +77,29 @@ export LLM_PROXY_TRAY_TOKEN="tray-xxxx"
 >
 > `/api/tray` 已不再接受 `sk-` API Key（`TrayAuth` 中间件），旧版挂件升级后会 401，重新配一次 tray token 即可。
 
+## 悬浮挂件
+
+托盘菜单 →「桌面悬浮挂件」召出一个常驻桌面的球（56px）：
+
+- **环** = 池子还剩多少可用额度，**中心数字**同义。绿 >35% / 黄 ≤35% / 红 ≤10%
+- **鼠标移上去**原地展开成一张 228px 的卡：每个账号一行，显示它的**瓶颈窗口**
+  （5h 与周里更紧的那个）+ 是哪个窗口；移开自动收回
+- 拖拽球或卡片头部可以换位置；展开卡右上角是置顶开关
+- 取数失败时球内数字下方亮一颗红灯（正常时不显示——常驻挂件上的绿灯是纯噪音）
+
+### 为什么口径和菜单栏不一样
+
+菜单栏标题用的是 `min_session_percent`（所有账号里**最紧张**的 5h），悬浮球用的是
+`poolHeadroom`（所有可用账号里**最宽裕**的瓶颈值）。这不是笔误：
+
+- 代理自动挑账号，只要还有一个账号有余量你就能继续干活 → "现在能不能放心用"的
+  答案是**最大值**
+- "哪个账号快干了"是预警，由系统通知负责（`alertFor`），不该让常驻挂件天天显示
+  一个吓人但不影响你的数字
+
+被限流、被停用、还没抓到额度的账号都不计入池子，但会在展开卡里标出「限」「停」，
+否则"三个账号看着都有余量、可用数字却很低"会像个 bug。
+
 ## 后端接口
 
 依赖 llm-proxy 的 `GET /api/tray?tz=<分钟偏移>`，认 `Authorization: Bearer <tray_token>`（或 `x-api-key`），也接受 dashboard session cookie 以便在浏览器里调试。`server.tray_token` 为空时一律 401 —— 空值等于关闭，不等于放行。
@@ -140,6 +163,29 @@ desktop/
     ├── preview.mjs         离线预览：真实 JSON → 静态 HTML，可截图验证
     └── render.test.mjs     渲染层单元测试
 ```
+
+### 改完样式怎么看效果
+
+`preview.mjs` 出的是静态 HTML，配 headless Chrome 就能直接截图，不用编译 Rust、
+也不用手动点托盘：
+
+```bash
+CH="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+# 面板
+node scripts/preview.mjs /tmp/tray.json /tmp/p.html --dark
+"$CH" --headless --disable-gpu --force-device-scale-factor=2 \
+      --window-size=340,700 --screenshot=/tmp/p.png /tmp/p.html
+
+# 悬浮挂件：--float 展开卡，加 --ball 只画折叠的球，--dot dead 模拟取数失败
+node scripts/preview.mjs /tmp/tray.json /tmp/f.html --float --ball --dark --dot dead
+"$CH" --headless --disable-gpu --force-device-scale-factor=3 \
+      --window-size=110,110 --screenshot=/tmp/f.png /tmp/f.html
+```
+
+改 JSON 里的百分比就能造出低额度、限流、无数据这些平时抓不到的状态。CSS 这类改动
+**必须真的看一眼**——比如环的分档色曾经被一条兜底规则的特异性压掉，红环画成灰的，
+只有截图能发现。
 
 **为什么 render.js 和 app.js 分开？** `render.js` 是纯函数，不碰 fetch 也不碰 Tauri，所以能在任何浏览器里用捕获的真实数据离线渲染 —— 改样式不用等 Rust 编译：
 

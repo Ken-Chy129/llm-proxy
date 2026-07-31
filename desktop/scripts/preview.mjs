@@ -17,6 +17,11 @@ if (!dataPath || !outPath) {
   process.exit(1);
 }
 const isFloat = process.argv.includes('--float');
+// --ball 只画折叠态的球，--dot <live|stale|dead> 指定取数状态灯，
+// 都是给"改完样式截图看一眼"用的（见 README 的验证一节）
+const isBall = process.argv.includes('--ball');
+const dotArg = process.argv.indexOf('--dot');
+const dotState = dotArg > -1 ? process.argv[dotArg + 1] : 'live';
 const isDark = process.argv.includes('--dark');
 const hourArg = process.argv.indexOf('--hour');
 const nowHour = hourArg > -1 ? Number(process.argv[hourArg + 1]) : new Date().getHours();
@@ -50,20 +55,31 @@ const out = `<!DOCTYPE html>
 ${css}
 /* 预览专用：给截图一点留白，并去掉窗口透明假设 */
 body { margin: 0; padding: 14px; background: #0e1014; }
+/* 预览专用：悬浮卡在真实窗口里是 absolute 定位，这里改成静态流内，
+   否则截图会是一个空白页加一个浮在角上的卡。 */
+body.float #fcard { position: static; }
 </style>
 </head><body class="${isFloat ? 'float' : ''}">
 ${body}
 <script>
 ${inlineRender}
 const DATA = ${JSON.stringify(data)};
-document.getElementById('btn-pin').classList.add('hidden');
-render(DATA, { nowHour: ${nowHour} });
-document.getElementById('live-dot').className = 'dot live';
+// 悬浮模式渲染的是球 + 展开卡（renderFloat），跟面板不是同一套 DOM。
+// 预览里直接摆成展开态——折叠态就是一个球，截图没什么可看的。
+if (${isFloat}) {
+  if (${!isBall}) document.body.classList.add('expanded');
+  renderFloat(DATA);
+  document.getElementById('ball-dot').className = 'dot ${dotState}';
+} else {
+  document.getElementById('btn-pin').classList.add('hidden');
+  render(DATA, { nowHour: ${nowHour} });
+  document.getElementById('live-dot').className = 'dot live';
+}
 // 复现告警横幅：预览里没有 Tauri，走 app.js 的降级路径。判定逻辑用
 // render.js 导出的 alertFor，跟实际运行时是同一份代码。
 (() => {
   const a = alertFor(DATA, ${threshold});
-  const box = document.getElementById('alert');
+  const box = document.getElementById(${isFloat} ? 'fcard-err' : 'alert');
   if (a && box) {
     // 与 app.js 一致：横幅只用 body，不拼 title（否则同义重复且会换行）
     box.textContent = '⚠ ' + a.body;

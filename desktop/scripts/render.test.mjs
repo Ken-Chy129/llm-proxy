@@ -14,7 +14,7 @@ const src = readFileSync(resolve(__dirname, '../src/render.js'), 'utf8');
 const mod = await import(
   'data:text/javascript;base64,' + Buffer.from(src).toString('base64')
 );
-const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset } = mod;
+const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset, bindingWindow, poolHeadroom } = mod;
 
 test('fmtNum 加千分位，空值不显示 NaN', () => {
   assert.equal(fmtNum(25969045), '25,969,045');
@@ -271,4 +271,47 @@ test('pctDelta 不把接近 100% 的降幅舍成 100%', () => {
   assert.equal(pctDelta(10_004, 10_000).text, '↑<1%');
   // 边界另一侧：1% 及以上仍是整数
   assert.equal(pctDelta(9_900, 10_000).text, '↓1%');
+});
+
+test('bindingWindow 取 5h 与周里更紧的那个', () => {
+  assert.deepEqual(bindingWindow({ session_percent: 100, weekly_percent: 71 }), { win: '周', pct: 71 });
+  assert.deepEqual(bindingWindow({ session_percent: 12, weekly_percent: 80 }), { win: '5h', pct: 12 });
+  // 只有一个窗口有数据时用它，别把缺失当 0
+  assert.deepEqual(bindingWindow({ session_percent: 40 }), { win: '5h', pct: 40 });
+  assert.deepEqual(bindingWindow({ weekly_percent: 40 }), { win: '周', pct: 40 });
+  // 0% 是有效值（用光了），不能被当成"没数据"
+  assert.deepEqual(bindingWindow({ session_percent: 0, weekly_percent: 90 }), { win: '5h', pct: 0 });
+  assert.equal(bindingWindow({}), null);
+  assert.equal(bindingWindow(null), null);
+});
+
+test('poolHeadroom 跨账号取最大，且排除不能服务流量的账号', () => {
+  const acct = (o) => ({ has_real_data: true, status: 'active', email: 'x@y.com', ...o });
+
+  // 代理自动挑账号：只要有一个账号宽裕，就还能干活 → 取最大
+  const pool = poolHeadroom([
+    acct({ email: 'a@x.com', session_percent: 100, weekly_percent: 71 }),
+    acct({ email: 'b@x.com', session_percent: 5, weekly_percent: 90 }),
+  ]);
+  assert.equal(pool.pct, 71);
+  assert.equal(pool.win, '周');
+  assert.equal(pool.email, 'a@x.com');
+
+  // 限流 / 停用 / 无真实数据的账号此刻服务不了流量，不能计入
+  assert.equal(
+    poolHeadroom([
+      acct({ status: 'rate_limited', session_percent: 100, weekly_percent: 100 }),
+      acct({ session_percent: 30, weekly_percent: 60 }),
+    ]).pct,
+    30
+  );
+  assert.equal(poolHeadroom([acct({ status: 'disabled', session_percent: 90 })]), null);
+  assert.equal(poolHeadroom([acct({ has_real_data: false, session_percent: 90 })]), null);
+
+  // 一个可用账号都没有时必须返回 null，让 UI 显式表达"未知"而不是画成 0% 或满格
+  assert.equal(poolHeadroom([]), null);
+  assert.equal(poolHeadroom(undefined), null);
+
+  // 全部用光是 0，不是 null——"用光了"和"不知道"必须能区分
+  assert.equal(poolHeadroom([acct({ session_percent: 0, weekly_percent: 0 })]).pct, 0);
 });
