@@ -355,6 +355,58 @@ function renderKeys(container, byKey) {
   }
 }
 
+// 四类 token 细分。hero 的大数字是这四类之和（缓存读写都算进去），因为那才是
+// 真实搬动的量；但只给一个总数会让人误以为"今天写了 90 万 token 的新内容"，
+// 而实际上绝大部分是缓存命中。分开列出来是为了让这个区别一眼可见。
+//
+// 思考 token 只有 OpenAI 系上游（Codex / Kimi）会单独返回；Anthropic 把它算进
+// output_tokens 且不拆分，后端因此记成 -1。这里显示 "—" 而不是 0：
+// "上游没给这个数" 和 "模型没思考" 是两件不同的事，写成 0 就是在编数据。
+const REASONING_UNKNOWN = -1;
+const BREAKDOWN_KINDS = [
+  { key: 'prompt_tokens', label: '输入', color: 'var(--ok)' },
+  { key: 'completion_tokens', label: '输出', color: 'var(--bad)' },
+  { key: 'cache', label: '缓存', color: 'var(--warn)' },
+  { key: 'reasoning_tokens', label: '思考', color: 'var(--info)' },
+];
+
+function renderBreakdown(container, day) {
+  if (!container) return;
+  container.textContent = '';
+  const total = day?.total_tokens ?? 0;
+  if (!total) return;
+
+  const read = day.cache_read_tokens || 0;
+  const write = day.cache_write_tokens || 0;
+  const vals = {
+    prompt_tokens: day.prompt_tokens || 0,
+    completion_tokens: day.completion_tokens || 0,
+    cache: read + write,
+    reasoning_tokens: day.reasoning_tokens ?? REASONING_UNKNOWN,
+  };
+
+  for (const k of BREAKDOWN_KINDS) {
+    const v = vals[k.key];
+    const item = el('span', 'bd-item');
+    const dot = el('i', 'bd-dot');
+    dot.style.background = k.color;
+    item.appendChild(dot);
+    item.appendChild(document.createTextNode(`${k.label} `));
+    const unknown = k.key === 'reasoning_tokens' && v === REASONING_UNKNOWN;
+    item.appendChild(el('b', null, unknown ? '—' : fmtCompact(v)));
+    if (unknown) {
+      item.title = 'Anthropic 不单独返回 thinking token（已计入输出），只有 Codex / Kimi 会给';
+    } else if (k.key === 'cache') {
+      item.title = `读 ${fmtNum(read)} / 写 ${fmtNum(write)}`;
+    } else if (k.key === 'reasoning_tokens') {
+      item.title = '输出的子集，不重复计入总数';
+    } else {
+      item.title = fmtNum(v);
+    }
+    container.appendChild(item);
+  }
+}
+
 function renderSpark(container, hourly, nowHour, axisEl) {
   container.textContent = '';
   const arr = hourly && hourly.length === 24 ? hourly : new Array(24).fill(0);
@@ -508,6 +560,7 @@ export function render(d, opts = {}) {
   elA.textContent = da ? `${da.text} vs 7日均` : '';
   elA.className = `delta ${da ? da.dir : ''}`;
 
+  renderBreakdown(q('breakdown'), d.today);
   renderSpark(q('spark'), d.hourly_tokens, nowHour, q('spark-axis'));
   // today.date 是后端按客户端时区算出的日历天，用来判断重置时间是否就在今天
   renderAccounts(q('accounts'), d.accounts, d.today?.date);

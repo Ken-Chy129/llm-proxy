@@ -33,6 +33,8 @@
   --red-bg:rgba(255,95,73,0.12);
   --yellow:#ffcc4d;
   --yellow-bg:rgba(255,204,77,0.12);
+  --cyan:#4dd9d0;        /* thinking/reasoning tokens — the fourth token bucket */
+  --cyan-bg:rgba(77,217,208,0.12);
   --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
   --display:'Chakra Petch','IBM Plex Mono',ui-monospace,sans-serif;
   --grid:44px;
@@ -295,6 +297,32 @@ rect.cal-future{fill:transparent;}
 .log-search::placeholder{color:var(--text-2);}
 .log-err-row td{padding:2px 12px 8px;border:none;}
 .log-err{display:block;max-width:100%;font-size:11px;color:var(--red);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;}
+
+/* --- token breakdown: input / output / cache / thinking -------------------- */
+/* A split fill replaces the flat accent gradient when the metric is tokens, so
+   the shape of a row (mostly cache vs mostly fresh input) reads at a glance. */
+.bar-fill.bar-split{display:flex;background:none;box-shadow:none;}
+.bar-fill.bar-split i{height:100%;}
+.log-row-x{cursor:pointer;}
+.log-row-x:hover{background:var(--accent-soft);}
+/* `.log-table td` sets overflow:hidden + ellipsis, and beats a bare `.tok-cell`
+   on specificity — so this has to be qualified, or the proportion strip is the
+   first thing to get chopped off with a "…". */
+.log-table td.tok-cell{white-space:nowrap;overflow:visible;text-overflow:clip;}
+.tok-total{font-variant-numeric:tabular-nums;}
+.tok-bar{display:inline-flex;width:34px;height:5px;margin-left:6px;vertical-align:middle;border-radius:2px;overflow:hidden;background:var(--bg-0);}
+/* min-width keeps a non-zero bucket from rounding away to nothing: on a typical
+   cached request input is well under 1% of the total, and a 0px sliver would
+   read as "no fresh input at all". Overflow past 34px is clipped, which is fine
+   — the strip conveys proportion, the tooltip carries the numbers. */
+.tok-bar i{height:100%;min-width:1px;}
+.log-tok-row td{padding:0 12px 8px;border:none;}
+.tok-chips{display:flex;flex-wrap:wrap;gap:6px;}
+.tok-chips-strip{margin:0 0 12px;}
+.tok-chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text-1);background:var(--bg-3);border:1px solid var(--border);border-radius:999px;padding:3px 10px;}
+.tok-chip b{color:var(--text-0);font-weight:600;font-variant-numeric:tabular-nums;}
+.tok-chip em{font-style:normal;color:var(--text-2);font-size:10px;}
+.tok-dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;}
 .bars-err .bar-row{grid-template-columns:200px 1fr 80px;}
 .bars-err .bar-fill{background:linear-gradient(90deg,rgba(255,95,73,0.5),var(--red));box-shadow:0 0 10px -3px rgba(255,95,73,0.6);}
 .bar-val{font-family:var(--mono);font-size:12px;color:var(--text-0);text-align:right;font-variant-numeric:tabular-nums;}

@@ -88,11 +88,14 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		c.Header("Connection", "keep-alive")
 	}
 
+	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+
 	if re, ok := exec.(executor.ResponsesExecutor); ok {
-		stream, openErr := re.OpenResponsesStream(c.Request.Context(), body)
+		stream, openErr := re.OpenResponsesStream(ctx, body)
 		if openErr != nil {
 			log.Printf("responses open error: %v", openErr)
-			h.recordLog(req.Model, start, openErr)
+			account, failedOver := getAccount()
+			h.recordLog(c, req.Model, start, nil, account, failedOver, openErr)
 			c.JSON(http.StatusBadGateway, gin.H{
 				"error": gin.H{"message": openErr.Error(), "type": "server_error"},
 			})
@@ -102,8 +105,14 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 
 		setSSEHeaders()
 		c.Writer.Flush()
-		copyErr := copyWithFlush(stream, c.Writer)
-		h.recordLog(req.Model, start, copyErr)
+		usage, copyErr := copyResponsesStreamAndExtractUsage(stream, c.Writer)
+		account, failedOver := getAccount()
+		var breakdown *types.TokenUsage
+		if usage != nil {
+			b := usage.Breakdown()
+			breakdown = &b
+		}
+		h.recordLog(c, req.Model, start, breakdown, account, failedOver, copyErr)
 		if copyErr != nil {
 			log.Printf("responses stream error: %v", copyErr)
 		}
@@ -113,8 +122,14 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	chatReq := h.toChatCompletionRequest(&req)
 	setSSEHeaders()
 	c.Writer.Flush()
-	streamErr := h.streamWithTranslation(c.Request.Context(), exec, chatReq, c.Writer)
-	h.recordLog(req.Model, start, streamErr)
+	usage, streamErr := h.streamWithTranslation(ctx, exec, chatReq, c.Writer)
+	account, failedOver := getAccount()
+	var breakdown *types.TokenUsage
+	if usage != nil {
+		b := usage.Breakdown()
+		breakdown = &b
+	}
+	h.recordLog(c, req.Model, start, breakdown, account, failedOver, streamErr)
 	if streamErr != nil {
 		log.Printf("responses translate stream error: %v", streamErr)
 	}
@@ -243,10 +258,15 @@ func normalizeResponsesContent(raw json.RawMessage) json.RawMessage {
 	return normalized
 }
 
-func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec executor.Executor, req *types.ChatCompletionRequest, w io.Writer) error {
+// streamWithTranslation runs a chat-shaped executor and re-emits its output as
+// Responses API events. It returns the executor's usage so the caller can log it
+// — this used to be discarded, which is why translated /v1/responses traffic
+// logged zero tokens.
+func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec executor.Executor, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
 	var buf bytes.Buffer
-	if _, err := exec.ExecuteStream(ctx, req, &buf); err != nil {
-		return err
+	usage, err := exec.ExecuteStream(ctx, req, &buf)
+	if err != nil {
+		return usage, err
 	}
 
 	flusher, canFlush := w.(interface{ Flush() })
@@ -442,42 +462,69 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 		}
 	}
 
-	return nil
+	return usage, nil
 }
 
-func copyWithFlush(src io.Reader, dst io.Writer) error {
+// copyResponsesStreamAndExtractUsage forwards a Responses API SSE stream to the
+// client while reading the usage object out of the terminal response.completed
+// event. Before this existed the passthrough was a blind byte copy, so every
+// Codex CLI request was logged with zero tokens.
+//
+// Scanning line-by-line rather than block-copying costs a little throughput; the
+// alternative is having no usage data at all for the entire /v1/responses path.
+func copyResponsesStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.ResponsesUsage, error) {
 	flusher, canFlush := dst.(interface{ Flush() })
-	buf := make([]byte, 4096)
-	for {
-		n, err := src.Read(buf)
-		if n > 0 {
-			if _, wErr := dst.Write(buf[:n]); wErr != nil {
-				return wErr
-			}
-			if canFlush {
-				flusher.Flush()
+	scanner := bufio.NewScanner(src)
+	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+
+	var usage *types.ResponsesUsage
+
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		if strings.HasPrefix(line, "data: ") {
+			var event map[string]interface{}
+			if json.Unmarshal([]byte(line[6:]), &event) == nil {
+				if t, _ := event["type"].(string); t == "response.completed" {
+					if u := types.ParseResponsesUsage(event); u != nil {
+						usage = u
+					}
+				}
 			}
 		}
-		if err == io.EOF {
-			return nil
+
+		if _, err := io.WriteString(dst, line+"\n"); err != nil {
+			return usage, err
 		}
-		if err != nil {
-			return err
+		if canFlush {
+			flusher.Flush()
 		}
 	}
+
+	return usage, scanner.Err()
 }
 
-func (h *ResponsesHandler) recordLog(model string, start time.Time, err error) {
+// recordLog logs one /v1/responses request. usage may be nil (open failed, or
+// the stream died before response.completed), in which case the token buckets
+// stay at zero and reasoning at unknown.
+func (h *ResponsesHandler) recordLog(c *gin.Context, model string, start time.Time, usage *types.TokenUsage, account string, failedOver []string, err error) {
 	if h.statsDB == nil {
 		return
 	}
 	entry := &stats.RequestLog{
-		Time:      time.Now(),
-		Model:     model,
-		Backend:   h.router.BackendName(model),
-		LatencyMs: time.Since(start).Milliseconds(),
-		Stream:    true,
-		Status:    http.StatusOK,
+		Time:            time.Now(),
+		Model:           model,
+		Backend:         h.router.BackendName(model),
+		LatencyMs:       time.Since(start).Milliseconds(),
+		Stream:          true,
+		Status:          http.StatusOK,
+		APIKeyName:      apiKeyName(c),
+		Account:         account,
+		FailoverFrom:    strings.Join(failedOver, ","),
+		ReasoningTokens: types.ReasoningUnknown,
+	}
+	if usage != nil {
+		entry.SetUsage(*usage)
 	}
 	if err != nil {
 		entry.Status = errStatus(err)

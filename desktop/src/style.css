@@ -13,6 +13,9 @@
   --ok: #35c98b;
   --warn: #f5b544;
   --bad: #f2635f;
+  /* 第四种语义色，只给"思考 token"用。不复用 --accent：蓝色在这个面板里
+     已经代表"可交互/链接"，再拿它编码一类数据会让两种含义互相污染。 */
+  --info: #4cc8d4;
   --radius: 10px;
 }
 
@@ -106,6 +109,14 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .delta { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--fg-faint); white-space: nowrap; }
 .delta.up { color: var(--warn); }
 .delta.down { color: var(--ok); }
+
+/* 四类 token 细分。hero 那个大数字是四类之和，光看它无法回答"这些量到底
+   花在哪"——缓存读通常占九成以上，和真正的新输入是完全不同的成本。
+   一行小字放在 hero 下面：想看就看，不抢主数字的注意力。 */
+.breakdown { display: flex; flex-wrap: wrap; gap: 4px 9px; margin-top: 7px; }
+.bd-item { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bd-item b { color: var(--fg-dim); font-weight: 600; }
+.bd-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
 
 /* 迷你柱状图：每小时一个槽位。槽位底色很淡（只是"这里有个小时"的提示），
    柱子才是数据。底色画太重会让人误读成"每小时都跑满了"。

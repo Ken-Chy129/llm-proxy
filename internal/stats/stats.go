@@ -87,23 +87,6 @@ type KeyStats struct {
 	QuotaUsedToday int `json:"quota_used_today"`
 }
 
-type ModelStats struct {
-	Model            string  `json:"model"`
-	RequestCount     int     `json:"request_count"`
-	TotalPrompt      int     `json:"total_prompt_tokens"`
-	TotalCompletion  int     `json:"total_completion_tokens"`
-	AvgLatencyMs     float64 `json:"avg_latency_ms"`
-	ErrorCount       int     `json:"error_count"`
-}
-
-type DailyStats struct {
-	Date             string `json:"date"`
-	RequestCount     int    `json:"request_count"`
-	TotalPrompt      int    `json:"total_prompt_tokens"`
-	TotalCompletion  int    `json:"total_completion_tokens"`
-	ErrorCount       int    `json:"error_count"`
-}
-
 // BucketStats is one point on the time-series trend (hourly or daily bucket).
 type BucketStats struct {
 	Bucket       string `json:"bucket"`
@@ -293,59 +276,6 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 		logs = append(logs, l)
 	}
 	return logs, total, nil
-}
-
-func (d *DB) StatsByModel(daysBack int) ([]ModelStats, error) {
-	since := time.Now().AddDate(0, 0, -daysBack).UTC().Format(time.RFC3339)
-	rows, err := d.db.Query(`
-		SELECT model,
-			COUNT(*) as cnt,
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(AVG(latency_ms), 0),
-			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0)
-		FROM request_logs
-		WHERE time >= ?
-		GROUP BY model
-		ORDER BY cnt DESC`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []ModelStats
-	for rows.Next() {
-		var s ModelStats
-		rows.Scan(&s.Model, &s.RequestCount, &s.TotalPrompt, &s.TotalCompletion, &s.AvgLatencyMs, &s.ErrorCount)
-		result = append(result, s)
-	}
-	return result, nil
-}
-
-func (d *DB) StatsByDay(daysBack int) ([]DailyStats, error) {
-	since := time.Now().AddDate(0, 0, -daysBack).UTC().Format(time.RFC3339)
-	rows, err := d.db.Query(`
-		SELECT date(time) as d,
-			COUNT(*),
-			COALESCE(SUM(prompt_tokens), 0),
-			COALESCE(SUM(completion_tokens), 0),
-			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0)
-		FROM request_logs
-		WHERE time >= ?
-		GROUP BY d
-		ORDER BY d DESC`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var result []DailyStats
-	for rows.Next() {
-		var s DailyStats
-		rows.Scan(&s.Date, &s.RequestCount, &s.TotalPrompt, &s.TotalCompletion, &s.ErrorCount)
-		result = append(result, s)
-	}
-	return result, nil
 }
 
 // StatsByBucket returns the request/token/error counts grouped into time buckets

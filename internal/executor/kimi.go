@@ -748,8 +748,13 @@ func chatToAnthropicResponse(resp *types.ChatCompletionResponse, model string) *
 		Model:   model,
 	}
 	if resp.Usage != nil {
-		result.Usage.InputTokens = resp.Usage.PromptTokens
-		result.Usage.OutputTokens = resp.Usage.CompletionTokens
+		// Anthropic's input_tokens is cache-exclusive, so pass the disjoint
+		// buckets through rather than the cache-inclusive prompt_tokens.
+		b := resp.Usage.Breakdown()
+		result.Usage.InputTokens = b.Input
+		result.Usage.OutputTokens = b.Output
+		result.Usage.CacheReadInputTokens = b.CacheRead
+		result.Usage.CacheCreationInputTokens = b.CacheWrite
 	}
 	if len(resp.Choices) == 0 || resp.Choices[0].Message == nil {
 		result.StopReason = "end_turn"

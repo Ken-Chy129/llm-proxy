@@ -17,6 +17,7 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
 const imageGenTimeout = 5 * time.Minute
@@ -437,6 +438,9 @@ func (h *ImagesHandler) recordLog(model string, start time.Time, err error) {
 		LatencyMs: time.Since(start).Milliseconds(),
 		Stream:    false,
 		Status:    http.StatusOK,
+		// The images endpoint reports no token usage at all, so every bucket
+		// including reasoning stays unknown rather than a fabricated zero.
+		ReasoningTokens: types.ReasoningUnknown,
 	}
 	if err != nil {
 		entry.Status = errStatus(err)

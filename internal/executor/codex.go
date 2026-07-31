@@ -188,16 +188,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, req *types.ChatCompletionRe
 			}
 			toolCallMap[callID] = &tc
 		case "response.completed":
-			if resp, ok := event["response"].(map[string]interface{}); ok {
-				if u, ok := resp["usage"].(map[string]interface{}); ok {
-					if v, ok := u["input_tokens"].(float64); ok {
-						usage.PromptTokens = int(v)
-					}
-					if v, ok := u["output_tokens"].(float64); ok {
-						usage.CompletionTokens = int(v)
-					}
-					usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
-				}
+			if u := types.ParseResponsesUsage(event); u != nil {
+				usage.SetBreakdown(u.Breakdown())
 			}
 		}
 	}
@@ -485,17 +477,9 @@ func (t *sseTranslator) Write(p []byte) (int, error) {
 			}
 
 		case "response.completed":
-			if resp, ok := event["response"].(map[string]interface{}); ok {
-				if u, ok := resp["usage"].(map[string]interface{}); ok {
-					t.usage = &types.Usage{}
-					if v, ok := u["input_tokens"].(float64); ok {
-						t.usage.PromptTokens = int(v)
-					}
-					if v, ok := u["output_tokens"].(float64); ok {
-						t.usage.CompletionTokens = int(v)
-					}
-					t.usage.TotalTokens = t.usage.PromptTokens + t.usage.CompletionTokens
-				}
+			if u := types.ParseResponsesUsage(event); u != nil {
+				t.usage = &types.Usage{}
+				t.usage.SetBreakdown(u.Breakdown())
 			}
 			finishReason := "stop"
 			if t.hasToolCalls {

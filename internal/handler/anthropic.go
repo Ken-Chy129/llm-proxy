@@ -14,6 +14,7 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
 type AnthropicHandler struct {
@@ -138,14 +139,9 @@ func anthropicError(c *gin.Context, status int, errType, message string) {
 	})
 }
 
-type anthropicUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-}
-
-func extractUsageFromResponse(body []byte) *anthropicUsage {
+func extractUsageFromResponse(body []byte) *types.AnthropicUsage {
 	var resp struct {
-		Usage *anthropicUsage `json:"usage"`
+		Usage *types.AnthropicUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || resp.Usage == nil {
 		return nil
@@ -155,12 +151,18 @@ func extractUsageFromResponse(body []byte) *anthropicUsage {
 
 // copyStreamAndExtractUsage forwards an Anthropic SSE stream to the client
 // while extracting token usage from message_start and message_delta events.
-func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*anthropicUsage, error) {
+//
+// message_start carries the input and cache counts, message_delta the output —
+// and newer API versions repeat the whole object in the delta with the input
+// fields zeroed. MergeNonZero is what stops that repeat from erasing the cache
+// numbers, which is the difference between logging a 900K-token cached request
+// as 900K and logging it as 12K.
+func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.AnthropicUsage, error) {
 	flusher, canFlush := dst.(interface{ Flush() })
 	scanner := bufio.NewScanner(src)
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 
-	var usage anthropicUsage
+	var usage types.AnthropicUsage
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -170,21 +172,19 @@ func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*anthropicUsage, e
 			var evt struct {
 				Type    string `json:"type"`
 				Message *struct {
-					Usage *anthropicUsage `json:"usage"`
+					Usage *types.AnthropicUsage `json:"usage"`
 				} `json:"message"`
-				Usage *struct {
-					OutputTokens int `json:"output_tokens"`
-				} `json:"usage"`
+				Usage *types.AnthropicUsage `json:"usage"`
 			}
 			if json.Unmarshal([]byte(data), &evt) == nil {
 				switch evt.Type {
 				case "message_start":
 					if evt.Message != nil && evt.Message.Usage != nil {
-						usage.InputTokens = evt.Message.Usage.InputTokens
+						usage.MergeNonZero(*evt.Message.Usage)
 					}
 				case "message_delta":
 					if evt.Usage != nil {
-						usage.OutputTokens = evt.Usage.OutputTokens
+						usage.MergeNonZero(*evt.Usage)
 					}
 				}
 			}
@@ -204,24 +204,24 @@ func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*anthropicUsage, e
 	return &usage, nil
 }
 
-func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *anthropicUsage, err error, status int, account string, failedOver []string) {
+func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *types.AnthropicUsage, err error, status int, account string, failedOver []string) {
 	if h.statsDB == nil {
 		return
 	}
 	entry := &stats.RequestLog{
-		Time:         time.Now(),
-		Model:        model,
-		Backend:      h.router.BackendName(model),
-		LatencyMs:    time.Since(start).Milliseconds(),
-		Stream:       stream,
-		Status:       status,
-		APIKeyName:   apiKeyName(c),
-		Account:      account,
-		FailoverFrom: strings.Join(failedOver, ","),
+		Time:            time.Now(),
+		Model:           model,
+		Backend:         h.router.BackendName(model),
+		LatencyMs:       time.Since(start).Milliseconds(),
+		Stream:          stream,
+		Status:          status,
+		APIKeyName:      apiKeyName(c),
+		Account:         account,
+		FailoverFrom:    strings.Join(failedOver, ","),
+		ReasoningTokens: types.ReasoningUnknown,
 	}
 	if usage != nil {
-		entry.PromptTokens = usage.InputTokens
-		entry.CompletionTokens = usage.OutputTokens
+		entry.SetUsage(usage.Breakdown())
 	}
 	if err != nil {
 		entry.Error = err.Error()

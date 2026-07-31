@@ -63,6 +63,9 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 		APIKeyName:   apiKeyName(c),
 		Account:      account,
 		FailoverFrom: strings.Join(failedOver, ","),
+		// Until usage arrives, reasoning is unknown rather than zero — an errored
+		// request has no answer, and 0 would claim the model thought nothing.
+		ReasoningTokens: types.ReasoningUnknown,
 	}
 
 	if err != nil {
@@ -80,8 +83,7 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	logEntry.Status = http.StatusOK
 	logEntry.LatencyMs = latency.Milliseconds()
 	if resp.Usage != nil {
-		logEntry.PromptTokens = resp.Usage.PromptTokens
-		logEntry.CompletionTokens = resp.Usage.CompletionTokens
+		logEntry.SetUsage(resp.Usage.Breakdown())
 	}
 	h.recordLog(logEntry)
 
@@ -102,19 +104,19 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 		account, failedOver := getAccount()
 
 		logEntry := &stats.RequestLog{
-			Time:         time.Now(),
-			Model:        req.Model,
-			Backend:      h.router.BackendName(req.Model),
-			LatencyMs:    latency.Milliseconds(),
-			Stream:       true,
-			Status:       http.StatusOK,
-			APIKeyName:   apiKeyName(c),
-			Account:      account,
-			FailoverFrom: strings.Join(failedOver, ","),
+			Time:            time.Now(),
+			Model:           req.Model,
+			Backend:         h.router.BackendName(req.Model),
+			LatencyMs:       latency.Milliseconds(),
+			Stream:          true,
+			Status:          http.StatusOK,
+			APIKeyName:      apiKeyName(c),
+			Account:         account,
+			FailoverFrom:    strings.Join(failedOver, ","),
+			ReasoningTokens: types.ReasoningUnknown,
 		}
 		if usage != nil {
-			logEntry.PromptTokens = usage.PromptTokens
-			logEntry.CompletionTokens = usage.CompletionTokens
+			logEntry.SetUsage(usage.Breakdown())
 		}
 		if err != nil {
 			log.Printf("stream error: %v", err)
