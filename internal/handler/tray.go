@@ -29,7 +29,10 @@ type trayAccount struct {
 	// "0% left" from "unknown", which a bare 0 would conflate.
 	SessionPercent *float64 `json:"session_percent,omitempty"`
 	WeeklyPercent  *float64 `json:"weekly_percent,omitempty"`
-	WeeklyResetAt  string   `json:"weekly_reset_at,omitempty"`
+	// Both reset times are "MM/DD HH:MM" in server-local time, empty when the
+	// upstream quota payload did not carry one.
+	SessionResetAt string `json:"session_reset_at,omitempty"`
+	WeeklyResetAt  string `json:"weekly_reset_at,omitempty"`
 
 	RateLimited      bool   `json:"rate_limited,omitempty"`
 	RateLimitedUntil string `json:"rate_limited_until,omitempty"`
@@ -114,6 +117,7 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 					if q.Primary != nil {
 						v := q.Primary.RemainingPercent
 						acc.SessionPercent = &v
+						acc.SessionResetAt = q.Primary.ResetAt
 					}
 					if q.Secondary != nil {
 						v := q.Secondary.RemainingPercent

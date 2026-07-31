@@ -160,7 +160,20 @@ function meterRow(tag, pct, resetAt) {
   return row;
 }
 
-function renderAccounts(container, accounts) {
+/**
+ * 缩短重置时间。
+ *
+ * 后端给的是 "MM/DD HH:MM"。5h 窗口几乎总在当天重置，日期是纯冗余；当天就只留
+ * HH:MM。跨天时必须保留日期——不然凌晨 4 点重置显示成 "04:00"，看着像已经过去了。
+ * todayISO 形如 "2026-07-31"；取不到就原样返回，宁可啰嗦也不能显示错的时间。
+ */
+export function shortReset(resetAt, todayISO) {
+  if (!resetAt || !todayISO) return resetAt || '';
+  const [, m, d] = todayISO.split('-');
+  return resetAt.startsWith(`${m}/${d} `) ? resetAt.slice(6) : resetAt;
+}
+
+function renderAccounts(container, accounts, todayISO) {
   container.textContent = '';
   if (!accounts || accounts.length === 0) {
     container.appendChild(el('div', 'empty', '没有已登录的账号'));
@@ -188,8 +201,13 @@ function renderAccounts(container, accounts) {
 
     box.appendChild(meterRow('5h', a.session_percent));
     box.appendChild(meterRow('周', a.weekly_percent));
-    if (a.weekly_reset_at) {
-      box.appendChild(el('div', 'acct-reset', `周额度重置 ${a.weekly_reset_at}`));
+    // 两个重置时间挤在同一行：卡片高度按账号数线性增长，每个账号多一行的代价
+    // 在三四个账号时就很明显了。
+    const resets = [];
+    if (a.session_reset_at) resets.push(`5h 重置 ${shortReset(a.session_reset_at, todayISO)}`);
+    if (a.weekly_reset_at) resets.push(`周重置 ${shortReset(a.weekly_reset_at, todayISO)}`);
+    if (resets.length) {
+      box.appendChild(el('div', 'acct-reset', resets.join(' · ')));
     }
     container.appendChild(box);
   }
@@ -292,7 +310,8 @@ export function render(d, opts = {}) {
   elA.className = `delta ${da ? da.dir : ''}`;
 
   renderSpark(q('spark'), d.hourly_tokens, nowHour, q('spark-axis'));
-  renderAccounts(q('accounts'), d.accounts);
+  // today.date 是后端按客户端时区算出的日历天，用来判断重置时间是否就在今天
+  renderAccounts(q('accounts'), d.accounts, d.today?.date);
   renderKeys(q('keys'), d.today?.by_key);
 
   // 额度抓取时间：所有账号里最新的那个
