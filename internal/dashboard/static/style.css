@@ -303,9 +303,26 @@ rect.cal-future{fill:transparent;}
    the shape of a row (mostly cache vs mostly fresh input) reads at a glance. */
 .bar-fill.bar-split{display:flex;background:none;box-shadow:none;}
 .bar-fill.bar-split i{height:100%;min-width:1px;}
-/* In the logs table the breakdown is hover-only — cursor:help advertises that
-   the number has something behind it without adding any ink to the row. */
-.tok-total{font-variant-numeric:tabular-nums;cursor:help;}
+/* Hover target for the breakdown card. A dotted underline on hover is the whole
+   affordance — cursor:help drew an OS question-mark pointer that reads as
+   "explain this UI" rather than "there are numbers behind this". */
+.tok-total{font-variant-numeric:tabular-nums;}
+.tok-total:hover{border-bottom:1px dotted var(--text-2);}
+
+/* Same treatment as .chart-tip, but fixed to the viewport: the log table sits in
+   an overflow:auto wrapper that would clip an absolutely positioned card. */
+.hover-tip{position:fixed;pointer-events:none;background:var(--bg-2);border:1px solid var(--border-hover);
+  border-radius:3px;padding:7px 9px;font-family:var(--mono);font-size:11px;color:var(--text-1);
+  box-shadow:0 6px 20px -6px rgba(0,0,0,0.8);z-index:50;}
+.tok-tip-table{border-collapse:collapse;}
+.tok-tip-table td{padding:1px 0;border:none;white-space:nowrap;}
+.tok-tip-table td:first-child{padding-right:14px;}
+.tok-tip-table .tip-num{text-align:right;color:var(--text-0);font-variant-numeric:tabular-nums;}
+.tok-tip-table .tip-sub-row td{padding:0 0 3px 13px;color:var(--text-2);font-size:10px;}
+.tok-tip-table .tip-total td{border-top:1px solid var(--border);padding-top:4px;color:var(--text-2);}
+.tok-tip-table .tip-total .tip-num{color:var(--accent);}
+.tok-tip-table .tip-foot td{padding-top:5px;color:var(--text-2);font-size:10px;}
+.hover-tip .tok-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:7px;vertical-align:middle;}
 .tok-chips{display:flex;flex-wrap:wrap;gap:6px;}
 .tok-chips-strip{margin:0 0 12px;}
 .tok-chip{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:11px;color:var(--text-1);background:var(--bg-3);border:1px solid var(--border);border-radius:999px;padding:3px 10px;}
