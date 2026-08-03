@@ -46,12 +46,70 @@ function tokens(o) {
   return t;
 }
 
-function tokenTitle(t) {
-  const think = t.reasoning_tokens === REASONING_UNKNOWN ? 'not reported' : t.reasoning_tokens.toLocaleString();
-  return `input ${t.prompt_tokens.toLocaleString()} · output ${t.completion_tokens.toLocaleString()}` +
-    ` · cache ${t.cache_tokens.toLocaleString()} (read ${t.cache_read_tokens.toLocaleString()} / write ${t.cache_write_tokens.toLocaleString()})` +
-    ` · thinking ${think}`;
+// --- token hover card ------------------------------------------------------
+// A native `title` renders as an OS tooltip: light background, system font, and
+// a run-on sentence that has to be read rather than scanned. This reuses the
+// same treatment the charts already use (.chart-tip) and lays the buckets out as
+// an aligned table, so the numbers compare vertically.
+let hoverTokens = {};
+
+function tokenTipHTML(t, footer) {
+  const row = (color, label, val, sub) =>
+    `<tr><td><i class="tok-dot" style="background:${color}"></i>${label}</td>` +
+    `<td class="tip-num">${val}</td></tr>` +
+    (sub ? `<tr class="tip-sub-row"><td colspan="2">${sub}</td></tr>` : '');
+
+  const cacheSub = t.cache_tokens
+    ? `read ${t.cache_read_tokens.toLocaleString()} · write ${t.cache_write_tokens.toLocaleString()}`
+    : '';
+  const unknown = t.reasoning_tokens === REASONING_UNKNOWN;
+
+  return `<table class="tok-tip-table">` +
+    row(TOKEN_KINDS[0].color, 'Input', t.prompt_tokens.toLocaleString()) +
+    row(TOKEN_KINDS[1].color, 'Output', t.completion_tokens.toLocaleString()) +
+    row(TOKEN_KINDS[2].color, 'Cache', t.cache_tokens.toLocaleString(), cacheSub) +
+    row(REASONING_KIND.color, 'Thinking', unknown ? '—' : t.reasoning_tokens.toLocaleString(),
+      unknown ? 'upstream does not report it' : 'subset of output') +
+    `<tr class="tip-total"><td>Total</td><td class="tip-num">${t.total.toLocaleString()}</td></tr>` +
+    (footer ? `<tr class="tip-foot"><td colspan="2">${escapeHTML(footer)}</td></tr>` : '') +
+    `</table>`;
 }
+
+function showTokenTip(anchor, entry) {
+  if (!entry) return;
+  const tip = document.getElementById('tok-tip');
+  if (!tip) return;
+  tip.innerHTML = tokenTipHTML(entry.t, entry.footer);
+  tip.classList.remove('hidden');
+
+  // position:fixed against the viewport — the log table lives in a scrollable
+  // wrapper, so an absolutely positioned card would be clipped by it.
+  const a = anchor.getBoundingClientRect();
+  const box = tip.getBoundingClientRect();
+  const pad = 8;
+  let left = a.right - box.width;                       // right-align to the number
+  left = Math.max(pad, Math.min(left, window.innerWidth - box.width - pad));
+  let top = a.bottom + 6;
+  if (top + box.height > window.innerHeight - pad) top = a.top - box.height - 6;
+  tip.style.left = left + 'px';
+  tip.style.top = Math.max(pad, top) + 'px';
+}
+
+function hideTokenTip() {
+  document.getElementById('tok-tip')?.classList.add('hidden');
+}
+
+// Delegated so one listener and one card serve both hover surfaces: a log row's
+// Tokens figure and a breakdown bar.
+document.addEventListener('mouseover', e => {
+  const el = e.target.closest?.('[data-tok]');
+  if (el) showTokenTip(el, hoverTokens[el.dataset.tok]);
+});
+document.addEventListener('mouseout', e => {
+  if (e.target.closest?.('[data-tok]')) hideTokenTip();
+});
+// Scrolling the table would leave the card floating over unrelated rows.
+document.addEventListener('scroll', hideTokenTip, true);
 
 // tokenChips is the expanded legend-style readout (the four labelled pills).
 function tokenChips(t) {
@@ -286,6 +344,8 @@ function onLogSearch() {
 }
 
 async function loadLogs() {
+  hideTokenTip();
+  hoverTokens = {}; // only the visible page is ever hovered; don't grow unbounded
   const q = '/api/logs?limit=' + logLimit + '&offset=' + (logPage * logLimit) +
     (logErrorsOnly ? '&errors=1' : '') +
     (logSearch ? '&q=' + encodeURIComponent(logSearch) : '');
@@ -306,8 +366,9 @@ async function loadLogs() {
     // The breakdown is hover-only. A per-row bar or an expandable chip row both
     // cost permanent visual weight for a detail that is looked up occasionally,
     // and the table's job is scanning for anomalies.
+    hoverTokens['log:' + l.id] = { t: tk };
     const tokCell = tk.total
-      ? `<span class="tok-total" title="${escAttr(tokenTitle(tk))}">${fmtCompact(tk.total)}</span>`
+      ? `<span class="tok-total" data-tok="log:${l.id}">${fmtCompact(tk.total)}</span>`
       : '<span class="text-muted">–</span>';
     return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tokCell}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
   }).join('') || '<tr><td colspan="7" class="text-muted" style="text-align:center;padding:24px">' + (logErrorsOnly || logSearch ? 'No matching requests' : 'No requests yet') + '</td></tr>';
@@ -456,7 +517,9 @@ function renderSummary() {
   const tk = tokens(s);
   document.getElementById('stats-summary').innerHTML =
     `<span><b>${s.requests.toLocaleString()}</b> requests</span>` +
-    `<span title="${escapeHTML(tokenTitle(tk))}"><b>${s.tokens.toLocaleString()}</b> tokens</span>` +
+    // No tooltip here: the chip strip immediately below already spells out every
+    // bucket exactly, so a hover repeating it would be pure duplication.
+    `<span><b>${s.tokens.toLocaleString()}</b> tokens</span>` +
     `<span><b class="${s.errors ? 'text-red' : ''}">${errPct}%</b> errors</span>` +
     `<span><b>${Math.round(s.avg_latency_ms)}</b> ms avg</span>` +
     `<span class="sum-scope">${statsRange}${scope}</span>`;
@@ -694,7 +757,7 @@ function renderBreakdown() {
   const max = rows[0].val;
   const active = statsFilter.dim === statsDim ? statsFilter.val : '';
   el.classList.toggle('bars-err', isStatus);
-  el.innerHTML = rows.map(r => {
+  el.innerHTML = rows.map((r, i) => {
     const disp = isStatus ? `${escHtml(r.label)}${STATUS_LABELS[r.label] ? ' · ' + STATUS_LABELS[r.label] : ''}` : escHtml(r.label);
     const tail = isStatus ? '' : `<div class="bar-err ${r.err ? 'text-red' : 'text-muted'}">${r.err}</div>`;
     // In tokens mode the fill is split by bucket, so a row that is mostly cache
@@ -703,9 +766,16 @@ function renderBreakdown() {
       ? TOKEN_KINDS.filter(k => r.tok[k.key] > 0).map(k =>
           `<i style="width:${(r.tok[k.key] / r.tok.total * 100).toFixed(2)}%;background:${k.color}"></i>`).join('')
       : '';
-    const barTitle = r.tok && r.tok.total ? tokenTitle(r.tok) : `Filter by ${r.label}`;
+    // In tokens mode a bar gets the same hover card as a log row. Other metrics
+    // have no breakdown to show, so they keep the plain filter hint.
+    let hover = ` title="Filter by ${escAttr(r.label)}"`;
+    if (r.tok && r.tok.total) {
+      const key = 'bar:' + statsDim + ':' + i;
+      hoverTokens[key] = { t: r.tok, footer: 'click to filter' };
+      hover = ` data-tok="${key}"`;
+    }
     return `
-    <div class="bar-row${r.label === active ? ' bar-active' : ''}" title="${escAttr(barTitle)}" onclick="filterToBar('${escAttr(r.label)}')">
+    <div class="bar-row${r.label === active ? ' bar-active' : ''}"${hover} onclick="filterToBar('${escAttr(r.label)}')">
       <div class="bar-label">${disp}</div>
       <div class="bar-track"><div class="bar-fill${fill ? ' bar-split' : ''}" style="width:${Math.max(2, r.val / max * 100)}%">${fill}</div></div>
       <div class="bar-val">${fmtCompact(r.val)}</div>
