@@ -44,26 +44,26 @@
   <main id="panel">
     <!-- 今日用量 / 历史用量：点击整卡翻面。
          正面留在常规文档流里定义容器高度，背面绝对定位铺满，
-         这样翻转时高度不跳。 -->
-    <section class="card flip" id="usage-flip" title="点击查看历史用量">
+         这样翻转时高度不跳。
+         刻意不给卡片和 ⇄ 加 title：原生 tooltip 会用祖先的标题盖住后代的，
+         挂一个"点击查看历史用量"就再也看不到每一格自己的日用量了；
+         ⇄ 本身也够自解释，不需要一条常驻的悬停说明。 -->
+    <section class="card flip" id="usage-flip">
       <div class="flip-inner">
         <div class="flip-face flip-front">
           <div class="card-head">
             <span class="card-label">今日用量</span>
-            <span class="card-date" id="today-date"></span>
             <span class="flip-hint">⇄</span>
           </div>
           <div class="hero">
             <div class="hero-main">
               <div class="hero-num" id="today-tokens">–</div>
               <div class="hero-unit">tokens</div>
-            </div>
-            <div class="hero-side">
               <div class="hero-reqs"><b id="today-reqs">–</b> 请求</div>
-              <div class="deltas">
-                <span class="delta" id="delta-yday"></span>
-                <span class="delta" id="delta-avg"></span>
-              </div>
+            </div>
+            <div class="deltas">
+              <span class="delta" id="delta-yday"></span>
+              <span class="delta" id="delta-avg"></span>
             </div>
           </div>
           <div class="breakdown" id="breakdown"></div>
@@ -73,10 +73,13 @@
         <div class="flip-face flip-back">
           <div class="card-head">
             <span class="card-label">历史用量</span>
-            <span class="card-date" id="hist-range"></span>
             <span class="flip-hint">⇄</span>
           </div>
           <div id="history"></div>
+          <!-- 每一格的日用量卡。不用原生 title：一是样式不受控，二是实测
+               #alert 的 title 会盖住格子自己的（WebKit 在 transform 子树里
+               不刷新祖先 tooltip），悬停时弹出来的是告警文案。 -->
+          <div class="heat-tip hidden" id="heat-tip"></div>
         </div>
       </div>
     </section>

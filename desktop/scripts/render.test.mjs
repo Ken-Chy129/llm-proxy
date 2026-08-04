@@ -92,12 +92,16 @@ test('fmtIdle 输出人类可读的时间差', () => {
   assert.equal(fmtIdle(undefined), '');
 });
 
-test('trayTitle 优先显示最紧张的额度', () => {
-  assert.equal(trayTitle({ min_session_percent: 73 }), '73%');
-  // 额度用光时显示 0% 而不是退回用量——0 是最该看见的数字
-  assert.equal(trayTitle({ min_session_percent: 0 }), '0%');
-  // 没有额度数据时退回今日用量
+test('trayTitle 优先显示今日用量', () => {
   assert.equal(trayTitle({ today: { total_tokens: 2159238 } }), '2.16M');
+  // 有用量就用用量，哪怕额度也在（额度靠通知和面板，不占标题栏）
+  assert.equal(
+    trayTitle({ min_session_percent: 73, today: { total_tokens: 172270000 } }),
+    '172.27M',
+  );
+  // 今天还没跑请求时不写 0：退回额度，至少证明挂件连得上代理
+  assert.equal(trayTitle({ min_session_percent: 73, today: { total_tokens: 0 } }), '73%');
+  assert.equal(trayTitle({ min_session_percent: 0 }), '0%');
   assert.equal(trayTitle({}), '–');
   assert.equal(trayTitle(null), '–');
 });
@@ -449,4 +453,49 @@ test('buildHeatGrid 标出未来的格子：那不是"没用量"，是还没到'
   assert.equal(cells.filter((c) => c.isToday).length, 1, '有且只有一个"今天"');
   // 今天不能被算成未来
   assert.equal(cells.find((c) => c.isToday).future, false);
+});
+
+test('热力图列数与 CSS 格子尺寸必须对得上，否则会溢出卡片', () => {
+  // HEAT_WEEKS 在 render.js、格子尺寸在 style.css，是一处真实的跨文件耦合：
+  // 只调其中一个，网格就会顶出卡片右边缘——而这种事只有截图才看得出来。
+  // 这里把它变成一条会红的断言。
+  const css = readFileSync(resolve(__dirname, '../src/style.css'), 'utf8');
+  const grid = css.match(/\.heat-grid\s*\{[^}]*\}/s);
+  assert.ok(grid, '找不到 .heat-grid 规则');
+  const cell = Number(grid[0].match(/grid-auto-columns:\s*(\d+)px/)[1]);
+  const gap = Number(grid[0].match(/gap:\s*(\d+)px/)[1]);
+  const rows = Number(grid[0].match(/repeat\(7,\s*(\d+)px\)/)[1]);
+  assert.equal(rows, cell, '格子必须是正方形，否则行列不等宽会歪');
+
+  const weeks = Number(readFileSync(resolve(__dirname, '../src/render.js'), 'utf8')
+    .match(/const HEAT_WEEKS = (\d+)/)[1]);
+  // 卡内可用宽度，在真实 320px 面板里实测得来（不是按 padding 算的 276——
+  // 差那 2px 刚好能让一列悄悄溢出）。preview.mjs 已把 #app 钉死在 320px，
+  // 想重新量就跑一次 --flip 预览、读 .flip-back 的 clientWidth 减 padding。
+  const CARD_INNER = 274;
+  const width = weeks * cell + (weeks - 1) * gap;
+  assert.ok(width <= CARD_INNER,
+    `${weeks} 列 × ${cell}px（间隙 ${gap}）= ${width}px，超过卡内可用宽度 ${CARD_INNER}px`);
+  // 也不该浪费太多：留白超过一格就说明还能多放一周
+  assert.ok(CARD_INNER - width < cell + gap,
+    `只用了 ${width}px / ${CARD_INNER}px，还能再放一列`);
+});
+
+test('heatDayLines 有请求但没 token 记录时不谎报"无用量"', () => {
+  const { heatDayLines } = mod;
+  // 早期未采集 token 的日子：有 2405 个请求，token 记 0
+  const real = heatDayLines({ key: '2026-06-05', requests: 2405, tokens: 0, cache: 0 });
+  assert.equal(real.date, '06/05');
+  assert.deepEqual(real.rows[0], ['请求', '2,405']);
+  assert.deepEqual(real.rows[1], ['tokens', '无记录']);
+
+  // 完全没用的日子才说"无"
+  const idle = heatDayLines({ key: '2026-06-06', requests: 0, tokens: 0, cache: 0 });
+  assert.deepEqual(idle.rows, [['用量', '无']]);
+
+  // 正常的一天：缓存占比按 token 算
+  // token 走 fmtCompact（1000 → 1K），请求数走千分位——两者格式化方式不同是刻意的：
+  // 请求数是可数的次数，压成 "1.2K 请求" 反而丢了精度感
+  const busy = heatDayLines({ key: '2026-08-04', requests: 779, tokens: 1000, cache: 900 });
+  assert.deepEqual(busy.rows, [['请求', '779'], ['tokens', '1K'], ['缓存', '90%']]);
 });

@@ -86,6 +86,10 @@ body {
   margin: 8px 10px 0; padding: 7px 9px;
   background: rgba(245,181,68,.13); border: 1px solid rgba(245,181,68,.32);
   color: var(--warn); border-radius: 7px; font-size: 11.5px; line-height: 1.4;
+  /* #app 是 flex 容器，默认 flex-shrink:1 会把这个横幅压到比内容还矮
+     （实测 clientHeight 27 < scrollHeight 30），再叠上下面的 overflow:hidden，
+     文字下缘就被剪掉了。横幅是告警，不能因为面板挤就少显示。 */
+  flex-shrink: 0;
   /* 保险：文案再长也不换行，截断优于把面板撑高。完整内容在 title 里。 */
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
@@ -112,6 +116,18 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
   backface-visibility: hidden; -webkit-backface-visibility: hidden;
 }
 .flip-back { position: absolute; inset: 0; transform: rotateY(180deg); }
+
+/* backface-visibility 单独不够用：WebKit 下 .spark 里那些柱子（自己带背景、
+   又在 grid 里）会从背面透出来，压在历史用量的汇总文字上。所以再显式地把
+   非当前面整个隐掉（当时是压在汇总行上，那行现在已去掉，但柱子照样会透过来）。
+   visibility 延迟到翻转过半再切换，否则前半程就空了一块，看着像闪一下。 */
+.flip-face { visibility: visible; transition: visibility 0s linear .17s; }
+.flip:not(.flipped) .flip-back { visibility: hidden; }
+.flip.flipped .flip-front { visibility: hidden; }
+/* 关掉动画时没有"过半"这回事，立刻切 */
+@media (prefers-reduced-motion: reduce) {
+  .flip-face { transition: none; }
+}
 /* 可点提示。悬停才变亮：常亮会让人以为它是个待处理状态 */
 .flip-hint { font-size: 11px; color: var(--fg-faint); opacity: .45; transition: opacity .15s; }
 .flip:hover .flip-hint { opacity: 1; color: var(--accent); }
@@ -120,15 +136,16 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 }
 
 /* ---------- 历史用量热力图 ---------- */
-/* 25 列 × 7 行，列即一周。格子 9px + 间隙 2px 正好铺满 320px 面板的卡内宽度。
-   grid-auto-flow: column 让 DOM 顺序（按天递增）自然填成"列=周"，
-   不必手工算行列坐标。 */
+/* 18 列 × 7 行 ≈ 4 个月，列即一周。grid-auto-flow: column 让 DOM 顺序（按天递增）
+   自然填成"列=周"，不必手工算行列坐标。格子 12px + 间隙 3px 铺满 320px 面板的卡内宽度。
+   一开始是 25 列 / 9px（半年），但 9px 的格子太密、鼠标很难精确停在某一天上，
+   而"悬停看当天用量"正是这张图的主要用法。宁可少看两个月。 */
 .heat-grid {
   display: grid; grid-auto-flow: column;
-  grid-template-rows: repeat(7, 9px); grid-auto-columns: 9px;
-  gap: 2px; justify-content: space-between;
+  grid-template-rows: repeat(7, 12px); grid-auto-columns: 12px;
+  gap: 3px; justify-content: space-between;
 }
-.heat-cell { display: block; width: 9px; height: 9px; border-radius: 2px; background: var(--slot); }
+.heat-cell { display: block; width: 12px; height: 12px; border-radius: 2px; background: var(--slot); }
 /* 分档用 accent 的透明度阶梯，不引入新色 */
 .heat-cell.l1 { background: rgba(91, 156, 248, .28); }
 .heat-cell.l2 { background: rgba(91, 156, 248, .50); }
@@ -140,40 +157,62 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
    避免像 dashboard 那次一样被兜底的背景规则按特异性压掉。 */
 .heat-cell.heat-today { box-shadow: 0 0 0 1.5px var(--fg-dim); }
 .heat-months {
-  display: grid; grid-auto-flow: column; grid-auto-columns: 9px; gap: 2px;
-  justify-content: space-between; margin-bottom: 3px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: 12px; gap: 3px;
+  justify-content: space-between; margin-bottom: 4px;
   font-size: 9px; color: var(--fg-faint); line-height: 1;
 }
 /* 标签比格子宽，允许溢出到相邻列，否则"10月"会被裁成"1" */
 .heat-months span { white-space: nowrap; overflow: visible; }
-.heat-legend {
-  display: flex; align-items: center; gap: 3px; margin-top: 7px;
-  font-size: 9px; color: var(--fg-faint);
+
+/* 底部一行：活跃天数在左、总量在右。原来这里还有一条色阶图例，去掉了——
+   它只说明"深=多"，看一眼格子就知道，白占横向空间。 */
+.heat-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line);
+  font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
-.heat-legend span:first-child { margin-right: 1px; }
-.heat-legend span:last-child { margin-left: 1px; }
-/* 汇总行。两端对齐、允许换行：窄面板上"峰值"挤不下时自己掉到第二行，
-   而不是把总量顶出卡片。 */
-.heat-sum {
-  display: flex; flex-wrap: wrap; justify-content: space-between; gap: 2px 8px;
-  margin-top: 8px; padding-top: 7px; border-top: 1px solid var(--line);
-  font-size: 10px; color: var(--fg-faint); font-variant-numeric: tabular-nums;
-}
-.heat-peak { color: var(--fg-dim); }
+.heat-total { color: var(--fg-dim); font-weight: 600; }
+
 /* 背面的加载中 / 出错 / 空数据文案 */
 .flip-back .empty, .flip-back .hist-msg {
   font-size: 11px; color: var(--fg-faint); padding: 10px 0;
 }
 
+/* 某一天的日用量卡。取代原生 title：样式不受控，而且实测 #alert 的 title 会在
+   transform 子树里盖住格子自己的，悬停弹出来的是告警文案。
+   放在 .flip-back 里（而不是 body 下）才能跟着那 180° 旋转一起被镜像回正。 */
+.heat-tip {
+  position: absolute; z-index: 3; pointer-events: none;
+  min-width: 96px; padding: 6px 8px;
+  background: var(--bg-hover); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 14px -4px rgba(0, 0, 0, .35);
+  font-size: 10.5px; line-height: 1.45; color: var(--fg-faint);
+}
+.heat-tip-date {
+  color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums;
+  margin-bottom: 3px; padding-bottom: 3px; border-bottom: 1px solid var(--line);
+}
+/* 两端对齐：标签靠左、数值靠右，多行数值就能纵向对比 */
+.heat-tip-row { display: flex; justify-content: space-between; gap: 10px; white-space: nowrap; }
+.heat-tip-row b { color: var(--fg-dim); font-weight: 600; font-variant-numeric: tabular-nums; }
+
 /* ---------- 今日用量 ---------- */
-.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; }
-.hero-main { display: flex; align-items: baseline; gap: 4px; }
+/* 左边两行（大数字 / 请求数）+ 右边两行环比。
+   原来请求数单独占右上角、大数字在左下，中间那块永远空着一个洞。
+   放到同一行试过：188.31M tokens · 779 请求 在 276px 里放不下，会折行并把
+   分隔点甩到行首。所以固定成第二行——flex-basis:100% 让它必然换行，
+   而不是"有时候换行"，两种宽度下的表现就一致了。 */
+.hero { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.hero-main { display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap; min-width: 0; }
 .hero-num { font-size: 25px; font-weight: 650; letter-spacing: -.6px; font-variant-numeric: tabular-nums; line-height: 1.05; }
 .hero-unit { font-size: 10.5px; color: var(--fg-faint); }
-.hero-side { text-align: right; }
-.hero-reqs { font-size: 11.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums; }
+.hero-reqs {
+  flex: 0 0 100%; margin-top: 1px;
+  font-size: 11.5px; color: var(--fg-dim); font-variant-numeric: tabular-nums;
+}
 .hero-reqs b { color: var(--fg); font-weight: 600; }
-.deltas { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; margin-top: 3px; }
+.deltas { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; flex: 0 0 auto; }
 .delta { font-size: 10.5px; font-variant-numeric: tabular-nums; color: var(--fg-faint); white-space: nowrap; }
 .delta.up { color: var(--warn); }
 .delta.down { color: var(--ok); }
