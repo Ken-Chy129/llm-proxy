@@ -2,6 +2,7 @@ package router
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
@@ -71,7 +72,9 @@ func (r *Router) Resolve(model string) (executor.Executor, error) {
 	defer r.mu.RUnlock()
 	exec, ok := r.modelToExecutor[model]
 	if !ok {
-		return nil, fmt.Errorf("model %q not found, available: %v", model, r.allModelsLocked())
+		// List only usable models: naming a paused backend's model as "available"
+		// in a not-found error just sends the caller to the next error.
+		return nil, fmt.Errorf("model %q not found, available: %v", model, r.usableModelsLocked())
 	}
 	if backend := r.modelToBackend[model]; r.checker != nil && r.checker.IsBackendDisabled(backend) {
 		return nil, fmt.Errorf("backend %q is disabled", backend)
@@ -79,10 +82,22 @@ func (r *Router) Resolve(model string) (executor.Executor, error) {
 	return exec, nil
 }
 
+// AllModels returns every registered model, including those on paused backends.
+// For anything a client sees, use UsableModels — advertising a model that
+// Resolve will reject is worse than not advertising it.
 func (r *Router) AllModels() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.allModelsLocked()
+}
+
+// UsableModels returns the models a request could actually be served by right
+// now: registered, and on a backend that is not paused. Sorted, so /v1/models
+// doesn't reorder itself on every call (Go map iteration is randomised).
+func (r *Router) UsableModels() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.usableModelsLocked()
 }
 
 func (r *Router) allModelsLocked() []string {
@@ -90,6 +105,22 @@ func (r *Router) allModelsLocked() []string {
 	for m := range r.modelToExecutor {
 		models = append(models, m)
 	}
+	sort.Strings(models)
+	return models
+}
+
+// usableModelsLocked must be called with r.mu held. Calling the checker under
+// the lock is safe and already done by Resolve: it reads the token store's own
+// mutex and never calls back into the router.
+func (r *Router) usableModelsLocked() []string {
+	models := make([]string, 0, len(r.modelToExecutor))
+	for m := range r.modelToExecutor {
+		if r.checker != nil && r.checker.IsBackendDisabled(r.modelToBackend[m]) {
+			continue
+		}
+		models = append(models, m)
+	}
+	sort.Strings(models)
 	return models
 }
 
