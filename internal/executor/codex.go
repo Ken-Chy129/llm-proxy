@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	internaltls "github.com/Ken-Chy129/llm-proxy/internal/tls"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/google/uuid"
 )
 
 const (
@@ -26,16 +26,16 @@ const (
 // Codex Responses API types
 
 type codexRequest struct {
-	Model              string            `json:"model"`
-	Instructions       string            `json:"instructions,omitempty"`
-	Input              []codexInputItem  `json:"input"`
-	Stream             bool              `json:"stream"`
-	Store              bool              `json:"store"`
-	Reasoning          *codexReasoning   `json:"reasoning,omitempty"`
-	Tools              []json.RawMessage `json:"tools,omitempty"`
-	ToolChoice         interface{}       `json:"tool_choice,omitempty"`
-	ParallelToolCalls  bool              `json:"parallel_tool_calls,omitempty"`
-	ServiceTier        string            `json:"service_tier,omitempty"`
+	Model             string            `json:"model"`
+	Instructions      string            `json:"instructions,omitempty"`
+	Input             []codexInputItem  `json:"input"`
+	Stream            bool              `json:"stream"`
+	Store             bool              `json:"store"`
+	Reasoning         *codexReasoning   `json:"reasoning,omitempty"`
+	Tools             []json.RawMessage `json:"tools,omitempty"`
+	ToolChoice        interface{}       `json:"tool_choice,omitempty"`
+	ParallelToolCalls bool              `json:"parallel_tool_calls,omitempty"`
+	ServiceTier       string            `json:"service_tier,omitempty"`
 }
 
 type codexInputItem struct {
@@ -182,8 +182,8 @@ func (e *CodexExecutor) Execute(ctx context.Context, req *types.ChatCompletionRe
 			name, _ := event["name"].(string)
 			args, _ := event["arguments"].(string)
 			tc := types.ToolCall{
-				ID:   callID,
-				Type: "function",
+				ID:       callID,
+				Type:     "function",
 				Function: types.ToolCallFunction{Name: name, Arguments: args},
 			}
 			toolCallMap[callID] = &tc
@@ -451,8 +451,8 @@ func (t *sseTranslator) Write(p []byte) (int, error) {
 			name, _ := event["name"].(string)
 			callID, _ := event["call_id"].(string)
 			tc := types.ToolCall{
-				ID:   callID,
-				Type: "function",
+				ID:       callID,
+				Type:     "function",
 				Function: types.ToolCallFunction{Name: name},
 			}
 			writeSSEChunk(t.w, types.ChatCompletionChunk{

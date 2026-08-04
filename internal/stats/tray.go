@@ -45,12 +45,12 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 
 	var out TrayDayUsage
 	err := d.db.QueryRow(`
-		SELECT `+targetExpr+`,
+		SELECT ` + targetExpr + `,
 			COALESCE(COUNT(*), 0),
-			COALESCE(SUM`+totalTokensExpr+`, 0),
-			`+breakdownCols+`
+			COALESCE(SUM` + totalTokensExpr + `, 0),
+			` + breakdownCols + `
 		FROM request_logs
-		WHERE `+dayExpr+` = `+targetExpr).
+		WHERE ` + dayExpr + ` = ` + targetExpr).
 		Scan(append([]any{&out.Date, &out.RequestCount, &out.TotalTokens}, out.scanArgs()...)...)
 	if err != nil {
 		return out, err
@@ -112,7 +112,7 @@ func (d *DB) HourlyToday(tzMinutes int) ([]int, error) {
 	tzMod := tzOffset(tzMinutes)
 	rows, err := d.db.Query(`
 		SELECT CAST(strftime('%H', time` + tzMod + `) AS INTEGER),
-			COALESCE(SUM`+totalTokensExpr+`, 0)
+			COALESCE(SUM` + totalTokensExpr + `, 0)
 		FROM request_logs
 		WHERE date(time` + tzMod + `) = date('now'` + tzMod + `)
 		GROUP BY 1`)

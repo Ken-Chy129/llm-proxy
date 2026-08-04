@@ -46,9 +46,9 @@ func (u AnthropicUsage) Breakdown() TokenUsage {
 // cache and reasoning counts one level deeper than Chat Completions does.
 // input_tokens is cache-inclusive; output_tokens is reasoning-inclusive.
 type ResponsesUsage struct {
-	InputTokens         int                   `json:"input_tokens"`
-	OutputTokens        int                   `json:"output_tokens"`
-	InputTokensDetails  *ResponsesInputDetail `json:"input_tokens_details,omitempty"`
+	InputTokens         int                    `json:"input_tokens"`
+	OutputTokens        int                    `json:"output_tokens"`
+	InputTokensDetails  *ResponsesInputDetail  `json:"input_tokens_details,omitempty"`
 	OutputTokensDetails *ResponsesOutputDetail `json:"output_tokens_details,omitempty"`
 }
 
