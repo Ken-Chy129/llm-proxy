@@ -229,11 +229,20 @@ node scripts/preview.mjs /tmp/tray.json /tmp/p.html --dark
 node scripts/preview.mjs /tmp/tray.json /tmp/f.html --float --ball --dark --dot dead
 "$CH" --headless --disable-gpu --force-device-scale-factor=3 \
       --window-size=110,110 --screenshot=/tmp/f.png /tmp/f.html
+
+# 「今日用量」卡的背面（历史热力图）：--flip 直接摆成翻面后的状态。
+# 需要 fixture 里带 history 字段——那是 /api/tray/history 的 days 数组，
+# 挂件运行时是点击才懒加载的，不在 /api/tray 的响应里：
+#   jq -s '.[0] + {history: .[1].days}' tray.json history.json > fixture.json
+node scripts/preview.mjs /tmp/fixture.json /tmp/h.html --dark --flip
+"$CH" --headless --disable-gpu --force-device-scale-factor=3 \
+      --window-size=340,260 --screenshot=/tmp/h.png /tmp/h.html
 ```
 
 改 JSON 里的百分比就能造出低额度、限流、无数据这些平时抓不到的状态。CSS 这类改动
 **必须真的看一眼**——比如环的分档色曾经被一条兜底规则的特异性压掉，红环画成灰的，
-只有截图能发现。
+只有截图能发现。热力图同理：「今天」那格的描边是 box-shadow，很容易被分档的
+background 规则按特异性盖掉。
 
 **为什么 render.js 和 app.js 分开？** `render.js` 是纯函数，不碰 fetch 也不碰 Tauri，所以能在任何浏览器里用捕获的真实数据离线渲染 —— 改样式不用等 Rust 编译：
 

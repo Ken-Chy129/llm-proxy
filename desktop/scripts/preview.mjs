@@ -23,6 +23,8 @@ const isBall = process.argv.includes('--ball');
 const dotArg = process.argv.indexOf('--dot');
 const dotState = dotArg > -1 ? process.argv[dotArg + 1] : 'live';
 const isDark = process.argv.includes('--dark');
+// --flip 把「今日用量」卡摆成翻面后的历史热力图（需要 fixture 里带 history 字段）
+const isFlip = process.argv.includes('--flip');
 const hourArg = process.argv.indexOf('--hour');
 const nowHour = hourArg > -1 ? Number(process.argv[hourArg + 1]) : new Date().getHours();
 // 告警阈值，跟 app.js 的默认值保持一致；只影响预览里横幅是否出现
@@ -87,6 +89,9 @@ if (${isFloat}) {
   document.getElementById('btn-pin').classList.add('hidden');
   render(DATA, { nowHour: ${nowHour} });
   document.getElementById('live-dot').className = 'dot live';
+  // --flip 直接摆成背面（历史热力图）。背面在真实挂件里要点一下才出现，
+  // 而它的 CSS 恰恰是最需要截图确认的——格子会不会溢出卡片、月份标签会不会叠。
+  if (${isFlip}) document.getElementById('usage-flip').classList.add('flipped');
 }
 // 复现告警横幅：预览里没有 Tauri，走 app.js 的降级路径。判定逻辑用
 // render.js 导出的 alertFor，跟实际运行时是同一份代码。

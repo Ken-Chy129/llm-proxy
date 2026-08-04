@@ -42,28 +42,43 @@
   </section>
 
   <main id="panel">
-    <!-- 今日用量 -->
-    <section class="card">
-      <div class="card-head">
-        <span class="card-label">今日用量</span>
-        <span class="card-date" id="today-date"></span>
-      </div>
-      <div class="hero">
-        <div class="hero-main">
-          <div class="hero-num" id="today-tokens">–</div>
-          <div class="hero-unit">tokens</div>
-        </div>
-        <div class="hero-side">
-          <div class="hero-reqs"><b id="today-reqs">–</b> 请求</div>
-          <div class="deltas">
-            <span class="delta" id="delta-yday"></span>
-            <span class="delta" id="delta-avg"></span>
+    <!-- 今日用量 / 历史用量：点击整卡翻面。
+         正面留在常规文档流里定义容器高度，背面绝对定位铺满，
+         这样翻转时高度不跳。 -->
+    <section class="card flip" id="usage-flip" title="点击查看历史用量">
+      <div class="flip-inner">
+        <div class="flip-face flip-front">
+          <div class="card-head">
+            <span class="card-label">今日用量</span>
+            <span class="card-date" id="today-date"></span>
+            <span class="flip-hint">⇄</span>
           </div>
+          <div class="hero">
+            <div class="hero-main">
+              <div class="hero-num" id="today-tokens">–</div>
+              <div class="hero-unit">tokens</div>
+            </div>
+            <div class="hero-side">
+              <div class="hero-reqs"><b id="today-reqs">–</b> 请求</div>
+              <div class="deltas">
+                <span class="delta" id="delta-yday"></span>
+                <span class="delta" id="delta-avg"></span>
+              </div>
+            </div>
+          </div>
+          <div class="breakdown" id="breakdown"></div>
+          <div class="spark" id="spark" title="今日每小时 token 消耗"></div>
+          <div class="spark-axis" id="spark-axis"></div>
+        </div>
+        <div class="flip-face flip-back">
+          <div class="card-head">
+            <span class="card-label">历史用量</span>
+            <span class="card-date" id="hist-range"></span>
+            <span class="flip-hint">⇄</span>
+          </div>
+          <div id="history"></div>
         </div>
       </div>
-      <div class="breakdown" id="breakdown"></div>
-      <div class="spark" id="spark" title="今日每小时 token 消耗"></div>
-      <div class="spark-axis" id="spark-axis"></div>
     </section>
 
     <!-- 账号额度 -->

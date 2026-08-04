@@ -385,3 +385,68 @@ test('fmtEta 分钟/小时/天，且不出现 0m', () => {
   assert.equal(fmtEta(-5000), '');           // 时间已过就什么都不显示
   assert.equal(fmtEta(null), '');
 });
+
+// ---------- 历史用量热力图 ----------
+
+const { heatLevel, buildHeatGrid } = mod;
+
+test('heatLevel 有流量就至少 1 档，不和"完全没用"同色', () => {
+  assert.equal(heatLevel(0, 1000), 0);
+  assert.equal(heatLevel(1, 1000000), 1, '一天只跑了 1 个请求也该看得见');
+  assert.equal(heatLevel(1000, 1000), 4, '最大值落在最深一档');
+});
+
+test('heatLevel 开平方压缩：一个尖峰不该把其余日子全压进第 1 档', () => {
+  // 实测分布：峰值 2405、常态 200 上下。线性分档下 200/2405≈8% 会掉到第 1 档，
+  // 和一天只有 1 个请求的日子同色；开平方后能区分开。
+  const peak = 2405;
+  assert.ok(heatLevel(200, peak) > heatLevel(5, peak),
+    '常态日必须比几乎没用的日子更深');
+  assert.equal(heatLevel(peak, peak), 4);
+  // 单调不降
+  let prev = 0;
+  for (const v of [0, 1, 50, 200, 600, 1200, 2405]) {
+    const l = heatLevel(v, peak);
+    assert.ok(l >= prev, `heatLevel(${v}) = ${l} 比前一档还小`);
+    prev = l;
+  }
+});
+
+test('heatLevel 边界输入不炸', () => {
+  assert.equal(heatLevel(0, 0), 0);
+  assert.equal(heatLevel(-5, 100), 0, '负数按无流量处理');
+  assert.equal(heatLevel(100, 0), 0, 'max 为 0 时不做除法');
+  assert.equal(heatLevel(500, 100), 4, '超过 max 也封顶在最深一档，不越界');
+});
+
+test('buildHeatGrid 铺成整周网格：列=周、行=星期固定', () => {
+  const today = new Date(2026, 7, 4); // 2026-08-04，周二
+  const cells = buildHeatGrid([], 25, today);
+  assert.equal(cells.length, 25 * 7, '25 列 × 7 行');
+  assert.equal(cells[0].date.getDay(), 0, '第一格必须是周日，否则星期会错行');
+  assert.equal(cells[cells.length - 1].date.getDay(), 6, '最后一格是周六');
+});
+
+test('buildHeatGrid 把稀疏的接口数据按日期对齐，缺的天补零', () => {
+  const today = new Date(2026, 7, 4);
+  const cells = buildHeatGrid([{ d: '2026-08-04', t: 45139347, r: 193, c: 45006866 }], 25, today);
+  const hit = cells.find((c) => c.key === '2026-08-04');
+  assert.ok(hit, '今天必须在网格里');
+  assert.equal(hit.requests, 193);
+  assert.equal(hit.tokens, 45139347);
+  assert.equal(hit.isToday, true);
+  // 没有数据的那天补零，而不是 undefined（否则 heatLevel 会拿到 NaN）
+  const miss = cells.find((c) => c.key === '2026-08-01');
+  assert.equal(miss.tokens, 0);
+  assert.equal(miss.requests, 0);
+});
+
+test('buildHeatGrid 标出未来的格子：那不是"没用量"，是还没到', () => {
+  const today = new Date(2026, 7, 4); // 周二，本周还剩周三~周六
+  const cells = buildHeatGrid([], 25, today);
+  const future = cells.filter((c) => c.future);
+  assert.equal(future.length, 4, '08-05 到 08-08 共 4 天');
+  assert.equal(cells.filter((c) => c.isToday).length, 1, '有且只有一个"今天"');
+  // 今天不能被算成未来
+  assert.equal(cells.find((c) => c.isToday).future, false);
+});
