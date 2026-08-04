@@ -124,6 +124,12 @@ func (r *Router) usableModelsLocked() []string {
 	return models
 }
 
+// ModelsByBackend lists one backend's models, paused or not — the dashboard
+// draws a backend's chips from this and must still show them while it is paused.
+//
+// Sorted for the same reason as the other lists: /api/status is re-fetched every
+// time the tab regains focus, and unsorted map iteration made the chips visibly
+// shuffle on each refresh.
 func (r *Router) ModelsByBackend(backend string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -133,5 +139,6 @@ func (r *Router) ModelsByBackend(backend string) []string {
 			models = append(models, m)
 		}
 	}
+	sort.Strings(models)
 	return models
 }
