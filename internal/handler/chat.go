@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/gin-gonic/gin"
 )
 
 type ChatHandler struct {
@@ -154,8 +154,11 @@ func apiKeyName(c *gin.Context) string {
 	return ""
 }
 
+// ListModels serves /v1/models. It lists only what can be served right now: a
+// paused backend's models used to be advertised here and then rejected by
+// Resolve, so clients built a model picker out of entries that always failed.
 func (h *ChatHandler) ListModels(c *gin.Context) {
-	models := h.router.AllModels()
+	models := h.router.UsableModels()
 	data := make([]gin.H, len(models))
 	for i, m := range models {
 		data[i] = gin.H{
