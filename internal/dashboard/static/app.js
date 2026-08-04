@@ -13,36 +13,57 @@ function escapeHTML(value) {
 }
 
 // --- token breakdown -------------------------------------------------------
-// The four buckets are disjoint and sum to the total; reasoning is a subset of
-// output, so it is reported but never added. A reasoning value of -1 means the
-// upstream doesn't split it out (Anthropic folds thinking into output_tokens),
-// which is a different fact from "it thought nothing" — rendered as "—".
+// Presentation uses "input is the whole prompt" semantics:
+//
+//   Input  = the entire prompt, cache included
+//   Cache  = the part of Input that was served from / written to a cache
+//   Output = everything generated
+//   Think  = the reasoning part of Output
+//   Total  = Input + Output
+//
+// Cache and Think are *subsets*, annotations on the two totals rather than
+// buckets of their own — so only Input + Output adds up.
+//
+// The database stores the disjoint form instead (prompt_tokens excludes cache,
+// because that is what Anthropic reports), and Total is identical either way:
+//   stored: prompt + cache_read + cache_write + completion
+//   shown:  (prompt + cache_read + cache_write) + completion
+// This function is the single place that converts, so nothing downstream has to
+// know both conventions exist.
+//
+// Why show it this way: with a cache breakpoint on the last message the whole
+// prompt is cached, leaving the stored prompt_tokens at 1 or 2. Reading "Input 1"
+// next to a 100K conversation invites the conclusion that the number is broken.
+// "Input 100,740 · of which 100,739 cached" says the same thing and is right on
+// first read.
 const REASONING_UNKNOWN = -1;
 const TOKEN_KINDS = [
-  { key: 'prompt_tokens', label: 'Input', color: 'var(--green)' },
+  { key: 'input_tokens', label: 'Input', color: 'var(--green)' },
   { key: 'completion_tokens', label: 'Output', color: 'var(--red)' },
   { key: 'cache_tokens', label: 'Cache', color: 'var(--yellow)' },
 ];
 const REASONING_KIND = { key: 'reasoning_tokens', label: 'Thinking', color: 'var(--cyan)' };
 const REASONING_HINT = 'Anthropic folds thinking tokens into output_tokens and never reports them separately';
 
-// tokens normalises any object carrying the breakdown (a log row, a bucket, a
-// dimension row, the summary) into one shape, collapsing cache read+write.
+// tokens normalises any object carrying the stored breakdown (a log row, a
+// bucket, a dimension row, the summary) into the shape described above.
 function tokens(o) {
   const read = o?.cache_read_tokens || 0, write = o?.cache_write_tokens || 0;
+  const uncached = o?.prompt_tokens || 0;
   const t = {
-    prompt_tokens: o?.prompt_tokens || 0,
-    completion_tokens: o?.completion_tokens || 0,
-    cache_tokens: read + write,
+    uncached_input: uncached,          // disjoint remainder; only the bar needs it
     cache_read_tokens: read,
     cache_write_tokens: write,
-    reasoning_tokens: o?.reasoning_tokens ?? REASONING_UNKNOWN,
+    cache_tokens: read + write,        // subset of input_tokens
+    input_tokens: uncached + read + write,
+    completion_tokens: o?.completion_tokens || 0,
+    reasoning_tokens: o?.reasoning_tokens ?? REASONING_UNKNOWN, // subset of output
   };
   // Aggregates clamp unknown (-1) rows to 0 when summing, so a range of pure
   // Anthropic traffic arrives as reasoning 0. reasoning_known_requests === 0
   // means no row in it ever reported a figure — that is "unknown", not "none".
   if (o?.reasoning_known_requests === 0) t.reasoning_tokens = REASONING_UNKNOWN;
-  t.total = t.prompt_tokens + t.completion_tokens + t.cache_tokens;
+  t.total = t.input_tokens + t.completion_tokens;
   return t;
 }
 
@@ -59,18 +80,22 @@ function tokenTipHTML(t, footer) {
     `<td class="tip-num">${val}</td></tr>` +
     (sub ? `<tr class="tip-sub-row"><td colspan="2">${sub}</td></tr>` : '');
 
-  const cacheSub = t.cache_tokens
-    ? `read ${t.cache_read_tokens.toLocaleString()} · write ${t.cache_write_tokens.toLocaleString()}`
-    : '';
   const unknown = t.reasoning_tokens === REASONING_UNKNOWN;
+  // Sub-lines carry the subset relationship, so nobody has to wonder why the four
+  // numbers don't add up to the total. Cache also splits into read (cheap, ~10%
+  // of input price) and write (~125%), which are worth telling apart.
+  const cacheSub = t.cache_tokens
+    ? `of input · read ${t.cache_read_tokens.toLocaleString()} · write ${t.cache_write_tokens.toLocaleString()}`
+    : 'of input';
+  const thinkSub = unknown ? 'of output · upstream does not report it' : 'of output';
 
   return `<table class="tok-tip-table">` +
-    row(TOKEN_KINDS[0].color, 'Input', t.prompt_tokens.toLocaleString()) +
-    row(TOKEN_KINDS[1].color, 'Output', t.completion_tokens.toLocaleString()) +
+    row(TOKEN_KINDS[0].color, 'Input', t.input_tokens.toLocaleString()) +
     row(TOKEN_KINDS[2].color, 'Cache', t.cache_tokens.toLocaleString(), cacheSub) +
-    row(REASONING_KIND.color, 'Thinking', unknown ? '—' : t.reasoning_tokens.toLocaleString(),
-      unknown ? 'upstream does not report it' : 'subset of output') +
-    `<tr class="tip-total"><td>Total</td><td class="tip-num">${t.total.toLocaleString()}</td></tr>` +
+    row(TOKEN_KINDS[1].color, 'Output', t.completion_tokens.toLocaleString()) +
+    row(REASONING_KIND.color, 'Thinking', unknown ? '—' : t.reasoning_tokens.toLocaleString(), thinkSub) +
+    `<tr class="tip-total"><td>Total <em>input + output</em></td>` +
+    `<td class="tip-num">${t.total.toLocaleString()}</td></tr>` +
     (footer ? `<tr class="tip-foot"><td colspan="2">${escapeHTML(footer)}</td></tr>` : '') +
     `</table>`;
 }
@@ -117,16 +142,19 @@ function tokenChips(t) {
     `<span class="tok-chip"${title ? ` title="${escapeHTML(title)}"` : ''}>` +
     `<i class="tok-dot" style="background:${k.color}"></i>${k.label} <b>${val}</b>` +
     (extra ? `<em>${extra}</em>` : '') + '</span>';
+  // Cache and Thinking are subsets; their pills say so, and the hit-rate is the
+  // number worth reading off the cache pill at a glance.
+  const hitPct = t.input_tokens ? Math.round(t.cache_tokens / t.input_tokens * 100) : 0;
   const cacheDetail = t.cache_tokens
-    ? `read ${fmtCompact(t.cache_read_tokens)} / write ${fmtCompact(t.cache_write_tokens)}`
+    ? `${hitPct}% of input · read ${fmtCompact(t.cache_read_tokens)} / write ${fmtCompact(t.cache_write_tokens)}`
     : '';
   return [
-    chip(TOKEN_KINDS[0], t.prompt_tokens.toLocaleString()),
-    chip(TOKEN_KINDS[1], t.completion_tokens.toLocaleString()),
-    chip(TOKEN_KINDS[2], t.cache_tokens.toLocaleString(), cacheDetail),
+    chip(TOKEN_KINDS[0], t.input_tokens.toLocaleString(), '', 'the whole prompt, cache included'),
+    chip(TOKEN_KINDS[1], t.completion_tokens.toLocaleString(), '', 'everything generated, thinking included'),
+    chip(TOKEN_KINDS[2], t.cache_tokens.toLocaleString(), cacheDetail, 'part of input, not added on top of it'),
     t.reasoning_tokens === REASONING_UNKNOWN
-      ? chip(REASONING_KIND, '—', '', REASONING_HINT)
-      : chip(REASONING_KIND, t.reasoning_tokens.toLocaleString(), '', 'subset of output, not added to the total'),
+      ? chip(REASONING_KIND, '—', 'of output', REASONING_HINT)
+      : chip(REASONING_KIND, t.reasoning_tokens.toLocaleString(), 'of output', 'part of output, not added on top of it'),
   ].join('');
 }
 
@@ -760,11 +788,17 @@ function renderBreakdown() {
   el.innerHTML = rows.map((r, i) => {
     const disp = isStatus ? `${escHtml(r.label)}${STATUS_LABELS[r.label] ? ' · ' + STATUS_LABELS[r.label] : ''}` : escHtml(r.label);
     const tail = isStatus ? '' : `<div class="bar-err ${r.err ? 'text-red' : 'text-muted'}">${r.err}</div>`;
-    // In tokens mode the fill is split by bucket, so a row that is mostly cache
-    // reads reads differently at a glance from one that is mostly fresh input.
+    // A stacked fill needs genuinely disjoint parts, so it uses the *uncached*
+    // remainder rather than Input (which contains Cache). Cache first, since on
+    // real traffic it dominates and reads best anchored to the left edge.
     const fill = r.tok && r.tok.total
-      ? TOKEN_KINDS.filter(k => r.tok[k.key] > 0).map(k =>
-          `<i style="width:${(r.tok[k.key] / r.tok.total * 100).toFixed(2)}%;background:${k.color}"></i>`).join('')
+      ? [
+          ['cache_tokens', TOKEN_KINDS[2].color],
+          ['uncached_input', TOKEN_KINDS[0].color],
+          ['completion_tokens', TOKEN_KINDS[1].color],
+        ].filter(([k]) => r.tok[k] > 0)
+         .map(([k, color]) =>
+           `<i style="width:${(r.tok[k] / r.tok.total * 100).toFixed(2)}%;background:${color}"></i>`).join('')
       : '';
     // In tokens mode a bar gets the same hover card as a log row. Other metrics
     // have no breakdown to show, so they keep the plain filter hint.
