@@ -85,10 +85,16 @@ export function fmtIdle(seconds) {
  */
 export function trayTitle(d) {
   if (!d) return '–';
-  const s = d.min_session_percent;
-  if (s !== null && s !== undefined) return `${Math.round(s)}%`;
+  // 显示今日 token 用量，不是剩余额度百分比。
+  //
+  // 百分比曾经排在前面，但菜单栏里一个孤零零的 "0%" 说不清是什么归零了——是额度
+  // 用光、还是根本没取到数？而且额度告警本来就会主动弹通知，面板里也有逐账号的
+  // 进度条，那个数字在标题栏属于重复。今日用量是唯一"只有这里能看到"的信息。
   const t = d.today?.total_tokens;
   if (t) return fmtCompact(t);
+  // 今天还没有流量时不写 0：先落回额度，至少说明挂件是活的、连得上代理
+  const s = d.min_session_percent;
+  if (s !== null && s !== undefined) return `${Math.round(s)}%`;
   return '–';
 }
 
@@ -434,7 +440,10 @@ function renderBreakdown(container, day) {
 
 // ---------- 历史用量热力图（卡片背面） ----------
 
-const HEAT_WEEKS = 25;   // 320px 面板：格子 9px + 间隙 2px = 25 列 ≈ 175 天
+// 18 列 ≈ 4 个月。格子 12px + 间隙 3px 铺满 320px 面板的卡内宽度。
+// 原来是 25 列 / 9px（半年），但 9px 太密、鼠标停不准某一天，而"悬停看当天用量"
+// 就是这张图的主要用法。宽度定死在 CSS 的 .heat-grid 里，两处要一起改。
+export const HEAT_WEEKS = 18;
 const HEAT_LEVELS = 4;   // 0 = 无流量，1..4 = 由浅到深
 
 /** 本地日期 → "YYYY-MM-DD"，和后端按客户端时区分出的桶键对齐。 */
@@ -495,6 +504,80 @@ export function buildHeatGrid(days, weeks = HEAT_WEEKS, today = new Date()) {
   return cells;
 }
 
+/** 某一天的卡片文案。导出是为了能单测，不必去戳 DOM。 */
+export function heatDayLines(c) {
+  const md = c.key.slice(5).replace('-', '/');
+  if (c.requests <= 0) return { date: md, rows: [['用量', '无']] };
+  const rows = [['请求', fmtNum(c.requests)]];
+  if (c.tokens > 0) {
+    rows.push(['tokens', fmtCompact(c.tokens)]);
+    // 缓存占比是这一天"贵不贵"的唯一线索：请求数一样但缓存命中差一截，
+    // 花的钱能差一个数量级
+    rows.push(['缓存', `${Math.round((c.cache / c.tokens) * 100)}%`]);
+  } else {
+    // 有请求但没 token 记录是真实存在的（早期未采集、或全是失败请求），
+    // 说成"无用量"是在编数据
+    rows.push(['tokens', '无记录']);
+  }
+  return { date: md, rows };
+}
+
+/**
+ * 给热力图挂上日用量卡：悬停显示，点击也显示（并且**不**冒泡到卡片，
+ * 否则点格子会把整张卡翻回正面——想看某天用量的人绝不希望这样）。
+ */
+function bindHeatTip(doc, grid, cells) {
+  const tip = doc.getElementById('heat-tip');
+  if (!tip) return;
+
+  const show = (cell) => {
+    const idx = Number(cell.dataset.day);
+    const c = cells[idx];
+    if (!c) return;
+    const { date, rows } = heatDayLines(c);
+    tip.textContent = '';
+    const head = doc.createElement('div');
+    head.className = 'heat-tip-date';
+    head.textContent = date;
+    tip.appendChild(head);
+    for (const [k, v] of rows) {
+      const line = doc.createElement('div');
+      line.className = 'heat-tip-row';
+      const label = doc.createElement('span');
+      label.textContent = k;
+      const val = doc.createElement('b');
+      val.textContent = v;
+      line.append(label, val);
+      tip.appendChild(line);
+    }
+    tip.classList.remove('hidden');
+
+    // 定位在格子上方居中，放不下就翻到下方；左右夹在卡片内。
+    // 相对 .flip-back（已是 absolute 定位的包含块）算坐标。
+    const host = tip.offsetParent || tip.parentElement;
+    const hb = host.getBoundingClientRect();
+    const cb = cell.getBoundingClientRect();
+    const tb = tip.getBoundingClientRect();
+    const pad = 6;
+    let left = cb.left - hb.left + cb.width / 2 - tb.width / 2;
+    left = Math.max(pad, Math.min(left, hb.width - tb.width - pad));
+    let top = cb.top - hb.top - tb.height - 5;
+    if (top < 0) top = cb.bottom - hb.top + 5;
+    tip.style.left = `${Math.round(left)}px`;
+    tip.style.top = `${Math.round(top)}px`;
+  };
+
+  const hide = () => tip.classList.add('hidden');
+
+  grid.addEventListener('mouseover', (e) => {
+    const cell = e.target.closest?.('.heat-cell[data-day]');
+    if (cell) show(cell);
+  });
+  grid.addEventListener('mouseleave', hide);
+  // 点格子照旧翻回正面（不拦冒泡）：看某天的数据靠悬停就够了，
+  // 再让点击也变成"只看数据"，整张卡就只剩边角能翻，反而难用。
+}
+
 /**
  * 渲染热力图。纯函数：只吃数据和容器，不碰 fetch/Tauri，
  * 这样 preview.mjs 能拿一份 fixture 直接截图验证。
@@ -541,66 +624,72 @@ export function renderHistory(container, days, opts = {}) {
   container.appendChild(months);
 
   const grid = mk('div', 'heat-grid');
-  for (const c of cells) {
+  for (const [i, c] of cells.entries()) {
     const cell = mk('i', `heat-cell l${c.future ? 0 : heatLevel(c.requests, max)}`);
     if (c.future) cell.classList.add('heat-future');
     if (c.isToday) cell.classList.add('heat-today');
-    if (!c.future) {
-      const md = c.key.slice(5).replace('-', '/');
-      // 有请求但 token 记为 0 的日子是真实存在的（早期未采集、或全是失败请求），
-      // 说成"无用量"是在编数据——只要有请求就照实报请求数。
-      // 请求数排在前面：格子的深浅就是按它算的，悬停应当先解释眼睛看到的东西
-      if (c.requests > 0 && c.tokens > 0) {
-        const share = `· 缓存 ${Math.round((c.cache / c.tokens) * 100)}%`;
-        cell.title = `${md} · ${fmtNum(c.requests)} 请求 · ${fmtCompact(c.tokens)} tokens ${share}`;
-      } else if (c.requests > 0) {
-        cell.title = `${md} · ${fmtNum(c.requests)} 请求 · 无 token 记录`;
-      } else {
-        cell.title = `${md} · 无用量`;
-      }
-    }
+    if (!c.future) cell.dataset.day = String(i);
     grid.appendChild(cell);
   }
   container.appendChild(grid);
+  bindHeatTip(doc, grid, cells);
 
-  const legend = mk('div', 'heat-legend');
-  legend.appendChild(mk('span', null, '少'));
-  for (let l = 0; l <= HEAT_LEVELS; l++) legend.appendChild(mk('i', `heat-cell l${l}`));
-  legend.appendChild(mk('span', null, '多'));
-  container.appendChild(legend);
-
-  // 一行汇总。既填掉背面比正面矮出来的那块空白，也回答热力图本身答不上的问题：
-  // 总量是多少、最猛的一天是哪天（格子只给相对深浅，读不出绝对值）。
+  // 底部一行：活跃天数 · 色阶 · 总量。
+  //
+  // 原来图例和汇总各占一行，两行都是 10px 灰字挤在一条分隔线上下，看着很局促。
+  // 现在只留这一行两个数。色阶图例也去掉了：它只说明"深=多"，而这件事看一眼格子
+  // 就知道，占掉的横向空间反而是让这行挤起来的原因；精确数值靠悬停某一格来看。
+  //
+  // "活跃天数"数的是真有请求的日子，不是窗口长度——窗口恒为 18 周，说了等于没说。
   const past = cells.filter((c) => !c.future);
+  const activeDays = past.filter((c) => c.requests > 0).length;
   const total = past.reduce((s, c) => s + c.tokens, 0);
-  const reqs = past.reduce((s, c) => s + c.requests, 0);
-  // 峰值按请求数取，和着色保持一致：否则最亮的格子和写出来的"峰值"会是两天
-  const busiest = past.reduce((a, b) => (b.requests > a.requests ? b : a), past[0]);
-  const sum = mk('div', 'heat-sum');
-  sum.appendChild(mk('span', null, `${past.length} 天 · ${fmtNum(reqs)} 请求 · ${fmtCompact(total)} tokens`));
-  if (busiest && busiest.requests > 0) {
-    const peak = mk('span', 'heat-peak', `峰值 ${busiest.key.slice(5).replace('-', '/')} · ${fmtNum(busiest.requests)} 请求`);
-    sum.appendChild(peak);
-  }
-  container.appendChild(sum);
 
-  // last 取"今天"而不是网格末尾：网格为了让星期对齐会补到本周六，
-  // 在标题上写一个还没到的日期会让人以为数据来自未来。
+  const foot = mk('div', 'heat-foot');
+  foot.appendChild(mk('span', null, `活跃 ${activeDays} 天`));
+  foot.appendChild(mk('span', 'heat-total', `${fmtCompact(total)} tokens`));
+  container.appendChild(foot);
+
   const lastPast = past.length ? past[past.length - 1].key : cells[0].key;
-  return { first: cells[0].key, last: lastPast, max, total, requests: reqs };
+  return { first: cells[0].key, last: lastPast, max, activeDays, total };
 }
 
 /**
- * 画背面：热力图 + 头部的日期范围。app.js 拿到接口数据后调它，
- * preview.mjs 通过 fixture 里的 history 字段间接调它。
+ * 画背面。app.js 拿到接口数据后调它，preview.mjs 通过 fixture 里的
+ * history 字段间接调它。
+ *
+ * 标题栏不再写日期范围：月份标签已经标出了跨度，汇总行还写了天数，
+ * 再来一个 "02-15 – 08-04" 是第三遍说同一件事。
  */
 export function paintHistory(doc, days, opts = {}) {
-  const box = doc.getElementById('history');
-  const meta = renderHistory(box, days, { ...opts, doc });
-  const range = doc.getElementById('hist-range');
-  if (range) {
-    range.textContent = meta ? `${meta.first.slice(5)} – ${meta.last.slice(5)}` : '';
-  }
+  renderHistory(doc.getElementById('history'), days, { ...opts, doc });
+  fitFlipHeight(doc);
+}
+
+/**
+ * 让翻面容器取两面中较高的那个高度。
+ *
+ * 背面是 absolute + inset:0，高度完全由正面决定——正面矮一点，背面就溢出到下一张
+ * 卡上去。这事已经犯过两次（加汇总行时、格子放大时），每次都是靠截图才发现，而且
+ * 只差几个像素时截图也看不出来。所以不再靠"目测两面差不多高"，直接量。
+ */
+function fitFlipHeight(doc) {
+  const inner = doc.querySelector('.flip-inner');
+  const front = doc.querySelector('.flip-front');
+  const back = doc.querySelector('.flip-back');
+  if (!inner || !front || !back) return;
+  // 先清掉上一次的值，否则量到的是被自己撑开后的高度，只会单调变大
+  inner.style.minHeight = '';
+  front.style.minHeight = '';
+  const frontH = front.getBoundingClientRect().height;
+  // scrollHeight 不含边框，补上上下各 1px
+  const backH = back.scrollHeight + 2;
+  const h = Math.ceil(Math.max(frontH, backH));
+  // 两处都要压：正面在常规文档流里，高度是自己的内容高；背面 inset:0，高度是容器高。
+  // 只设容器的话两者会差几个像素——正面 197、背面 198，翻面时卡片会肉眼可见地
+  // 长/短一点点。给正面也设同一个 min-height，两面的盒子就严格一样大。
+  inner.style.minHeight = `${h}px`;
+  front.style.minHeight = `${h}px`;
 }
 
 function renderSpark(container, hourly, nowHour, axisEl) {
@@ -741,10 +830,10 @@ export function render(d, opts = {}) {
   const q = (id) => doc.getElementById(id);
   const nowHour = opts.nowHour !== undefined ? opts.nowHour : new Date().getHours();
 
-  // 今日
+  // 今日。不写日期："今日用量"这个标题已经说明是哪天了，而顶栏还有刷新时刻，
+  // 再印一遍 2026-08-04 只是占掉一行宽度。
   q('today-tokens').textContent = fmtCompact(d.today?.total_tokens ?? 0);
   q('today-reqs').textContent = fmtNum(d.today?.request_count ?? 0);
-  q('today-date').textContent = d.today?.date || '';
 
   const dy = pctDelta(d.today?.total_tokens ?? 0, d.yesterday?.total_tokens ?? 0);
   const elY = q('delta-yday');
@@ -763,6 +852,7 @@ export function render(d, opts = {}) {
   // 响应里。这个钩子只为让 preview.mjs 往 fixture 里塞个 history 就能截到背面
   // ——CSS 改动必须真的看一眼（见 desktop/README.md）。
   if (d.history) paintHistory(doc, d.history, opts);
+  else fitFlipHeight(doc); // 正面内容会随每轮刷新变高变矮，两面必须跟着重新对齐
   // today.date 是后端按客户端时区算出的日历天，用来判断重置时间是否就在今天
   renderAccounts(q('accounts'), d.accounts, d.today?.date);
   renderKeys(q('keys'), d.today?.by_key);

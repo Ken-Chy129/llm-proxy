@@ -1,7 +1,7 @@
 // 应用层：配置持久化、轮询、Tauri 托盘/通知桥接。
 // 渲染逻辑全在 render.js 里（纯函数，可离线预览）。
 
-import { render, renderFloat, trayTitle, alertFor, paintHistory } from './render.js';
+import { render, renderFloat, trayTitle, alertFor, paintHistory, HEAT_WEEKS } from './render.js';
 
 const DEFAULTS = {
   base: '',
@@ -238,7 +238,9 @@ async function loadHistory() {
 
   histMsg('加载中…');
   const tz = -new Date().getTimezoneOffset();
-  const url = `${config.base.replace(/\/+$/, '')}/api/tray/history?tz=${tz}`;
+  // 只取热力图真正画得出的天数：多拉的部分既不显示、也会让汇总行的"活跃天数/总量"
+  // 和眼前的格子对不上。
+  const url = `${config.base.replace(/\/+$/, '')}/api/tray/history?tz=${tz}&days=${HEAT_WEEKS * 7}`;
   historyInFlight = (async () => {
     try {
       const res = await fetch(url, {
@@ -262,9 +264,9 @@ async function loadHistory() {
 
 function toggleUsageFlip() {
   const card = document.getElementById('usage-flip');
-  const nowFlipped = card.classList.toggle('flipped');
-  card.title = nowFlipped ? '点击返回今日用量' : '点击查看历史用量';
-  if (nowFlipped) loadHistory();
+  // 刻意不设 card.title：原生 tooltip 会用祖先的标题盖住后代的，卡片上挂一条
+  // "点击返回今日用量"就再也看不到热力图每一格自己的日用量了。⇄ 图标已够自解释。
+  if (card.classList.toggle('flipped')) loadHistory();
 }
 
 async function refresh(manual = false) {

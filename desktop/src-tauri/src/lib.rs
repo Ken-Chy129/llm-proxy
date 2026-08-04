@@ -93,21 +93,13 @@ fn set_tray_title(app: AppHandle, title: String) {
     }
 }
 
-/// 切换桌面悬浮挂件。首次调用时按需创建窗口——避免不用悬浮模式的人
-/// 也常驻一个隐藏 webview。
-#[tauri::command]
-fn toggle_float(app: AppHandle) -> Result<bool, String> {
-    if let Some(w) = app.get_webview_window(FLOAT) {
-        let visible = w.is_visible().unwrap_or(false);
-        if visible {
-            w.hide().map_err(|e| e.to_string())?;
-            return Ok(false);
-        }
-        w.show().map_err(|e| e.to_string())?;
-        return Ok(true);
-    }
+/// 悬浮球距屏幕右下角的内缩量。完全贴边会压在 Dock 的圆角上、也不好抓住拖动。
+const FLOAT_MARGIN: f64 = 16.0;
 
-    let w = WebviewWindowBuilder::new(&app, FLOAT, WebviewUrl::App("index.html?mode=float".into()))
+/// 创建悬浮球窗口（不显示）。启动时和首次 toggle 都走这里，避免两处各写一份
+/// builder ——那些参数每一条都是撞出来的，抄两遍必然会漂。
+fn build_float(app: &AppHandle) -> Result<WebviewWindow, String> {
+    WebviewWindowBuilder::new(app, FLOAT, WebviewUrl::App("index.html?mode=float".into()))
         .title("LLM Proxy")
         // 折叠态就是一个 56px 的球，窗口与内容严格等大。展开由前端 hover 时调
         // expand_float 撑开。
@@ -120,13 +112,54 @@ fn toggle_float(app: AppHandle) -> Result<bool, String> {
         .always_on_top(true)
         .skip_taskbar(true)
         .transparent(true)
+        // 先不显示：位置要在 show 之前设好，否则会先在系统给的默认位置闪一下再跳走
+        .visible(false)
         // 阴影必须交给 macOS：透明窗口的原生阴影是按内容 alpha 形状生成的（面板的
         // 圆角阴影就是这么来的），而 CSS box-shadow 会被窗口边界裁成一条硬边灰带
         // ——窗口与内容等大，22px 的模糊根本画不下。实测过：4px 边距里的阴影压在
         // 白底文档上就是一块灰方块。
         .shadow(true)
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+
+/// 把球摆到主屏右下角。
+///
+/// 用 work_area 而不是 monitor.size：前者已经排除菜单栏和 Dock，否则球会被 Dock
+/// 压在下面。用 primary_monitor 而不是 current_monitor：窗口还没显示时后者不保证
+/// 返回有意义的屏幕。
+fn place_float_bottom_right(w: &WebviewWindow) {
+    let Ok(scale) = w.scale_factor() else { return };
+    let mon = w
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| w.current_monitor().ok().flatten());
+    let Some(mon) = mon else { return };
+
+    let area = mon.work_area();
+    let pos = area.position.to_logical::<f64>(scale);
+    let size = area.size.to_logical::<f64>(scale);
+    let x = pos.x + size.width - BALL - FLOAT_MARGIN;
+    let y = pos.y + size.height - BALL - FLOAT_MARGIN;
+    let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+}
+
+/// 切换桌面悬浮挂件。窗口通常已在启动时建好，这里只管显隐；
+/// 万一没有（创建失败过）就补建一次。
+#[tauri::command]
+fn toggle_float(app: AppHandle) -> Result<bool, String> {
+    if let Some(w) = app.get_webview_window(FLOAT) {
+        if w.is_visible().unwrap_or(false) {
+            w.hide().map_err(|e| e.to_string())?;
+            return Ok(false);
+        }
+        w.show().map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+
+    let w = build_float(&app)?;
+    place_float_bottom_right(&w);
     let _ = w.show();
     Ok(true)
 }
@@ -357,6 +390,20 @@ pub fn run() {
             // macOS: 不在 Dock 显示图标，纯菜单栏应用。
             #[cfg(target_os = "macos")]
             let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+
+            // 悬浮球开机即在，落在主屏右下角。
+            //
+            // 位置必须在 show 之前设好：先显示再挪会先在系统给的默认位置（通常屏幕
+            // 正中）闪一下。之后用户拖到哪儿就是哪儿，这里只管首次落点。
+            match build_float(&handle) {
+                Ok(ball) => {
+                    place_float_bottom_right(&ball);
+                    let _ = ball.show();
+                }
+                // 建不出来不该拖垮整个应用：菜单栏图标和面板仍然可用，
+                // 菜单里的「悬浮挂件」还能再试一次。
+                Err(e) => eprintln!("float window init failed: {e}"),
+            }
 
             Ok(())
         })
