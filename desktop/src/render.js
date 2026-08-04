@@ -363,18 +363,25 @@ function renderKeys(container, byKey) {
   }
 }
 
-// 四类 token 细分。hero 的大数字是这四类之和（缓存读写都算进去），因为那才是
-// 真实搬动的量；但只给一个总数会让人误以为"今天写了 90 万 token 的新内容"，
-// 而实际上绝大部分是缓存命中。分开列出来是为了让这个区别一眼可见。
+// 口径："输入"是完整 prompt（含缓存），"缓存"是其中命中/写入缓存的那部分，
+// "思考"是"输出"里的推理部分。所以只有 输入 + 输出 == 总数，缓存和思考是
+// 子集标注，不参与相加。
+//
+// 后端存的是互不重叠的形式（prompt_tokens 已扣除缓存，因为 Anthropic 就是这么
+// 报的），两种算法的总数完全相同，这里只做展示层换算。
+//
+// 为什么这样展示：缓存断点打在最后一条消息上时整个 prompt 都被缓存，后端存的
+// prompt_tokens 只剩 1-2。在一个十万 token 的对话旁边显示"输入 1"，任何人都会
+// 以为数据坏了 —— 而"输入 100,740，其中 100,739 命中缓存"第一眼就是对的。
 //
 // 思考 token 只有 OpenAI 系上游（Codex / Kimi）会单独返回；Anthropic 把它算进
 // output_tokens 且不拆分，后端因此记成 -1。这里显示 "—" 而不是 0：
 // "上游没给这个数" 和 "模型没思考" 是两件不同的事，写成 0 就是在编数据。
 const REASONING_UNKNOWN = -1;
 const BREAKDOWN_KINDS = [
-  { key: 'prompt_tokens', label: '输入', color: 'var(--ok)' },
-  { key: 'completion_tokens', label: '输出', color: 'var(--bad)' },
+  { key: 'input', label: '输入', color: 'var(--ok)' },
   { key: 'cache', label: '缓存', color: 'var(--warn)' },
+  { key: 'completion_tokens', label: '输出', color: 'var(--bad)' },
   { key: 'reasoning_tokens', label: '思考', color: 'var(--info)' },
 ];
 
@@ -386,6 +393,7 @@ function renderBreakdown(container, day) {
 
   const read = day.cache_read_tokens || 0;
   const write = day.cache_write_tokens || 0;
+  const cache = read + write;
   // 聚合求和时 -1 会被 clamp 成 0，所以纯 Anthropic 流量传过来是 reasoning=0。
   // reasoning_known_requests === 0 表示这一天没有任何一条请求拿到过思考数——
   // 那是"不知道"，不是"没思考"，仍然要显示 "—"。
@@ -393,11 +401,12 @@ function renderBreakdown(container, day) {
     ? REASONING_UNKNOWN
     : (day.reasoning_tokens ?? REASONING_UNKNOWN);
   const vals = {
-    prompt_tokens: day.prompt_tokens || 0,
+    input: (day.prompt_tokens || 0) + cache, // 完整 prompt，含缓存
+    cache,
     completion_tokens: day.completion_tokens || 0,
-    cache: read + write,
     reasoning_tokens: reasoning,
   };
+  const hitPct = vals.input ? Math.round((cache / vals.input) * 100) : 0;
 
   for (const k of BREAKDOWN_KINDS) {
     const v = vals[k.key];
@@ -411,9 +420,11 @@ function renderBreakdown(container, day) {
     if (unknown) {
       item.title = 'Anthropic 不单独返回 thinking token（已计入输出），只有 Codex / Kimi 会给';
     } else if (k.key === 'cache') {
-      item.title = `读 ${fmtNum(read)} / 写 ${fmtNum(write)}`;
+      item.title = `输入的 ${hitPct}%（不额外计入总数）· 读 ${fmtNum(read)} / 写 ${fmtNum(write)}`;
     } else if (k.key === 'reasoning_tokens') {
-      item.title = '输出的子集，不重复计入总数';
+      item.title = '输出的一部分，不额外计入总数';
+    } else if (k.key === 'input') {
+      item.title = `完整 prompt（含缓存）${fmtNum(v)}`;
     } else {
       item.title = fmtNum(v);
     }

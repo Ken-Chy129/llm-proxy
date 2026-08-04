@@ -320,6 +320,9 @@ rect.cal-future{fill:transparent;}
 .tok-tip-table .tip-num{text-align:right;color:var(--text-0);font-variant-numeric:tabular-nums;}
 .tok-tip-table .tip-sub-row td{padding:0 0 3px 13px;color:var(--text-2);font-size:10px;}
 .tok-tip-table .tip-total td{border-top:1px solid var(--border);padding-top:4px;color:var(--text-2);}
+/* Spells out the one relationship that does add up, so the four subset numbers
+   above don't read as a broken sum. */
+.tok-tip-table .tip-total em{font-style:normal;color:var(--text-2);opacity:0.65;font-size:10px;margin-left:5px;}
 .tok-tip-table .tip-total .tip-num{color:var(--accent);}
 .tok-tip-table .tip-foot td{padding-top:5px;color:var(--text-2);font-size:10px;}
 .hover-tip .tok-dot{display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:7px;vertical-align:middle;}
