@@ -79,6 +79,10 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	// header) is answered before TrayAuth would reject it.
 	engine.GET("/api/tray", DesktopCORS(), TrayAuth(cfg), adminHandler.Tray)
 	engine.OPTIONS("/api/tray", DesktopCORS())
+	// Daily series for the widget's history heatmap. Same guard as /api/tray —
+	// same class of data — but fetched on demand rather than every 60s.
+	engine.GET("/api/tray/history", DesktopCORS(), TrayAuth(cfg), adminHandler.TrayHistory)
+	engine.OPTIONS("/api/tray/history", DesktopCORS())
 
 	// OAuth login (session protected)
 	if claudeOAuth != nil {

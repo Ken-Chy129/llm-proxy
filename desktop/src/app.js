@@ -1,7 +1,7 @@
 // 应用层：配置持久化、轮询、Tauri 托盘/通知桥接。
 // 渲染逻辑全在 render.js 里（纯函数，可离线预览）。
 
-import { render, renderFloat, trayTitle, alertFor } from './render.js';
+import { render, renderFloat, trayTitle, alertFor, paintHistory } from './render.js';
 
 const DEFAULTS = {
   base: '',
@@ -211,6 +211,62 @@ async function maybeNotify(d) {
   }
 }
 
+// ---------- 历史用量（卡片背面） ----------
+// 走独立接口，只在第一次翻到背面时拉。缓存 5 分钟：热力图的最小粒度是一天，
+// 翻来翻去重复请求几百天的数据毫无意义。
+const HISTORY_TTL_MS = 5 * 60 * 1000;
+let historyCache = null;      // { at, days }
+let historyInFlight = null;
+
+function histMsg(text) {
+  const box = document.getElementById('history');
+  if (!box) return;
+  box.textContent = '';
+  const p = document.createElement('div');
+  p.className = 'hist-msg';
+  p.textContent = text;
+  box.appendChild(p);
+}
+
+async function loadHistory() {
+  if (historyCache && Date.now() - historyCache.at < HISTORY_TTL_MS) {
+    paintHistory(document, historyCache.days);
+    return;
+  }
+  // 连点会打出多个并发请求，共用同一个 promise
+  if (historyInFlight) return historyInFlight;
+
+  histMsg('加载中…');
+  const tz = -new Date().getTimezoneOffset();
+  const url = `${config.base.replace(/\/+$/, '')}/api/tray/history?tz=${tz}`;
+  historyInFlight = (async () => {
+    try {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${config.token}` },
+        cache: 'no-store',
+      });
+      if (!res.ok) throw new Error(`代理返回 ${res.status}`);
+      const data = await res.json();
+      historyCache = { at: Date.now(), days: data.days || [] };
+      paintHistory(document, historyCache.days);
+    } catch (e) {
+      // 只在背面内联报错，不弹全局 showError——那是给"整个挂件取不到数"用的，
+      // 而正面此刻显示的今日数据是好的，不该被一并标成失败。
+      histMsg(`历史数据加载失败：${e.message}`);
+    } finally {
+      historyInFlight = null;
+    }
+  })();
+  return historyInFlight;
+}
+
+function toggleUsageFlip() {
+  const card = document.getElementById('usage-flip');
+  const nowFlipped = card.classList.toggle('flipped');
+  card.title = nowFlipped ? '点击返回今日用量' : '点击查看历史用量';
+  if (nowFlipped) loadHistory();
+}
+
 async function refresh(manual = false) {
   if (!config.base || !config.token) {
     // 悬浮球里没有设置页——56px 装不下表单，也不该在桌面挂件上配凭证
@@ -405,6 +461,8 @@ function wire() {
   document.getElementById('btn-float').addEventListener('click', () => {
     invoke('toggle_float');
   });
+
+  document.getElementById('usage-flip').addEventListener('click', toggleUsageFlip);
 
   document.getElementById('btn-refresh').addEventListener('click', () => refresh(true));
   document.getElementById('btn-settings').addEventListener('click', openSettings);

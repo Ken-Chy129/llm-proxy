@@ -432,6 +432,177 @@ function renderBreakdown(container, day) {
   }
 }
 
+// ---------- 历史用量热力图（卡片背面） ----------
+
+const HEAT_WEEKS = 25;   // 320px 面板：格子 9px + 间隙 2px = 25 列 ≈ 175 天
+const HEAT_LEVELS = 4;   // 0 = 无流量，1..4 = 由浅到深
+
+/** 本地日期 → "YYYY-MM-DD"，和后端按客户端时区分出的桶键对齐。 */
+function dayKey(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+/**
+ * 分档。相对最大值而不是绝对阈值——用量在几千和几千万之间浮动，写死阈值会让
+ * 整张图要么全空要么全满。
+ *
+ * 开平方压一下，和 renderSpark 里同样的理由：日用量的分布极度偏斜（实测一天
+ * 98M、隔天 10M、更早的日子几十万），线性分档会把除了尖峰那天以外的所有日子
+ * 全压进第 1 档，整张图看上去像只用过一天。
+ *
+ * 有流量就至少 1 档：跑了几百 token 的一天不该和"完全没用"同色。
+ */
+export function heatLevel(v, max) {
+  if (v <= 0 || max <= 0) return 0;
+  const r = Math.sqrt(v / max);
+  return Math.min(HEAT_LEVELS, Math.max(1, Math.ceil(r * HEAT_LEVELS)));
+}
+
+/**
+ * 把接口返回的稀疏天（只含有流量的日子）铺成连续的日历网格。
+ * 结尾对齐到本周六、开头回退到某个周日，这样列就是完整的周，
+ * 星期几固定落在同一行（和 GitHub 贡献图一致）。
+ * 未来的格子标出来：它们不是"没用量"，而是还没到。
+ */
+export function buildHeatGrid(days, weeks = HEAT_WEEKS, today = new Date()) {
+  const byDate = new Map();
+  for (const d of days || []) byDate.set(d.d, d);
+
+  const end = new Date(today);
+  end.setHours(0, 0, 0, 0);
+  end.setDate(end.getDate() + (6 - end.getDay()));
+  const start = new Date(end);
+  start.setDate(start.getDate() - (weeks * 7 - 1));
+
+  const todayKey = dayKey(today);
+  const cells = [];
+  for (let i = 0; i < weeks * 7; i++) {
+    const d = new Date(start);
+    d.setDate(d.getDate() + i);
+    const k = dayKey(d);
+    const hit = byDate.get(k);
+    cells.push({
+      date: d,
+      key: k,
+      tokens: hit ? hit.t || 0 : 0,
+      requests: hit ? hit.r || 0 : 0,
+      cache: hit ? hit.c || 0 : 0,
+      future: k > todayKey,
+      isToday: k === todayKey,
+    });
+  }
+  return cells;
+}
+
+/**
+ * 渲染热力图。纯函数：只吃数据和容器，不碰 fetch/Tauri，
+ * 这样 preview.mjs 能拿一份 fixture 直接截图验证。
+ */
+export function renderHistory(container, days, opts = {}) {
+  if (!container) return;
+  const doc = opts.doc || container.ownerDocument || document;
+  const mk = (tag, cls, text) => {
+    const e = doc.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;
+    return e;
+  };
+  container.textContent = '';
+
+  if (!days || days.length === 0) {
+    container.appendChild(mk('div', 'empty', '暂无历史数据'));
+    return;
+  }
+
+  const cells = buildHeatGrid(days, HEAT_WEEKS, opts.today || new Date());
+  // 按**请求数**着色，不是 token 数。
+  //
+  // token 总量跨不了口径变更那道坎：缓存是 2026-08-02 才开始记的，之前的行缓存列
+  // 为 0，于是同样忙的一天在改动前后能差两个数量级。实测 06-05 有 2,405 个请求但
+  // 只记了 408K token，而 08-03 只有 857 个请求却记了 98.3M —— 按 token 着色会把
+  // 请求数最多的那些天画成空白，"活跃图"于是在说反话。
+  // 请求数没有这个问题，而且它本来就是"活跃度"更自然的度量（GitHub 数的是提交
+  // 次数，不是改了多少行）。token 仍然出现在悬停和汇总里。
+  const max = Math.max(...cells.map((c) => c.requests), 1);
+
+  // 月份标签：每列取该列第一天，月份变了就写一次。只在月初那周写，
+  // 否则跨月那一列会紧挨着上一个标签叠在一起。
+  const months = mk('div', 'heat-months');
+  const MN = ['1月', '2月', '3月', '4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月'];
+  let prevMonth = -1;
+  for (let w = 0; w < HEAT_WEEKS; w++) {
+    const first = cells[w * 7].date;
+    const m = first.getMonth();
+    const label = m !== prevMonth && first.getDate() <= 7 ? MN[m] : '';
+    if (label) prevMonth = m;
+    months.appendChild(mk('span', null, label));
+  }
+  container.appendChild(months);
+
+  const grid = mk('div', 'heat-grid');
+  for (const c of cells) {
+    const cell = mk('i', `heat-cell l${c.future ? 0 : heatLevel(c.requests, max)}`);
+    if (c.future) cell.classList.add('heat-future');
+    if (c.isToday) cell.classList.add('heat-today');
+    if (!c.future) {
+      const md = c.key.slice(5).replace('-', '/');
+      // 有请求但 token 记为 0 的日子是真实存在的（早期未采集、或全是失败请求），
+      // 说成"无用量"是在编数据——只要有请求就照实报请求数。
+      // 请求数排在前面：格子的深浅就是按它算的，悬停应当先解释眼睛看到的东西
+      if (c.requests > 0 && c.tokens > 0) {
+        const share = `· 缓存 ${Math.round((c.cache / c.tokens) * 100)}%`;
+        cell.title = `${md} · ${fmtNum(c.requests)} 请求 · ${fmtCompact(c.tokens)} tokens ${share}`;
+      } else if (c.requests > 0) {
+        cell.title = `${md} · ${fmtNum(c.requests)} 请求 · 无 token 记录`;
+      } else {
+        cell.title = `${md} · 无用量`;
+      }
+    }
+    grid.appendChild(cell);
+  }
+  container.appendChild(grid);
+
+  const legend = mk('div', 'heat-legend');
+  legend.appendChild(mk('span', null, '少'));
+  for (let l = 0; l <= HEAT_LEVELS; l++) legend.appendChild(mk('i', `heat-cell l${l}`));
+  legend.appendChild(mk('span', null, '多'));
+  container.appendChild(legend);
+
+  // 一行汇总。既填掉背面比正面矮出来的那块空白，也回答热力图本身答不上的问题：
+  // 总量是多少、最猛的一天是哪天（格子只给相对深浅，读不出绝对值）。
+  const past = cells.filter((c) => !c.future);
+  const total = past.reduce((s, c) => s + c.tokens, 0);
+  const reqs = past.reduce((s, c) => s + c.requests, 0);
+  // 峰值按请求数取，和着色保持一致：否则最亮的格子和写出来的"峰值"会是两天
+  const busiest = past.reduce((a, b) => (b.requests > a.requests ? b : a), past[0]);
+  const sum = mk('div', 'heat-sum');
+  sum.appendChild(mk('span', null, `${past.length} 天 · ${fmtNum(reqs)} 请求 · ${fmtCompact(total)} tokens`));
+  if (busiest && busiest.requests > 0) {
+    const peak = mk('span', 'heat-peak', `峰值 ${busiest.key.slice(5).replace('-', '/')} · ${fmtNum(busiest.requests)} 请求`);
+    sum.appendChild(peak);
+  }
+  container.appendChild(sum);
+
+  // last 取"今天"而不是网格末尾：网格为了让星期对齐会补到本周六，
+  // 在标题上写一个还没到的日期会让人以为数据来自未来。
+  const lastPast = past.length ? past[past.length - 1].key : cells[0].key;
+  return { first: cells[0].key, last: lastPast, max, total, requests: reqs };
+}
+
+/**
+ * 画背面：热力图 + 头部的日期范围。app.js 拿到接口数据后调它，
+ * preview.mjs 通过 fixture 里的 history 字段间接调它。
+ */
+export function paintHistory(doc, days, opts = {}) {
+  const box = doc.getElementById('history');
+  const meta = renderHistory(box, days, { ...opts, doc });
+  const range = doc.getElementById('hist-range');
+  if (range) {
+    range.textContent = meta ? `${meta.first.slice(5)} – ${meta.last.slice(5)}` : '';
+  }
+}
+
 function renderSpark(container, hourly, nowHour, axisEl) {
   container.textContent = '';
   const arr = hourly && hourly.length === 24 ? hourly : new Array(24).fill(0);
@@ -587,6 +758,11 @@ export function render(d, opts = {}) {
 
   renderBreakdown(q('breakdown'), d.today);
   renderSpark(q('spark'), d.hourly_tokens, nowHour, q('spark-axis'));
+
+  // 历史热力图走独立接口（见 app.js 的懒加载），正常不会出现在 /api/tray 的
+  // 响应里。这个钩子只为让 preview.mjs 往 fixture 里塞个 history 就能截到背面
+  // ——CSS 改动必须真的看一眼（见 desktop/README.md）。
+  if (d.history) paintHistory(doc, d.history, opts);
   // today.date 是后端按客户端时区算出的日历天，用来判断重置时间是否就在今天
   renderAccounts(q('accounts'), d.accounts, d.today?.date);
   renderKeys(q('keys'), d.today?.by_key);

@@ -71,11 +71,81 @@ type trayResponse struct {
 	BackendsTotal  int    `json:"backends_total"`
 }
 
-func (h *AdminHandler) Tray(c *gin.Context) {
+// trayTZ reads the viewer's UTC offset in minutes, clamped to the real-world
+// range so a junk value can't shift calendar-day boundaries somewhere absurd.
+func trayTZ(c *gin.Context) int {
 	tzMinutes, _ := strconv.Atoi(c.DefaultQuery("tz", "0"))
 	if tzMinutes < -720 || tzMinutes > 840 {
 		tzMinutes = 0
 	}
+	return tzMinutes
+}
+
+// trayHistoryDay is one calendar day of the widget's activity heatmap. Field
+// names are one letter because the response carries a few hundred of these and
+// the widget is the only consumer: date, tokens, requests, cache.
+type trayHistoryDay struct {
+	Date     string `json:"d"`
+	Tokens   int    `json:"t"`
+	Requests int    `json:"r"`
+	Cache    int    `json:"c"`
+}
+
+const (
+	trayHistoryDefaultDays = 182
+	trayHistoryMinDays     = 7
+	trayHistoryMaxDays     = 400
+)
+
+// TrayHistory serves the daily series behind the widget's history heatmap.
+//
+// Deliberately a separate endpoint rather than another field on /api/tray: this
+// is ~8KB and the widget polls /api/tray every 60s, so folding it in would ship
+// half a megabyte an hour for a card face that is rarely flipped to. The widget
+// fetches this once, on demand.
+//
+// Days with no traffic are omitted; the client fills the calendar grid. That
+// keeps a quiet month from costing anything.
+func (h *AdminHandler) TrayHistory(c *gin.Context) {
+	tzMinutes := trayTZ(c)
+
+	days := trayHistoryDefaultDays
+	if v, err := strconv.Atoi(c.Query("days")); err == nil {
+		days = v
+	}
+	if days < trayHistoryMinDays {
+		days = trayHistoryMinDays
+	}
+	if days > trayHistoryMaxDays {
+		days = trayHistoryMaxDays
+	}
+
+	// One query, already bucketed by the viewer's calendar day — the same helper
+	// the dashboard's contribution graph uses. Calling DayUsage in a loop would
+	// be one query per day.
+	buckets, err := h.statsDB.StatsByBucket(days, tzMinutes, "day", "", "")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read history"})
+		return
+	}
+
+	// Non-nil so an empty database serialises as [] rather than null, which the
+	// widget would have to special-case.
+	out := make([]trayHistoryDay, 0, len(buckets))
+	for _, b := range buckets {
+		out = append(out, trayHistoryDay{
+			Date:     b.Bucket,
+			Tokens:   b.TotalTokens,
+			Requests: b.RequestCount,
+			Cache:    b.CacheReadTokens + b.CacheWriteTokens,
+		})
+	}
+
+	c.JSON(http.StatusOK, gin.H{"days": out, "range_days": days})
+}
+
+func (h *AdminHandler) Tray(c *gin.Context) {
+	tzMinutes := trayTZ(c)
 
 	now := time.Now()
 	resp := trayResponse{
