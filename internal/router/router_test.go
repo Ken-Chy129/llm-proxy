@@ -74,21 +74,33 @@ func TestAllModelsKeepsPausedBackends(t *testing.T) {
 	}
 }
 
-func TestModelListsAreSorted(t *testing.T) {
-	// Map iteration is randomised, so an unsorted list would reorder itself
-	// between calls and make /v1/models churn for no reason.
+// Every model list must be deterministic and sorted. Map iteration is
+// randomised, so an unsorted list reorders itself between identical calls: that
+// is what made /v1/models churn, and what made the dashboard's model chips
+// visibly shuffle every time the tab regained focus and re-fetched /api/status.
+func TestModelListsAreSortedAndStable(t *testing.T) {
 	r := newTestRouter()
-	first := r.UsableModels()
-	for i := 0; i < 20; i++ {
-		if got := r.UsableModels(); !reflect.DeepEqual(got, first) {
-			t.Fatalf("UsableModels() returned %v then %v — not deterministic", first, got)
+	lists := map[string]func() []string{
+		"UsableModels":            r.UsableModels,
+		"AllModels":               r.AllModels,
+		"ModelsByBackend(claude)": func() []string { return r.ModelsByBackend("claude") },
+		"ModelsByBackend(codex)":  func() []string { return r.ModelsByBackend("codex") },
+	}
+	for name, fn := range lists {
+		first := fn()
+		if len(first) == 0 {
+			t.Fatalf("%s returned nothing; fixture is wrong", name)
 		}
-	}
-	if !sortedAscending(first) {
-		t.Errorf("UsableModels() = %v, want ascending order", first)
-	}
-	if !sortedAscending(r.AllModels()) {
-		t.Errorf("AllModels() = %v, want ascending order", r.AllModels())
+		// 30 calls is comfortably enough for Go's randomised map iteration to
+		// produce a different order at least once if nothing sorts it.
+		for i := 0; i < 30; i++ {
+			if got := fn(); !reflect.DeepEqual(got, first) {
+				t.Fatalf("%s returned %v then %v — not deterministic", name, first, got)
+			}
+		}
+		if !sortedAscending(first) {
+			t.Errorf("%s = %v, want ascending order", name, first)
+		}
 	}
 }
 
