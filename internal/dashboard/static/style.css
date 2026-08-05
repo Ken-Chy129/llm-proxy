@@ -113,6 +113,8 @@ body::after{
 
 /* ---------- Backend grid ---------- */
 .backends{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:14px;margin-bottom:26px;}
+.group-head{font-family:var(--display);font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-1);margin:0 0 12px;}
+.group-head::before{content:'// ';color:var(--accent-dim);}
 .backend-card{position:relative;background:linear-gradient(180deg,var(--bg-1),var(--bg-0));border:1px solid var(--border);padding:18px;transition:border-color .18s,box-shadow .18s,transform .18s;}
 .backend-card::before{content:'';position:absolute;top:7px;right:7px;width:11px;height:11px;border-top:1px solid var(--border-hover);border-right:1px solid var(--border-hover);pointer-events:none;}
 .backend-card:hover{border-color:var(--border-hover);box-shadow:0 0 0 1px rgba(var(--accent-rgb),0.06),0 14px 40px -22px rgba(0,0,0,0.9);transform:translateY(-1px);}
@@ -497,12 +499,12 @@ h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:1px;}
 @keyframes bootIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 #tab-backends .backend-card,.panel,.chat-panel,.image-panel{animation:bootIn .5s cubic-bezier(.2,.8,.2,1) both;}
 /* after the first render (e.g. focus re-fetch) skip the entrance animation so cards don't flash */
-#backends.no-anim .backend-card{animation:none;}
-#backends .backend-card:nth-child(1){animation-delay:.04s}
-#backends .backend-card:nth-child(2){animation-delay:.10s}
-#backends .backend-card:nth-child(3){animation-delay:.16s}
-#backends .backend-card:nth-child(4){animation-delay:.22s}
-#backends .backend-card:nth-child(n+5){animation-delay:.28s}
+.backends.no-anim .backend-card{animation:none;}
+.backends .backend-card:nth-child(1){animation-delay:.04s}
+.backends .backend-card:nth-child(2){animation-delay:.10s}
+.backends .backend-card:nth-child(3){animation-delay:.16s}
+.backends .backend-card:nth-child(4){animation-delay:.22s}
+.backends .backend-card:nth-child(n+5){animation-delay:.28s}
 
 /* ---------- Scrollbar + selection ---------- */
 ::selection{background:rgba(var(--accent-rgb),0.3);color:#fff;}

@@ -228,12 +228,13 @@ async function loadStatus() {
     costEl.title = COST_HINT;
   }
 
-  const el = document.getElementById('backends');
+  const oauthEl = document.getElementById('backends-oauth');
+  const apiEl = document.getElementById('backends-api');
   // Entrance animation plays once; later refreshes (e.g. on window focus) skip
   // it so the cards don't visibly flash/re-fade on every re-render.
-  if (statusBooted) el.classList.add('no-anim');
+  if (statusBooted) { oauthEl.classList.add('no-anim'); apiEl.classList.add('no-anim'); }
   statusBooted = true;
-  el.innerHTML = d.backends.map(b => {
+  const backendCard = b => {
     // A manually paused backend reads "Paused", not "Offline" (which means
     // unconfigured/unreachable).
     const bc = b.disabled ? 'badge-inactive' : b.status === 'active' ? 'badge-active' : b.status === 'expired' ? 'badge-expired' : 'badge-inactive';
@@ -282,17 +283,25 @@ async function loadStatus() {
       + `<div class="backend-info">${escapeHTML(b.info || '')}</div>`
       + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join('')}</div>`
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
-  }).join('');
+  };
+  // OAuth/credential backends (account-rotated) vs API-key backends group into
+  // two labelled sections; the API group hides itself when nothing lives there.
+  const OAUTH_BACKENDS = ['claude', 'codex', 'vertex'];
+  const oauthList = d.backends.filter(b => OAUTH_BACKENDS.includes(b.name));
+  const apiList = d.backends.filter(b => !OAUTH_BACKENDS.includes(b.name));
+  oauthEl.innerHTML = oauthList.map(backendCard).join('');
+  apiEl.innerHTML = apiList.map(backendCard).join('');
+  document.getElementById('api-group').style.display = apiList.length ? '' : 'none';
 
   // Render per-account quota cards
   let allQuotas = [];
   d.backends.forEach(b => {
     if (b.quotas) allQuotas = allQuotas.concat(b.quotas.map(q => ({...q, provider: b.name})));
   });
-  const qSection = document.getElementById('quota-section');
   const qGrid = document.getElementById('quota-grid');
-  if (allQuotas.length) {
-    qSection.style.display = '';
+  const qEmpty = document.getElementById('quota-empty');
+  qEmpty.style.display = allQuotas.length ? 'none' : '';
+  {
     qGrid.innerHTML = allQuotas.map(q => {
       const planCls = q.plan_type?.toLowerCase().includes('pro') ? 'plan-pro' : q.plan_type?.toLowerCase().includes('plus') ? 'plan-plus' : 'plan-team';
       const planLabel = q.plan_type || 'Unknown';
@@ -315,8 +324,6 @@ async function loadStatus() {
       const providerLabel = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
       return `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${providerLabel}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`;
     }).join('');
-  } else {
-    qSection.style.display = 'none';
   }
 
   const sel = document.getElementById('chat-model');

@@ -39,6 +39,7 @@
 
   <div class="tabs">
     <div class="tab active" onclick="switchTab('backends',this)">Backends</div>
+    <div class="tab" onclick="switchTab('quota',this)">Quota</div>
     <div class="tab" onclick="switchTab('chat',this)">Chat</div>
     <div class="tab" onclick="switchTab('image',this)">Image</div>
     <div class="tab" onclick="switchTab('logs',this)">Logs</div>
@@ -54,13 +55,23 @@
       <span><i class="dot" style="background:var(--red)"></i>Rate-limited</span>
       <span><i class="dot dot-gray"></i>Paused</span>
     </div>
-    <div class="backends" id="backends"></div>
-    <div id="quota-section" class="quota-section" style="display:none;margin-top:20px">
+    <h3 class="group-head">OAuth Accounts</h3>
+    <div class="backends" id="backends-oauth"></div>
+    <div id="api-group" style="display:none">
+      <h3 class="group-head">API Backends</h3>
+      <div class="backends" id="backends-api"></div>
+    </div>
+  </div>
+
+  <!-- Quota Tab -->
+  <div id="tab-quota" class="hidden">
+    <div class="quota-section">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <h3 style="margin:0">OAuth Quota</h3>
+        <h3 style="margin:0">Account Quota</h3>
         <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
       </div>
       <div id="quota-grid" class="quota-grid"></div>
+      <div id="quota-empty" class="text-muted" style="display:none;font-size:13px;padding:8px 0">No OAuth accounts yet — add one on the Backends tab to see its usage here.</div>
     </div>
   </div>
 
