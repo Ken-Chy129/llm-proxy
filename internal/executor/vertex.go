@@ -157,7 +157,10 @@ func (e *VertexExecutor) resolveModel(name string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, m := range e.cfg.Models {
-		if m.Name == name {
+		// An empty Model means "no rename" — the entry exists to publish the
+		// name, not to point it somewhere else. Returning it verbatim would send
+		// an empty model id upstream.
+		if m.Name == name && m.Model != "" {
 			return m.Model
 		}
 	}

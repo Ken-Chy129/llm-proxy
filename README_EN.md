@@ -247,6 +247,8 @@ Visit `http://your-domain:9090/` and login with admin credentials.
 
 **Stats** — Time-series trend (toggle requests / tokens / cost / errors, timezone-aware), with a breakdown by model / key / backend / account below.
 
+**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Only Vertex and Kimi resolve names at all, so the other two backends have no slot. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
+
 **Cost accounting** — every request is priced as it is recorded, from a built-in table of published list rates (Anthropic / OpenAI / Moonshot), with input, cache read, cache write and output billed separately. The figure is *list API price*: Claude Code and Codex subscription traffic is not billed per request, so it answers "what would these tokens have cost on the pay-per-token API".
 
 **Editing prices** — the dashboard's **Config → Models** page shows each model's rate (input / output per 1M tokens) beside it; click the figure to expand the four buckets (input / output / cache read / cache write). Saving writes `pricing.models` to `config.yaml` and takes effect immediately — and the moment a price appears, that model's accumulated history is priced too. An amber `set price` means the model has no rate, so its tokens are missing from every cost total.

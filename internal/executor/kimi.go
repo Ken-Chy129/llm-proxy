@@ -120,7 +120,8 @@ func (e *KimiExecutor) resolveModel(alias string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	for _, model := range e.models {
-		if model.Name == alias {
+		// Empty Model means "no rename"; see VertexExecutor.resolveModel.
+		if model.Name == alias && model.Model != "" {
 			return model.Model
 		}
 	}

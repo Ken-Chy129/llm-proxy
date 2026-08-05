@@ -20,12 +20,12 @@ vertex:
   project_id: "your-gcp-project-id"
   region: "us-east5"
   models:
+    # `model:` is only needed when the name clients call differs from the id the
+    # upstream knows. Omit it and the name is sent through as-is.
     - name: "claude-sonnet-4-6"
-      model: "claude-sonnet-4-6"
     - name: "claude-opus-4-6"
-      model: "claude-opus-4-6"
     - name: "claude-haiku-4-5"
-      model: "claude-haiku-4-5-20251001"
+      model: "claude-haiku-4-5-20251001"   # upstream wants the dated snapshot
 
 claude_oauth:
   enabled: true
@@ -53,11 +53,9 @@ kimi:
   api_format: "anthropic"
   models:
     - name: "kimi-k3"
-      model: "k3"
+      model: "k3"                          # upstream only knows "k3"
     - name: "kimi-for-coding"
-      model: "kimi-for-coding"
     - name: "kimi-for-coding-highspeed"
-      model: "kimi-for-coding-highspeed"
 
 # Cost accounting. Every request is priced at write time from a built-in table
 # of published list rates (Anthropic / OpenAI / Moonshot) and shown on the

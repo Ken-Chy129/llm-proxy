@@ -370,12 +370,20 @@ rect.cal-future{fill:transparent;}
 .mdl-add{flex:0 0 auto;font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--accent);background:none;border:1px solid var(--border-hover);border-radius:2px;padding:4px 10px;cursor:pointer;transition:all .14s;}
 .mdl-add:hover{border-color:var(--accent);background:var(--accent-soft);}
 .mdl-empty{font-size:11px;color:var(--text-2);font-style:italic;padding:6px 2px;}
-.mdl-row{display:grid;grid-template-columns:minmax(0,1fr) 14px minmax(0,1fr) 128px 24px;align-items:center;gap:8px;padding:3px 0;}
+.mdl-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,240px) 128px 24px;align-items:center;gap:8px;padding:3px 0;}
 .mdl-row input{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:6px 10px;font-size:12.5px;font-family:var(--mono);}
 .mdl-row input:focus{outline:none;border-color:var(--accent);}
 .mdl-row input::placeholder{color:var(--text-2);}
-.mdl-arrow{text-align:center;color:var(--accent-dim);font-family:var(--mono);font-size:12px;}
-.mdl-row-plain .mdl-name{grid-column:1/span 3;}
+.mdl-row-plain .mdl-name{grid-column:1/span 2;}
+/* The rename slot is a ghost until it holds something or you reach for it: on a
+   normal row there is nothing to rename, and an always-lit empty field reads as
+   a required one. Reserving its width regardless keeps the price column aligned
+   down the whole panel. */
+.mdl-map{display:flex;align-items:center;gap:6px;min-width:0;opacity:.22;transition:opacity .14s;}
+.mdl-row:hover .mdl-map,.mdl-map:focus-within,.mdl-map.has-map{opacity:1;}
+.mdl-map-mark{flex:0 0 auto;color:var(--accent-dim);font-family:var(--mono);font-size:12px;cursor:help;}
+.mdl-map:not(.has-map) .mdl-upstream{border-color:transparent;background:transparent;}
+.mdl-map:not(.has-map):focus-within .mdl-upstream{border-color:var(--accent);background:var(--bg-0);}
 /* Right-aligned + tabular so the dollar figures line up down the column. */
 .mdl-price{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;text-align:right;color:var(--text-1);background:none;border:1px solid transparent;border-radius:2px;padding:5px 8px;cursor:pointer;transition:all .14s;}
 .mdl-price:hover{border-color:var(--border-hover);color:var(--text-0);}
@@ -394,10 +402,21 @@ rect.cal-future{fill:transparent;}
 .mdl-edit-hint{flex:1;font-size:10.5px;color:var(--text-2);}
 .mdl-edit-apply{border-color:var(--accent-dim)!important;color:var(--accent)!important;}
 
-.cfg-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-top:18px;}
-.cfg-status{font-size:12px;font-family:var(--mono);}
-.cfg-status.ok{color:var(--accent);}
-.cfg-status.err{color:var(--red);}
+/* Save lives in each panel's header, next to what it saves. One page-level
+   button could not say which half of the page it was about to write. */
+.cfg-save{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-1);background:none;border:1px solid var(--border-hover);border-radius:2px;padding:5px 14px;cursor:pointer;transition:all .14s;}
+.cfg-save:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);}
+.cfg-save:disabled{opacity:.5;cursor:default;}
+/* Unsaved edits light the button up, so "did that register?" needs no click. */
+.cfg-save.is-dirty{color:#0c110a;background:var(--accent);border-color:var(--accent);box-shadow:0 0 16px -6px rgba(var(--accent-rgb),0.8);}
+.cfg-save.is-dirty:hover{background:#b6f04f;color:#0c110a;}
+
+/* ---------- Toasts ---------- */
+.toast-host{position:fixed;right:20px;bottom:20px;z-index:60;display:flex;flex-direction:column;gap:8px;pointer-events:none;}
+.toast{pointer-events:auto;cursor:pointer;max-width:340px;background:linear-gradient(180deg,var(--bg-2),var(--bg-1));border:1px solid var(--border-hover);border-left:2px solid var(--text-2);border-radius:2px;padding:10px 14px;font-family:var(--mono);font-size:12px;line-height:1.45;color:var(--text-0);box-shadow:0 18px 40px -18px #000;opacity:0;transform:translateY(6px);transition:opacity .2s,transform .2s;}
+.toast.is-in{opacity:1;transform:none;}
+.toast-ok{border-left-color:var(--accent);}
+.toast-err{border-left-color:var(--red);color:var(--red);}
 
 /* ---------- Quota cards ---------- */
 .quota-section h3{font-family:var(--display);font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-1);}
@@ -497,14 +516,12 @@ h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:1px;}
   /* Below this width the five-column model row squeezes the two name inputs to
      nothing. Stack the name over the upstream and let the price sit beside the
      pair, since price + delete are the narrow, fixed parts. */
-  .mdl-row{grid-template-columns:minmax(0,1fr) 110px 24px;grid-template-areas:'name price del' 'up price del';gap:4px 8px;padding:6px 0;}
-  /* Stacked, the two inputs read as two separate models. Indent the upstream
-     one and tint its edge so it visibly hangs off the row above. */
-  .mdl-upstream{margin-left:13px;border-left-color:var(--accent-dim);}
+  .mdl-row{grid-template-columns:minmax(0,1fr) 110px 24px;grid-template-areas:'name price del' 'map price del';gap:4px 8px;padding:6px 0;}
   .mdl-name{grid-area:name;}
+  /* Stacked, the rename slot has to look subordinate to the name above it or
+     the pair reads as two separate models. */
+  .mdl-map{grid-area:map;padding-left:4px;}
   .mdl-row-plain .mdl-name{grid-column:auto;grid-row:1/span 2;}
-  .mdl-upstream{grid-area:up;}
-  .mdl-arrow{display:none;}
   .mdl-price{grid-area:price;}
   .mdl-del{grid-area:del;}
   .mdl-edit-fields{grid-template-columns:repeat(2,minmax(0,1fr));}
