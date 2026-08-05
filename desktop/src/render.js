@@ -458,20 +458,7 @@ function renderBreakdown(container, day) {
     }
     container.appendChild(item);
   }
-
-  // 花费跟在四个 token 桶后面：它是从同样这些数算出来的，放同一行才能一眼
-  // 对上"这些 token 值多少钱"。cost_known_requests === 0 表示今天没有任何一条
-  // 请求能定价（比如全是订阅模型且未在 pricing 里声明），显示 "—"。
-  const priced = day.cost_known_requests !== 0;
-  const cost = el('span', 'bd-item bd-cost');
-  cost.appendChild(document.createTextNode('花费 '));
-  cost.appendChild(el('b', null, priced ? fmtMoney(day.cost_usd || 0) : '—'));
-  const unpriced = Math.max(0, (day.request_count || 0) - (day.cost_known_requests || 0));
-  cost.title = priced
-    ? '按量计费 API 的等价价格；OAuth 订阅流量并不按请求扣费' +
-      (unpriced ? `（不含 ${unpriced} 条未定价请求）` : '')
-    : '这些模型没有定价，在 config.yaml 的 pricing.models 里补';
-  container.appendChild(cost);
+  // 花费不在这行了——挪到了上面 hero 的"请求 · 花费"，跟 tokens 并列更显眼。
 }
 
 // ---------- 历史用量热力图（卡片背面） ----------
@@ -874,6 +861,20 @@ export function render(d, opts = {}) {
   // 再印一遍 2026-08-04 只是占掉一行宽度。
   q('today-tokens').textContent = fmtCompact(d.today?.total_tokens ?? 0);
   q('today-reqs').textContent = fmtNum(d.today?.request_count ?? 0);
+
+  // 今日花费放在 hero 里跟 tokens/请求 并列，和网页顶栏的 COST 读数对齐——挂件
+  // 之前只在下面 token 明细行末尾藏了个小小的"花费"，一眼扫不到。
+  // cost_known_requests === 0：今天没有一条能定价的请求，显示 "—" 而不是 $0。
+  const costEl = q('today-cost');
+  if (costEl) {
+    const priced = (d.today?.cost_known_requests ?? 0) !== 0;
+    costEl.textContent = priced ? fmtMoney(d.today?.cost_usd || 0) : '—';
+    const unpriced = Math.max(0, (d.today?.request_count || 0) - (d.today?.cost_known_requests || 0));
+    costEl.title = priced
+      ? '按量计费 API 的等价价格；OAuth 订阅流量并不按请求扣费' +
+        (unpriced ? `（不含 ${unpriced} 条未定价请求）` : '')
+      : '这些模型没有定价，在 config.yaml 的 pricing.models 里补';
+  }
 
   const dy = pctDelta(d.today?.total_tokens ?? 0, d.yesterday?.total_tokens ?? 0);
   const elY = q('delta-yday');
