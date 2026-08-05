@@ -34,8 +34,8 @@
   </header>
 
   <div class="tabs">
-    <div class="tab active" onclick="switchTab('backends',this)">Backends</div>
-    <div class="tab" onclick="switchTab('quota',this)">Quota</div>
+    <div class="tab active" onclick="switchTab('quota',this)">Quota</div>
+    <div class="tab" onclick="switchTab('backends',this)">Backends</div>
     <div class="tab" onclick="switchTab('chat',this)">Chat</div>
     <div class="tab" onclick="switchTab('image',this)">Image</div>
     <div class="tab" onclick="switchTab('logs',this)">Logs</div>
@@ -45,7 +45,7 @@
   </div>
 
   <!-- Backends Tab -->
-  <div id="tab-backends">
+  <div id="tab-backends" class="hidden">
     <div class="backend-legend">
       <span><i class="dot dot-green"></i>Active</span>
       <span><i class="dot" style="background:var(--red)"></i>Rate-limited</span>
@@ -60,7 +60,7 @@
   </div>
 
   <!-- Quota Tab -->
-  <div id="tab-quota" class="hidden">
+  <div id="tab-quota">
     <div class="quota-section">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
         <h3 style="margin:0">Account Quota</h3>
@@ -157,10 +157,10 @@
       <div class="log-table-wrap">
         <table class="log-table">
           <colgroup>
-            <col style="width:18%"><col style="width:25%"><col style="width:10%"><col style="width:23%">
-            <col style="width:9%"><col style="width:8%"><col style="width:7%">
+            <col style="width:17%"><col style="width:17%"><col style="width:9%"><col style="width:22%">
+            <col style="width:9%"><col style="width:8%"><col style="width:7%"><col style="width:6%">
           </colgroup>
-          <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Account</th><th>Latency</th><th>Tokens</th><th>Status</th></tr></thead>
+          <thead><tr><th>Time</th><th>Model</th><th>Backend</th><th>Account</th><th>Latency</th><th>Tokens</th><th>Cache</th><th>Status</th></tr></thead>
           <tbody id="log-body"></tbody>
         </table>
       </div>
