@@ -27,6 +27,10 @@
         <span class="readout-value" id="total-tokens">-</span>
       </div>
       <div class="readout">
+        <span class="readout-label">COST</span>
+        <span class="readout-value" id="total-cost">-</span>
+      </div>
+      <div class="readout">
         <span class="readout-label">SYSTEM</span>
         <span class="readout-value sys"><span class="dot dot-green"></span>ONLINE</span>
       </div>
@@ -174,6 +178,7 @@
       <div class="seg" id="metric-seg">
         <button class="seg-btn active" onclick="setMetric('requests',this)">Requests</button>
         <button class="seg-btn" onclick="setMetric('tokens',this)">Tokens</button>
+        <button class="seg-btn" onclick="setMetric('cost',this)">Cost</button>
         <button class="seg-btn" onclick="setMetric('errors',this)">Errors</button>
       </div>
     </div>
@@ -231,7 +236,7 @@
         <span>API Keys</span>
         <button class="btn-add" style="margin-top:0" onclick="openCreateKey()">+ Create Key</button>
       </div>
-      <table><thead><tr><th>Name</th><th>Key</th><th>Requests</th><th>Requests Today</th><th>Tokens Today</th><th>Total Tokens</th><th>Daily Limit</th><th>Actions</th></tr></thead>
+      <table><thead><tr><th>Name</th><th>Key</th><th>Requests</th><th>Requests Today</th><th>Tokens Today</th><th>Total Tokens</th><th>Cost Today</th><th>Total Cost</th><th>Daily Limit</th><th>Actions</th></tr></thead>
       <tbody id="keys-body"></tbody></table>
     </div>
   </div>
@@ -239,30 +244,13 @@
   <!-- Config Tab -->
   <div id="tab-config" class="hidden">
     <div class="panel">
-      <div class="panel-header"><span>Models</span></div>
+      <div class="panel-header">
+        <span>Models</span>
+        <!-- The price column's unit belongs in the header, not repeated on 20 rows -->
+        <span class="mdl-legend">price · USD per 1M tokens · in / out</span>
+      </div>
       <div class="cfg-body">
-        <div class="cfg-field">
-          <label>Claude OAuth models <span class="cfg-badge cfg-live">● live</span></label>
-          <p class="cfg-hint">Models exposed via Claude OAuth. Type a name and press Enter to add.</p>
-          <div id="cfg-claude-models" class="cfg-chips"></div>
-        </div>
-        <div class="cfg-field">
-          <label>Vertex models <span class="cfg-badge cfg-live">● live</span></label>
-          <p class="cfg-hint">Alias clients call → underlying Vertex model. Applied immediately on save.</p>
-          <div id="cfg-vertex-rows" class="cfg-rows"></div>
-          <button type="button" class="btn-add" onclick="addVertexRow()">+ Add alias</button>
-        </div>
-        <div class="cfg-field">
-          <label>Kimi models <span class="cfg-badge cfg-live">● live</span></label>
-          <p class="cfg-hint">Alias clients call → Kimi upstream model. The API key stays in the configured environment variable.</p>
-          <div id="cfg-kimi-rows" class="cfg-rows"></div>
-          <button type="button" class="btn-add" onclick="addKimiRow()">+ Add alias</button>
-        </div>
-        <div class="cfg-field">
-          <label>Codex models <span class="cfg-badge cfg-restart">⟳ restart</span></label>
-          <p class="cfg-hint">Fallback list only — Codex auto-syncs its models from the API at startup, which overrides this.</p>
-          <div id="cfg-codex-models" class="cfg-chips"></div>
-        </div>
+        <div id="cfg-models" class="mdl-groups"></div>
       </div>
     </div>
 
