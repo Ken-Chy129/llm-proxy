@@ -349,21 +349,51 @@ rect.cal-future{fill:transparent;}
 .cfg-field label{display:flex;align-items:center;gap:8px;font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-2);margin-bottom:6px;}
 .cfg-field input{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:8px 11px;font-size:13px;font-family:var(--mono);}
 .cfg-field input:focus{outline:none;border-color:var(--accent);}
-.cfg-chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;background:var(--bg-0);border:1px solid var(--border);border-radius:2px;padding:8px;min-height:40px;cursor:text;}
-.cfg-chips:focus-within{border-color:var(--accent);}
-.cfg-chip{display:inline-flex;align-items:center;gap:7px;background:var(--bg-3);border:1px solid var(--border-hover);border-radius:2px;padding:4px 5px 4px 9px;font-family:var(--mono);font-size:12px;color:var(--text-0);}
-.cfg-chip-x{background:none;border:none;color:var(--text-2);cursor:pointer;font-size:10px;padding:0 2px;line-height:1;transition:color .12s;}
-.cfg-chip-x:hover{color:var(--red);}
-.cfg-chip-input{flex:1;min-width:130px;background:none;border:none;color:var(--text-0);font-family:var(--mono);font-size:13px;padding:4px 2px;}
-.cfg-chip-input:focus{outline:none;}
 .cfg-hint{font-size:11px;color:var(--text-2);margin:0 0 7px;line-height:1.5;}
-.cfg-rows{display:flex;flex-direction:column;gap:8px;margin-bottom:4px;}
 .cfg-row{display:flex;align-items:center;gap:8px;}
 .cfg-row input{flex:1;}
-.cfg-arrow{color:var(--accent-dim);font-family:var(--mono);}
 .cfg-badge{font-family:var(--display);font-size:9px;font-weight:600;letter-spacing:.5px;padding:2px 6px;border-radius:2px;text-transform:uppercase;}
 .cfg-live{color:var(--accent);background:var(--accent-soft);}
 .cfg-restart{color:var(--text-2);background:var(--bg-3);}
+
+/* ---------- Models editor ----------
+   One grid per row across all four backends, so the whole served surface reads
+   as a single list instead of four differently-shaped widgets. The price column
+   is fixed-width: it is the only column you scan vertically. */
+.mdl-legend{font-family:var(--mono)!important;font-size:10px!important;letter-spacing:0!important;text-transform:none!important;color:var(--text-2)!important;font-weight:400!important;}
+.mdl-legend::before{content:''!important;}
+.mdl-groups{display:flex;flex-direction:column;gap:20px;}
+.mdl-group-head{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
+.mdl-group-name{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-1);}
+/* Pushes the add button to the right edge and lets the hint truncate first. */
+.mdl-group-hint{flex:1;min-width:0;font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mdl-add{flex:0 0 auto;font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--accent);background:none;border:1px solid var(--border-hover);border-radius:2px;padding:4px 10px;cursor:pointer;transition:all .14s;}
+.mdl-add:hover{border-color:var(--accent);background:var(--accent-soft);}
+.mdl-empty{font-size:11px;color:var(--text-2);font-style:italic;padding:6px 2px;}
+.mdl-row{display:grid;grid-template-columns:minmax(0,1fr) 14px minmax(0,1fr) 128px 24px;align-items:center;gap:8px;padding:3px 0;}
+.mdl-row input{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:6px 10px;font-size:12.5px;font-family:var(--mono);}
+.mdl-row input:focus{outline:none;border-color:var(--accent);}
+.mdl-row input::placeholder{color:var(--text-2);}
+.mdl-arrow{text-align:center;color:var(--accent-dim);font-family:var(--mono);font-size:12px;}
+.mdl-row-plain .mdl-name{grid-column:1/span 3;}
+/* Right-aligned + tabular so the dollar figures line up down the column. */
+.mdl-price{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;text-align:right;color:var(--text-1);background:none;border:1px solid transparent;border-radius:2px;padding:5px 8px;cursor:pointer;transition:all .14s;}
+.mdl-price:hover{border-color:var(--border-hover);color:var(--text-0);}
+.mdl-price.is-custom{color:var(--accent);}
+.mdl-price.is-custom::after{content:' •';}
+.mdl-price.is-none{color:var(--yellow);background:var(--yellow-bg);}
+.mdl-del{background:none;border:none;color:var(--text-2);font-size:11px;cursor:pointer;padding:4px;line-height:1;transition:color .12s;}
+.mdl-del:hover{color:var(--red);}
+.mdl-edit{background:var(--bg-0);border:1px solid var(--border-hover);border-radius:2px;padding:11px 12px;margin:2px 0 6px;display:flex;flex-direction:column;gap:10px;}
+.mdl-edit-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
+.mdl-edit-field{display:flex;flex-direction:column;gap:4px;}
+.mdl-edit-field span{font-family:var(--display);font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-2);}
+.mdl-edit-field input{width:100%;background:var(--bg-1);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:6px 9px;font-size:12.5px;font-family:var(--mono);}
+.mdl-edit-field input:focus{outline:none;border-color:var(--accent);}
+.mdl-edit-actions{display:flex;align-items:center;gap:10px;}
+.mdl-edit-hint{flex:1;font-size:10.5px;color:var(--text-2);}
+.mdl-edit-apply{border-color:var(--accent-dim)!important;color:var(--accent)!important;}
+
 .cfg-actions{display:flex;align-items:center;justify-content:flex-end;gap:14px;margin-top:18px;}
 .cfg-status{font-size:12px;font-family:var(--mono);}
 .cfg-status.ok{color:var(--accent);}
@@ -464,6 +494,20 @@ h1,h2,h3{font-family:var(--display);font-weight:600;letter-spacing:1px;}
 
 /* ---------- Responsive ---------- */
 @media(max-width:768px){
+  /* Below this width the five-column model row squeezes the two name inputs to
+     nothing. Stack the name over the upstream and let the price sit beside the
+     pair, since price + delete are the narrow, fixed parts. */
+  .mdl-row{grid-template-columns:minmax(0,1fr) 110px 24px;grid-template-areas:'name price del' 'up price del';gap:4px 8px;padding:6px 0;}
+  /* Stacked, the two inputs read as two separate models. Indent the upstream
+     one and tint its edge so it visibly hangs off the row above. */
+  .mdl-upstream{margin-left:13px;border-left-color:var(--accent-dim);}
+  .mdl-name{grid-area:name;}
+  .mdl-row-plain .mdl-name{grid-column:auto;grid-row:1/span 2;}
+  .mdl-upstream{grid-area:up;}
+  .mdl-arrow{display:none;}
+  .mdl-price{grid-area:price;}
+  .mdl-del{grid-area:del;}
+  .mdl-edit-fields{grid-template-columns:repeat(2,minmax(0,1fr));}
   .backends{grid-template-columns:1fr;}
   .stats-grid{grid-template-columns:1fr;}
   .masthead{flex-direction:column;align-items:flex-start;gap:16px;}

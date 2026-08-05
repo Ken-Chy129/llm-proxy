@@ -224,6 +224,10 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .bd-item { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--fg-faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .bd-item b { color: var(--fg-dim); font-weight: 600; }
 .bd-dot { width: 6px; height: 6px; border-radius: 50%; flex: 0 0 auto; }
+/* 花费不是第五个 token 桶，是同一批 token 的另一种读法。左边一道竖线把它和
+   四个色点分开，免得被当成第五种 token。 */
+.bd-cost { padding-left: 9px; border-left: 1px solid var(--line, rgba(255,255,255,0.12)); }
+.bd-cost b { color: var(--fg); }
 
 /* 迷你柱状图：每小时一个槽位。槽位底色很淡（只是"这里有个小时"的提示），
    柱子才是数据。底色画太重会让人误读成"每小时都跑满了"。

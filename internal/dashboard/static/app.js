@@ -45,6 +45,47 @@ const TOKEN_KINDS = [
 const REASONING_KIND = { key: 'reasoning_tokens', label: 'Thinking', color: 'var(--cyan)' };
 const REASONING_HINT = 'Anthropic folds thinking tokens into output_tokens and never reports them separately';
 
+// --- cost ------------------------------------------------------------------
+// Cost is list API price: what the same tokens would have been billed at on the
+// provider's pay-per-token API. On the OAuth backends (Claude Code / Codex
+// subscriptions) nothing is actually charged per request, so the figure is
+// "what this would have cost you on the API", not money spent. Every place that
+// shows it says so on hover.
+//
+// null means *unpriced* — no price is known for that model — and is rendered
+// "—". Collapsing it to $0 would make an unpriced backend look free.
+const COST_HINT = 'list API price for these tokens · subscription (OAuth) traffic is not actually billed per request';
+
+function costOf(o) {
+  if (!o) return null;
+  if ('cost_known' in o) return o.cost_known ? (o.cost_usd || 0) : null;         // one log row
+  if ('cost_known_requests' in o) {                                             // an aggregate
+    return o.cost_known_requests > 0 ? (o.cost_usd || 0) : null;
+  }
+  return typeof o.cost_usd === 'number' ? o.cost_usd : null;
+}
+
+// unpricedCount is how many requests in an aggregate contributed no cost, so a
+// partial total can be shown as partial instead of passing for the whole bill.
+function unpricedCount(o) {
+  const reqs = o?.requests ?? o?.request_count;
+  if (typeof reqs !== 'number' || typeof o?.cost_known_requests !== 'number') return 0;
+  return Math.max(0, reqs - o.cost_known_requests);
+}
+
+// Money spans six orders of magnitude here: a Haiku call is $0.0003 and a
+// month of Opus is four figures. Fixed decimals would print "$0.00" for the
+// former, so the precision follows the magnitude.
+function fmtMoney(v) {
+  if (v === null || v === undefined) return '—';
+  const n = Math.abs(v);
+  if (n >= 1000) return '$' + v.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  if (n >= 1) return '$' + v.toFixed(2);
+  if (n >= 0.01) return '$' + v.toFixed(3);
+  if (n > 0) return '$' + v.toFixed(4);
+  return '$0';
+}
+
 // tokens normalises any object carrying the stored breakdown (a log row, a
 // bucket, a dimension row, the summary) into the shape described above.
 function tokens(o) {
@@ -64,6 +105,8 @@ function tokens(o) {
   // means no row in it ever reported a figure — that is "unknown", not "none".
   if (o?.reasoning_known_requests === 0) t.reasoning_tokens = REASONING_UNKNOWN;
   t.total = t.input_tokens + t.completion_tokens;
+  t.cost = costOf(o);
+  t.unpriced = unpricedCount(o);
   return t;
 }
 
@@ -96,6 +139,15 @@ function tokenTipHTML(t, footer) {
     row(REASONING_KIND.color, 'Thinking', unknown ? '—' : t.reasoning_tokens.toLocaleString(), thinkSub) +
     `<tr class="tip-total"><td>Total <em>input + output</em></td>` +
     `<td class="tip-num">${t.total.toLocaleString()}</td></tr>` +
+    // Cost sits below the total because it is derived from it, and carries its
+    // own caveat line when part of the traffic had no price.
+    `<tr class="tip-total"><td>Cost <em>list API price</em></td>` +
+    `<td class="tip-num">${fmtMoney(t.cost)}</td></tr>` +
+    (t.cost === null
+      ? `<tr class="tip-sub-row"><td colspan="2">no price for this model</td></tr>`
+      : t.unpriced
+        ? `<tr class="tip-sub-row"><td colspan="2">excludes ${t.unpriced.toLocaleString()} unpriced request(s)</td></tr>`
+        : '') +
     (footer ? `<tr class="tip-foot"><td colspan="2">${escapeHTML(footer)}</td></tr>` : '') +
     `</table>`;
 }
@@ -169,6 +221,12 @@ async function loadStatus() {
   const tokEl = document.getElementById('total-tokens');
   tokEl.textContent = fmtCompact(d.total_tokens || 0);
   tokEl.title = (d.total_tokens || 0).toLocaleString() + ' tokens';
+
+  const costEl = document.getElementById('total-cost');
+  if (costEl) {
+    costEl.textContent = fmtMoney(d.total_cost_usd || 0);
+    costEl.title = COST_HINT;
+  }
 
   const el = document.getElementById('backends');
   // Entrance animation plays once; later refreshes (e.g. on window focus) skip
@@ -548,6 +606,11 @@ function renderSummary() {
     // No tooltip here: the chip strip immediately below already spells out every
     // bucket exactly, so a hover repeating it would be pure duplication.
     `<span><b>${s.tokens.toLocaleString()}</b> tokens</span>` +
+    // The unpriced-request caveat rides on the tooltip rather than the strip:
+    // it is only ever true when a served model is missing from the price table,
+    // which is a config problem, not a number the reader has to weigh.
+    `<span title="${escAttr(COST_HINT + (tk.unpriced ? ` · excludes ${tk.unpriced} unpriced request(s)` : ''))}">` +
+    `<b>${fmtMoney(tk.cost)}</b> cost${tk.unpriced ? '<sup class="text-yellow">*</sup>' : ''}</span>` +
     `<span><b class="${s.errors ? 'text-red' : ''}">${errPct}%</b> errors</span>` +
     `<span><b>${Math.round(s.avg_latency_ms)}</b> ms avg</span>` +
     `<span class="sum-scope">${statsRange}${scope}</span>`;
@@ -582,8 +645,14 @@ function buildAxis(series) {
 
 // total_tokens comes from the server already summed across the four buckets, so
 // the chart can't drift from the totals strip the way a client-side add would.
-const metricVal = p => statsMetric === 'tokens' ? (p.total_tokens || 0) : statsMetric === 'errors' ? p.error_count : p.request_count;
-const metricLabel = () => statsMetric === 'tokens' ? 'Tokens' : statsMetric === 'errors' ? 'Errors' : 'Requests';
+const metricVal = p => statsMetric === 'tokens' ? (p.total_tokens || 0)
+  : statsMetric === 'cost' ? (p.cost_usd || 0)
+  : statsMetric === 'errors' ? p.error_count : p.request_count;
+const metricLabel = () => statsMetric === 'tokens' ? 'Tokens'
+  : statsMetric === 'cost' ? 'Cost' : statsMetric === 'errors' ? 'Errors' : 'Requests';
+// Axis labels, bar values and the trend tooltip all read the active metric, and
+// "$4.12" and "4.1k" need different formatting.
+const metricFmt = v => statsMetric === 'cost' ? fmtMoney(v) : fmtCompact(Math.round(v));
 const xLabel = b => statsData && statsData.granularity === 'hour' ? b.slice(11, 16) : b.slice(5);
 
 // GitHub-style contribution heatmap over ~53 weeks, colored by the active metric.
@@ -591,7 +660,7 @@ function renderCalendar() {
   if (!statsData) return;
   const map = {};
   (statsData.calendar || []).forEach(c => { map[c.bucket] = c; });
-  const valOf = c => statsMetric === 'tokens' ? (c.total_tokens || 0) : statsMetric === 'errors' ? c.error_count : c.request_count;
+  const valOf = c => metricVal(c);
   const pfx = statsMetric === 'errors' ? 'cal-e' : 'cal-l';
   document.getElementById('cal-wrap').classList.toggle('errors', statsMetric === 'errors');
 
@@ -690,7 +759,7 @@ function renderTrend() {
   [0, 0.5, 1].forEach(f => {
     const gy = padT + innerH - f * innerH;
     grid += `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" class="grid-line"/>`;
-    grid += `<text x="${padL - 8}" y="${(gy + 3).toFixed(1)}" class="axis-label" text-anchor="end">${fmtCompact(Math.round(f * max))}</text>`;
+    grid += `<text x="${padL - 8}" y="${(gy + 3).toFixed(1)}" class="axis-label" text-anchor="end">${metricFmt(f * max)}</text>`;
   });
   // x labels: ~5 evenly spaced
   let xlabels = '';
@@ -745,7 +814,7 @@ function trendHover(e) {
   guide.setAttribute('x1', cx); guide.setAttribute('x2', cx); guide.classList.remove('hidden');
   dot.setAttribute('cx', cx); dot.setAttribute('cy', cy); dot.classList.remove('hidden');
   const tip = document.getElementById('trend-tip');
-  tip.innerHTML = `<b>${fmtCompact(metricVal(p))}</b> ${statsMetric}<span class="tip-sub">${p.bucket.replace('T', ' ')} · ${p.error_count} err</span>`;
+  tip.innerHTML = `<b>${metricFmt(metricVal(p))}</b> ${statsMetric}<span class="tip-sub">${p.bucket.replace('T', ' ')} · ${p.error_count} err</span>`;
   tip.classList.remove('hidden');
   const tx = cx / vb.width * rect.width;
   tip.style.left = Math.min(rect.width - 150, Math.max(0, tx + 10)) + 'px';
@@ -770,7 +839,7 @@ function renderBreakdown() {
   const rows = (statsData['by_' + statsDim] || []).slice()
     .map(r => ({
       label: r.label,
-      val: isStatus ? r.request_count : statsMetric === 'tokens' ? r.total_tokens : statsMetric === 'errors' ? r.error_count : r.request_count,
+      val: isStatus ? r.request_count : metricVal(r),
       err: r.error_count,
       tok: showTokens ? tokens(r) : null,
     }))
@@ -812,7 +881,7 @@ function renderBreakdown() {
     <div class="bar-row${r.label === active ? ' bar-active' : ''}"${hover} onclick="filterToBar('${escAttr(r.label)}')">
       <div class="bar-label">${disp}</div>
       <div class="bar-track"><div class="bar-fill${fill ? ' bar-split' : ''}" style="width:${Math.max(2, r.val / max * 100)}%">${fill}</div></div>
-      <div class="bar-val">${fmtCompact(r.val)}</div>
+      <div class="bar-val">${isStatus ? fmtCompact(r.val) : metricFmt(r.val)}</div>
       ${tail}
     </div>`;
   }).join('');
@@ -834,98 +903,329 @@ function setCfgStatus(text, cls) {
   el.className = 'cfg-status' + (cls ? ' ' + cls : '');
 }
 
-function makeChip(text) {
-  const chip = document.createElement('span');
-  chip.className = 'cfg-chip';
-  const label = document.createElement('span');
-  label.className = 'cfg-chip-label';
-  label.textContent = text;
-  const x = document.createElement('button');
-  x.type = 'button';
-  x.className = 'cfg-chip-x';
-  x.textContent = '✕';
-  x.onclick = () => chip.remove();
-  chip.append(label, x);
-  return chip;
+// el builds an element in one call — this file creates a few hundred of them and
+// the three-line createElement/className/textContent dance drowns the structure.
+// `el` is a local name here because the surrounding file uses `el` for locals
+// elsewhere; those shadow it harmlessly.
+function el(tag, cls, text) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
 }
 
-function setupChips(container, values) {
-  container.innerHTML = '';
-  const input = document.createElement('input');
-  input.className = 'cfg-chip-input';
-  input.placeholder = 'add model…';
-  const commit = () => {
-    const v = input.value.trim();
-    if (!v) return;
-    const exists = chipValues(container).includes(v);
-    if (!exists) container.insertBefore(makeChip(v), input);
-    input.value = '';
+// --- Models editor ---------------------------------------------------------
+// One row per model, identical shape across all four backends:
+//
+//   [ alias clients call ] → [ upstream model ]   [ $3 / $15 ]   [✕]
+//
+// The four backends used to have two different editors — chips for the OAuth
+// ones (which cannot be edited, only deleted and retyped) and full-width
+// two-input rows for the mapped ones (three lines of vertical space per model).
+// They are the same thing: a name the client calls, optionally pointing at a
+// different upstream name. Rendering them the same way makes the whole set
+// scannable, and puts the price of each model where you decide whether to serve
+// it.
+//
+// OAuth backends pass the name through unchanged, so their upstream cell is a
+// muted "same" rather than an input — the column still lines up.
+const MODEL_GROUPS = [
+  {
+    id: 'claude', label: 'Claude OAuth', live: true, mapped: false,
+    hint: 'served under your Claude subscription',
+  },
+  {
+    id: 'vertex', label: 'Vertex', live: true, mapped: true,
+    hint: 'alias → underlying Vertex model',
+  },
+  {
+    id: 'kimi', label: 'Kimi', live: true, mapped: true,
+    hint: 'alias → Kimi upstream model; the API key stays in its env var',
+  },
+  {
+    id: 'codex', label: 'Codex', live: false, mapped: false,
+    hint: 'fallback list only — Codex re-syncs from the API at startup',
+  },
+];
+
+// cfgModels[group] = [{name, model}] — model is unused for unmapped groups.
+let cfgModels = { claude: [], vertex: [], kimi: [], codex: [] };
+// Effective price table from /api/pricing, plus the local override edits. Both
+// are keyed by normalised model name; overrides also keep the name as typed, so
+// saving round-trips it verbatim into config.yaml.
+let priceTable = new Map();
+let pricePrefixes = [];
+let priceOverrides = new Map();
+
+// normalizeModel and lookupPrice mirror internal/pricing (normalize + exact,
+// then longest-prefix). Duplicated deliberately: the table itself comes from the
+// server, and doing the resolution client-side is what lets a price appear for a
+// model you are still typing, before it has ever been saved or served.
+const PRICE_MIN_PREFIX = 6;
+
+function normalizeModel(m) {
+  let s = String(m || '').trim().toLowerCase();
+  const slash = s.lastIndexOf('/');
+  if (slash >= 0) s = s.slice(slash + 1);
+  if (s.startsWith('anthropic.')) s = s.slice('anthropic.'.length);
+  s = s.replace(/[-@]\d{8}$/, '');
+  if (s.endsWith('-oauth')) s = s.slice(0, -'-oauth'.length);
+  return s;
+}
+
+function lookupPrice(name) {
+  if (!name) return null;
+  if (priceTable.has(name)) return priceTable.get(name);
+  for (const k of pricePrefixes) if (name.startsWith(k)) return priceTable.get(k);
+  return null;
+}
+
+// resolvePrice answers the questions the price cell has to distinguish: is there
+// a price, is it one you set, and — since a name can match by prefix or through
+// its alias target — which table entry it actually came from.
+function resolvePrice(alias, upstream) {
+  const a = normalizeModel(alias);
+  const custom = priceOverrides.get(a);
+  if (custom) return { price: custom, source: 'custom', from: a };
+  const mine = e => priceOverrides.has(e.name) ? 'custom' : 'builtin';
+  let hit = lookupPrice(a);
+  if (hit) return { price: hit, source: mine(hit), from: hit.name };
+  const u = normalizeModel(upstream);
+  if (u && u !== a) {
+    hit = lookupPrice(u);
+    if (hit) return { price: hit, source: mine(hit), from: hit.name, viaAlias: true };
+  }
+  return null;
+}
+
+const PRICE_FIELDS = [
+  ['input', 'Input'],
+  ['output', 'Output'],
+  ['cache_read', 'Cache read'],
+  ['cache_write', 'Cache write'],
+];
+
+function priceLabel(v) {
+  if (v === null || v === undefined) return '—';
+  if (v === 0) return '$0';
+  if (v >= 1) return '$' + (Math.round(v * 100) / 100);
+  return '$' + Number(v.toFixed(4));
+}
+
+function renderModels() {
+  const host = document.getElementById('cfg-models');
+  host.innerHTML = '';
+  MODEL_GROUPS.forEach(g => host.appendChild(renderModelGroup(g)));
+}
+
+function renderModelGroup(g) {
+  const list = cfgModels[g.id] || [];
+  const wrap = el('div', 'mdl-group');
+
+  const head = el('div', 'mdl-group-head');
+  head.appendChild(el('span', 'mdl-group-name', g.label));
+  const badge = el('span', 'cfg-badge ' + (g.live ? 'cfg-live' : 'cfg-restart'),
+    g.live ? '● live' : '⟳ restart');
+  badge.title = g.live
+    ? 'applied immediately on save'
+    : 'takes effect on the next restart';
+  head.appendChild(badge);
+  head.appendChild(el('span', 'mdl-group-hint', g.hint));
+  const add = el('button', 'mdl-add', '+ add');
+  add.type = 'button';
+  add.onclick = () => { list.push({ name: '', model: '' }); renderModels(); focusModelRow(g.id, list.length - 1); };
+  head.appendChild(add);
+  wrap.appendChild(head);
+
+  if (!list.length) {
+    wrap.appendChild(el('div', 'mdl-empty', 'No models — this backend serves nothing.'));
+    return wrap;
+  }
+  list.forEach((m, i) => wrap.appendChild(renderModelRow(g, m, i, list)));
+  return wrap;
+}
+
+function renderModelRow(g, m, i, list) {
+  // Passthrough backends get no arrow and no upstream cell — the name simply
+  // spans them. Repeating "same upstream" on every row was ten lines of text
+  // saying what the group header already says once.
+  const row = el('div', 'mdl-row' + (g.mapped ? '' : ' mdl-row-plain'));
+  row.dataset.group = g.id;
+  row.dataset.index = String(i);
+
+  const name = document.createElement('input');
+  name.className = 'mdl-name';
+  name.value = m.name || '';
+  name.placeholder = 'model name';
+  name.spellcheck = false;
+  name.oninput = () => { m.name = name.value; refreshPriceCell(row, g, m); };
+  // Enter appends the next row and focuses it, so a list can be typed straight
+  // through the way the old chip input allowed.
+  name.onkeydown = e => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (i === list.length - 1) list.push({ name: '', model: '' });
+    renderModels();
+    focusModelRow(g.id, i + 1);
   };
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); commit(); }
-    else if (e.key === 'Backspace' && !input.value) {
-      const chips = container.querySelectorAll('.cfg-chip');
-      if (chips.length) chips[chips.length - 1].remove();
-    }
-  });
-  input.addEventListener('blur', commit);
-  (values || []).forEach(v => container.appendChild(makeChip(v)));
-  container.appendChild(input);
-  container.onclick = e => { if (e.target === container) input.focus(); };
-}
+  row.appendChild(name);
 
-function chipValues(container) {
-  return [...container.querySelectorAll('.cfg-chip-label')].map(s => s.textContent.trim()).filter(Boolean);
-}
+  if (g.mapped) {
+    row.appendChild(el('span', 'mdl-arrow', '→'));
+    const upstream = document.createElement('input');
+    upstream.className = 'mdl-upstream';
+    upstream.value = m.model || '';
+    upstream.placeholder = 'upstream model';
+    upstream.spellcheck = false;
+    upstream.oninput = () => { m.model = upstream.value; refreshPriceCell(row, g, m); };
+    row.appendChild(upstream);
+  }
 
-function addModelMappingRow(rowsId, nameClass, modelClass, name, model) {
-  const rows = document.getElementById(rowsId);
-  const row = document.createElement('div');
-  row.className = 'cfg-row';
-  const nameInput = document.createElement('input');
-  nameInput.className = nameClass;
-  nameInput.placeholder = 'alias';
-  nameInput.value = name || '';
-  const arrow = document.createElement('span');
-  arrow.className = 'cfg-arrow';
-  arrow.textContent = '→';
-  const modelInput = document.createElement('input');
-  modelInput.className = modelClass;
-  modelInput.placeholder = 'underlying model';
-  modelInput.value = model || '';
-  const del = document.createElement('button');
+  const price = el('button', 'mdl-price');
+  price.type = 'button';
+  price.onclick = () => togglePriceEditor(row, g, m);
+  row.appendChild(price);
+
+  const del = el('button', 'mdl-del', '✕');
   del.type = 'button';
-  del.className = 'btn-row';
-  del.textContent = '✕';
-  del.onclick = () => row.remove();
-  row.append(nameInput, arrow, modelInput, del);
-  rows.appendChild(row);
+  del.title = 'Remove';
+  del.onclick = () => { list.splice(i, 1); renderModels(); };
+  row.appendChild(del);
+
+  paintPriceCell(price, g, m);
+  return row;
 }
 
-function addVertexRow(name, model) {
-  addModelMappingRow('cfg-vertex-rows', 'cfg-vx-name', 'cfg-vx-model', name, model);
+function focusModelRow(groupId, index) {
+  const row = document.querySelector(`.mdl-row[data-group="${groupId}"][data-index="${index}"]`);
+  row?.querySelector('.mdl-name')?.focus();
 }
 
-function addKimiRow(name, model) {
-  addModelMappingRow('cfg-kimi-rows', 'cfg-kimi-name', 'cfg-kimi-model', name, model);
+function refreshPriceCell(row, g, m) {
+  const cell = row.querySelector('.mdl-price');
+  if (cell) paintPriceCell(cell, g, m);
+}
+
+function paintPriceCell(cell, g, m) {
+  const r = resolvePrice(m.name, g.mapped ? m.model : m.name);
+  cell.classList.toggle('is-custom', r?.source === 'custom');
+  cell.classList.toggle('is-none', !r);
+  if (!r) {
+    cell.textContent = 'set price';
+    // Unpriced is not cosmetic: those requests are missing from every cost
+    // total on the dashboard, so the cell says what the consequence is.
+    cell.title = 'No price for this model — its tokens are left out of all cost totals. Click to set one.';
+    return;
+  }
+  cell.textContent = `${priceLabel(r.price.input)} / ${priceLabel(r.price.output)}`;
+  // "matched X" is the line that stops the price looking arbitrary: a name can
+  // resolve through a prefix (claude-opus-4-6-vertex → claude-opus-4-6) or
+  // through its alias target, and neither is guessable from the row alone.
+  const via = r.from !== normalizeModel(m.name)
+    ? ` · matched ${r.viaAlias ? 'upstream ' : ''}${r.from}`
+    : '';
+  const cache = `cache read ${priceLabel(r.price.cache_read)} · write ${priceLabel(r.price.cache_write)}`;
+  cell.title = (r.source === 'custom' ? 'Your price' : 'Built-in list price') +
+    `${via} · ${cache} · click to ${r.source === 'custom' && !via ? 'edit' : 'override'}`;
+}
+
+// The editor drops in under its row rather than in a modal: you are usually
+// fixing several models in one pass, and a dialog per model would mean opening
+// and closing it four times.
+function togglePriceEditor(row, g, m) {
+  const open = row.nextElementSibling?.classList.contains('mdl-edit');
+  document.querySelectorAll('.mdl-edit').forEach(e => e.remove());
+  if (open) return;
+
+  const key = normalizeModel(m.name);
+  if (!key) { setCfgStatus('Name the model first, then set its price.', 'err'); return; }
+  const current = resolvePrice(m.name, g.mapped ? m.model : m.name);
+
+  const box = el('div', 'mdl-edit');
+  const fields = el('div', 'mdl-edit-fields');
+  const inputs = {};
+  for (const [field, label] of PRICE_FIELDS) {
+    const f = el('label', 'mdl-edit-field');
+    f.appendChild(el('span', null, label));
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.min = '0';
+    inp.step = '0.01';
+    // Prefilled with whatever is in effect, so "adjust the output price" does
+    // not silently zero the other three.
+    inp.value = current ? String(current.price[field] ?? 0) : '';
+    inp.placeholder = '0';
+    inputs[field] = inp;
+    f.appendChild(inp);
+    fields.appendChild(f);
+  }
+  box.appendChild(fields);
+
+  const actions = el('div', 'mdl-edit-actions');
+  actions.appendChild(el('span', 'mdl-edit-hint', 'USD per 1M tokens · saved to config.yaml on Save Config'));
+  if (priceOverrides.has(key)) {
+    const reset = el('button', 'btn-row', 'Use default');
+    reset.type = 'button';
+    reset.onclick = () => {
+      priceOverrides.delete(key);
+      box.remove();
+      refreshPriceCell(row, g, m);
+      setCfgStatus('Reverted to the built-in price — Save Config to persist.', '');
+    };
+    actions.appendChild(reset);
+  }
+  const apply = el('button', 'btn-row mdl-edit-apply', 'Apply');
+  apply.type = 'button';
+  apply.onclick = () => {
+    const p = { name: (m.name || '').trim() };
+    for (const [field] of PRICE_FIELDS) {
+      const v = parseFloat(inputs[field].value);
+      if (inputs[field].value !== '' && (!isFinite(v) || v < 0)) {
+        setCfgStatus(`${field} must be a non-negative number.`, 'err');
+        return;
+      }
+      p[field] = inputs[field].value === '' ? 0 : v;
+    }
+    priceOverrides.set(key, p);
+    box.remove();
+    refreshPriceCell(row, g, m);
+    setCfgStatus('Price set — Save Config to persist.', '');
+  };
+  actions.appendChild(apply);
+  box.appendChild(actions);
+
+  row.after(box);
+  box.querySelector('input')?.focus();
 }
 
 async function loadConfig() {
-  const r = await apiFetch('/api/config');
-  if (r.status === 401) { window.location.href = '/login'; return; }
-  const d = await r.json();
-  setupChips(document.getElementById('cfg-claude-models'), d.claude_oauth?.models || []);
-  setupChips(document.getElementById('cfg-codex-models'), d.codex?.models || []);
-  const rows = document.getElementById('cfg-vertex-rows');
-  rows.innerHTML = '';
-  const vmodels = d.vertex?.models || [];
-  vmodels.forEach(m => addVertexRow(m.Name ?? m.name, m.Model ?? m.model));
-  if (!vmodels.length) addVertexRow('', '');
-  const kimiRows = document.getElementById('cfg-kimi-rows');
-  kimiRows.innerHTML = '';
-  const kimiModels = d.kimi?.models || [];
-  kimiModels.forEach(m => addKimiRow(m.Name ?? m.name, m.Model ?? m.model));
-  if (!kimiModels.length) addKimiRow('', '');
+  const [cfgRes, priceRes] = await Promise.all([apiFetch('/api/config'), apiFetch('/api/pricing')]);
+  if (cfgRes.status === 401) { window.location.href = '/login'; return; }
+  const d = await cfgRes.json();
+  const pricing = priceRes.ok ? await priceRes.json() : { models: [] };
+
+  priceTable = new Map();
+  (pricing.models || []).forEach(p => priceTable.set(p.name, p));
+  pricePrefixes = [...priceTable.keys()]
+    .filter(k => k.length >= PRICE_MIN_PREFIX)
+    .sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+
+  priceOverrides = new Map();
+  (d.pricing?.models || []).forEach(p => {
+    const key = normalizeModel(p.name);
+    if (key) priceOverrides.set(key, p);
+  });
+
+  // The Go structs marshal with capitalised keys in some paths; accept both.
+  const pairs = list => (list || []).map(m => ({ name: m.Name ?? m.name ?? '', model: m.Model ?? m.model ?? '' }));
+  cfgModels = {
+    claude: (d.claude_oauth?.models || []).map(n => ({ name: n, model: '' })),
+    codex: (d.codex?.models || []).map(n => ({ name: n, model: '' })),
+    vertex: pairs(d.vertex?.models),
+    kimi: pairs(d.kimi?.models),
+  };
+  renderModels();
+
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
   document.getElementById('cfg-admin-pass').value = '';
   document.getElementById('cfg-tray-token').value = d.server?.tray_token || '';
@@ -949,21 +1249,20 @@ function copyTrayToken(btn) {
 }
 
 async function saveConfig() {
-  const claude = chipValues(document.getElementById('cfg-claude-models'));
-  const codex = chipValues(document.getElementById('cfg-codex-models'));
-  const vertex = [...document.querySelectorAll('#cfg-vertex-rows .cfg-row')].map(row => ({
-    name: row.querySelector('.cfg-vx-name').value.trim(),
-    model: row.querySelector('.cfg-vx-model').value.trim(),
-  })).filter(m => m.name || m.model);
-  const kimi = [...document.querySelectorAll('#cfg-kimi-rows .cfg-row')].map(row => ({
-    name: row.querySelector('.cfg-kimi-name').value.trim(),
-    model: row.querySelector('.cfg-kimi-model').value.trim(),
-  })).filter(m => m.name || m.model);
+  const names = id => (cfgModels[id] || []).map(m => (m.name || '').trim()).filter(Boolean);
+  const pairs = id => (cfgModels[id] || [])
+    .map(m => ({ name: (m.name || '').trim(), model: (m.model || '').trim() }))
+    .filter(m => m.name || m.model);
+  // Overrides for models that are no longer listed here are kept, not pruned:
+  // they may price a Codex model that auto-syncs at startup, or one served by a
+  // backend this page does not edit. An unused row costs nothing.
+  const prices = [...priceOverrides.values()];
   const body = {
-    claude_oauth: { models: claude },
-    codex: { models: codex },
-    vertex: { models: vertex },
-    kimi: { models: kimi },
+    claude_oauth: { models: names('claude') },
+    codex: { models: names('codex') },
+    vertex: { models: pairs('vertex') },
+    kimi: { models: pairs('kimi') },
+    pricing: { models: prices },
     server: {
       admin_user: document.getElementById('cfg-admin-user').value.trim(),
       admin_password: document.getElementById('cfg-admin-pass').value,
@@ -1280,7 +1579,7 @@ async function loadKeys() {
   keysCache = d.keys || [];
   const body = document.getElementById('keys-body');
   if (!d.keys || !d.keys.length) {
-    body.innerHTML = '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:20px">No API keys yet — create one above</td></tr>';
+    body.innerHTML = '<tr><td colspan="10" class="text-muted" style="text-align:center;padding:20px">No API keys yet — create one above</td></tr>';
     return;
   }
   const limitColorFor = (used, limit) => {
@@ -1308,6 +1607,8 @@ async function loadKeys() {
       + '<td style="' + (reqColor ? 'color:'+reqColor : '') + '">' + (k.requests_today || 0).toLocaleString() + '</td>'
       + '<td style="' + (tokColor ? 'color:'+tokColor : '') + '" title="' + escapeHTML(tokTitle) + '">' + (k.tokens_today || 0).toLocaleString() + '</td>'
       + '<td>' + (k.total_tokens || 0).toLocaleString() + '</td>'
+      + '<td title="' + escapeHTML(COST_HINT) + '">' + fmtMoney(k.cost_today || 0) + '</td>'
+      + '<td title="' + escapeHTML(COST_HINT) + '">' + fmtMoney(k.cost_usd || 0) + '</td>'
       + '<td style="line-height:1.5"><div>' + reqLimit + '</div><div>' + tokLimit + '</div></td>'
       + '<td style="white-space:nowrap"><button class="btn-row" onclick="editKey(\'' + k.id + '\')">&#x270E; Edit</button> ' + toggleBtn + ' <button class="btn-row" onclick="deleteKey(\'' + k.id + '\')">&#x1F5D1; Delete</button></td>'
       + '</tr>';

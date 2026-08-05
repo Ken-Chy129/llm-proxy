@@ -7,9 +7,10 @@ import (
 
 // TrayKeyUsage is one API key's usage inside a calendar-day window.
 type TrayKeyUsage struct {
-	KeyName      string `json:"key_name"`
-	RequestCount int    `json:"request_count"`
-	TotalTokens  int    `json:"total_tokens"`
+	KeyName      string  `json:"key_name"`
+	RequestCount int     `json:"request_count"`
+	TotalTokens  int     `json:"total_tokens"`
+	CostUSD      float64 `json:"cost_usd"`
 }
 
 // TrayDayUsage aggregates one calendar day of traffic in the viewer's timezone.
@@ -59,7 +60,8 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 	rows, err := d.db.Query(`
 		SELECT api_key_name,
 			COUNT(*),
-			COALESCE(SUM` + totalTokensExpr + `, 0)
+			COALESCE(SUM` + totalTokensExpr + `, 0),
+			COALESCE(SUM(cost_usd), 0)
 		FROM request_logs
 		WHERE ` + dayExpr + ` = ` + targetExpr + `
 			AND api_key_name != ''
@@ -71,7 +73,7 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var k TrayKeyUsage
-		if err := rows.Scan(&k.KeyName, &k.RequestCount, &k.TotalTokens); err != nil {
+		if err := rows.Scan(&k.KeyName, &k.RequestCount, &k.TotalTokens, &k.CostUSD); err != nil {
 			return out, err
 		}
 		out.ByKey = append(out.ByKey, k)
@@ -83,26 +85,29 @@ func (d *DB) DayUsage(dayOffset, tzMinutes int) (TrayDayUsage, error) {
 // immediately preceding today, excluding today itself so a partial day can't
 // drag the baseline down. Days with no traffic still count as days, otherwise a
 // quiet week would inflate the average.
-func (d *DB) DailyAverage(days, tzMinutes int) (avgRequests, avgTokens float64, err error) {
+func (d *DB) DailyAverage(days, tzMinutes int) (avgRequests, avgTokens, avgCost float64, err error) {
 	if days <= 0 {
-		return 0, 0, nil
+		return 0, 0, 0, nil
 	}
 	tzMod := tzOffset(tzMinutes)
 	dayExpr := "date(time" + tzMod + ")"
 	todayExpr := fmt.Sprintf("date('now'%s)", tzMod)
 
 	var reqs, toks int
+	var cost float64
 	err = d.db.QueryRow(`
 		SELECT COALESCE(COUNT(*), 0),
-			COALESCE(SUM`+totalTokensExpr+`, 0)
+			COALESCE(SUM`+totalTokensExpr+`, 0),
+			COALESCE(SUM(cost_usd), 0)
 		FROM request_logs
 		WHERE `+dayExpr+` < `+todayExpr+`
 			AND `+dayExpr+` >= `+fmt.Sprintf("date('now'%s, '-%d days')", tzMod, days)).
-		Scan(&reqs, &toks)
+		Scan(&reqs, &toks, &cost)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
-	return float64(reqs) / float64(days), float64(toks) / float64(days), nil
+	d64 := float64(days)
+	return float64(reqs) / d64, float64(toks) / d64, cost / d64, nil
 }
 
 // HourlyToday returns per-hour buckets for the current calendar day in the

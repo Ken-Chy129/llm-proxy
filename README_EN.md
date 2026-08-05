@@ -245,7 +245,30 @@ Visit `http://your-domain:9090/` and login with admin credentials.
 
 ![Dashboard — Backends](docs/dashboard-backends.png)
 
-**Stats** — Time-series trend (toggle requests / tokens, timezone-aware), with a breakdown by model / key / backend / account below.
+**Stats** — Time-series trend (toggle requests / tokens / cost / errors, timezone-aware), with a breakdown by model / key / backend / account below.
+
+**Cost accounting** — every request is priced as it is recorded, from a built-in table of published list rates (Anthropic / OpenAI / Moonshot), with input, cache read, cache write and output billed separately. The figure is *list API price*: Claude Code and Codex subscription traffic is not billed per request, so it answers "what would these tokens have cost on the pay-per-token API".
+
+**Editing prices** — the dashboard's **Config → Models** page shows each model's rate (input / output per 1M tokens) beside it; click the figure to expand the four buckets (input / output / cache read / cache write). Saving writes `pricing.models` to `config.yaml` and takes effect immediately — and the moment a price appears, that model's accumulated history is priced too. An amber `set price` means the model has no rate, so its tokens are missing from every cost total.
+
+You can also edit the file directly (USD per 1M tokens):
+
+```yaml
+pricing:
+  models:
+    - name: "kimi-for-coding"   # subscription seat: no per-token cost
+      input: 0
+      output: 0
+    - name: "my-private-model"
+      input: 1.5
+      output: 6.0
+      cache_read: 0.15
+      cache_write: 1.875
+```
+
+A model with no price anywhere is reported as *unknown* rather than $0 — otherwise an unpriced backend looks free. The startup log and `GET /api/pricing` list them. Existing history is priced once, on the first start after upgrading.
+
+Aliases (the Vertex / Kimi `name → model` pairs) fall back to their upstream model's price, so an alias called `sonnet` still bills at `claude-sonnet-4-6` rates — the alias is what gets recorded on the request, so without the fallback its cost would vanish from the totals.
 
 Other tabs: **Chat** (streaming test chat), **Image** (image generation), **Logs** (paginated request logs), **Keys** (API keys & daily limits), **Config** (edit model lists and admin credentials live).
 

@@ -22,6 +22,24 @@ export function fmtCompact(n) {
 }
 
 /**
+ * 花费。后端按"如果走按量计费 API 会花多少"给每条请求定价：
+ * OAuth 订阅（Claude Code / Codex）本身不按请求扣费，这个数是订阅的等价价值。
+ *
+ * 量级从一次 Haiku 调用的 $0.0003 到一个月 Opus 的四位数，固定小数位会把前者
+ * 印成 $0.00，所以精度跟着量级走。null 表示"这个模型没有定价"，显示 "—"：
+ * 折成 $0 就等于宣称它免费。
+ */
+export function fmtMoney(v) {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—';
+  const abs = Math.abs(v);
+  if (abs >= 1000) return '$' + fmtNum(v);
+  if (abs >= 1) return '$' + v.toFixed(2);
+  if (abs >= 0.01) return '$' + v.toFixed(3);
+  if (abs > 0) return '$' + v.toFixed(4);
+  return '$0';
+}
+
+/**
  * 相对变化。基线为 0 时不返回“+∞%”这种没信息量的结果，
  * 而是标成 new，避免第一天用量把界面搞得像出了故障。
  * 带箭头是因为颜色本身有歧义：绿色在这里表示"用得比以前少"，
@@ -347,6 +365,7 @@ function renderKeys(container, byKey) {
       key_name: `其他 ${rest.length} 个`,
       total_tokens: rest.reduce((s, k) => s + k.total_tokens, 0),
       request_count: rest.reduce((s, k) => s + k.request_count, 0),
+      cost_usd: rest.reduce((s, k) => s + (k.cost_usd || 0), 0),
     });
   }
   for (const k of top) {
@@ -357,6 +376,9 @@ function renderKeys(container, byKey) {
     // 占比不足 1% 的显示 <1% 而不是 0%，否则会让人以为完全没用
     const shareText = share === 0 && k.total_tokens > 0 ? '<1%' : `${share}%`;
     t.appendChild(el('span', 'keyrow-val', `${fmtCompact(k.total_tokens)} · ${shareText}`));
+    // 花费放 title 而不是行内：一行里已经有名字、token、占比三个数，再塞一个
+    // 金额就没人能一眼扫完了。想知道某个 key 花了多少，悬停即可。
+    t.title = `${fmtNum(k.request_count || 0)} 请求 · ${fmtNum(k.total_tokens)} tokens · ${fmtMoney(k.cost_usd || 0)}`;
     row.appendChild(t);
     const bar = el('div', 'keybar');
     const fill = el('span');
@@ -436,6 +458,20 @@ function renderBreakdown(container, day) {
     }
     container.appendChild(item);
   }
+
+  // 花费跟在四个 token 桶后面：它是从同样这些数算出来的，放同一行才能一眼
+  // 对上"这些 token 值多少钱"。cost_known_requests === 0 表示今天没有任何一条
+  // 请求能定价（比如全是订阅模型且未在 pricing 里声明），显示 "—"。
+  const priced = day.cost_known_requests !== 0;
+  const cost = el('span', 'bd-item bd-cost');
+  cost.appendChild(document.createTextNode('花费 '));
+  cost.appendChild(el('b', null, priced ? fmtMoney(day.cost_usd || 0) : '—'));
+  const unpriced = Math.max(0, (day.request_count || 0) - (day.cost_known_requests || 0));
+  cost.title = priced
+    ? '按量计费 API 的等价价格；OAuth 订阅流量并不按请求扣费' +
+      (unpriced ? `（不含 ${unpriced} 条未定价请求）` : '')
+    : '这些模型没有定价，在 config.yaml 的 pricing.models 里补';
+  container.appendChild(cost);
 }
 
 // ---------- 历史用量热力图（卡片背面） ----------
@@ -497,6 +533,7 @@ export function buildHeatGrid(days, weeks = HEAT_WEEKS, today = new Date()) {
       tokens: hit ? hit.t || 0 : 0,
       requests: hit ? hit.r || 0 : 0,
       cache: hit ? hit.c || 0 : 0,
+      cost: hit ? hit.u || 0 : 0,
       future: k > todayKey,
       isToday: k === todayKey,
     });
@@ -514,6 +551,9 @@ export function heatDayLines(c) {
     // 缓存占比是这一天"贵不贵"的唯一线索：请求数一样但缓存命中差一截，
     // 花的钱能差一个数量级
     rows.push(['缓存', `${Math.round((c.cache / c.tokens) * 100)}%`]);
+    // 缓存占比说的是"贵不贵"，花费直接说"多少钱"——两个都留着，因为便宜的
+    // 一天也可能是因为根本没跑几个请求。
+    if (c.cost > 0) rows.push(['花费', fmtMoney(c.cost)]);
   } else {
     // 有请求但没 token 记录是真实存在的（早期未采集、或全是失败请求），
     // 说成"无用量"是在编数据
