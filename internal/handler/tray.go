@@ -62,6 +62,7 @@ type trayResponse struct {
 
 	Avg7dRequests float64 `json:"avg_7d_requests"`
 	Avg7dTokens   float64 `json:"avg_7d_tokens"`
+	Avg7dCost     float64 `json:"avg_7d_cost"`
 
 	HourlyTokens []int `json:"hourly_tokens"`
 
@@ -83,12 +84,13 @@ func trayTZ(c *gin.Context) int {
 
 // trayHistoryDay is one calendar day of the widget's activity heatmap. Field
 // names are one letter because the response carries a few hundred of these and
-// the widget is the only consumer: date, tokens, requests, cache.
+// the widget is the only consumer: date, tokens, requests, cache, usd.
 type trayHistoryDay struct {
-	Date     string `json:"d"`
-	Tokens   int    `json:"t"`
-	Requests int    `json:"r"`
-	Cache    int    `json:"c"`
+	Date     string  `json:"d"`
+	Tokens   int     `json:"t"`
+	Requests int     `json:"r"`
+	Cache    int     `json:"c"`
+	CostUSD  float64 `json:"u"`
 }
 
 const (
@@ -138,6 +140,7 @@ func (h *AdminHandler) TrayHistory(c *gin.Context) {
 			Tokens:   b.TotalTokens,
 			Requests: b.RequestCount,
 			Cache:    b.CacheReadTokens + b.CacheWriteTokens,
+			CostUSD:  b.CostUSD,
 		})
 	}
 
@@ -253,8 +256,8 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 	if yday, err := h.statsDB.DayUsage(1, tzMinutes); err == nil {
 		resp.Yesterday = yday
 	}
-	if ar, at, err := h.statsDB.DailyAverage(7, tzMinutes); err == nil {
-		resp.Avg7dRequests, resp.Avg7dTokens = ar, at
+	if ar, at, ac, err := h.statsDB.DailyAverage(7, tzMinutes); err == nil {
+		resp.Avg7dRequests, resp.Avg7dTokens, resp.Avg7dCost = ar, at, ac
 	}
 	if hourly, err := h.statsDB.HourlyToday(tzMinutes); err == nil {
 		resp.HourlyTokens = hourly

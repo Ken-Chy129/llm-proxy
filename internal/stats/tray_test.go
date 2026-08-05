@@ -170,7 +170,7 @@ func TestDailyAverageExcludesToday(t *testing.T) {
 	// A huge spike today that must be excluded from the baseline.
 	insertAt(t, db, today.Add(time.Hour), "k", 500000, 500000)
 
-	_, avgTokens, err := db.DailyAverage(7, tz)
+	_, avgTokens, _, err := db.DailyAverage(7, tz)
 	if err != nil {
 		t.Fatalf("DailyAverage: %v", err)
 	}
@@ -179,7 +179,7 @@ func TestDailyAverageExcludesToday(t *testing.T) {
 		t.Errorf("avg tokens = %f, want %f (today's spike must be excluded)", avgTokens, want)
 	}
 
-	avgReqs, _, _ := db.DailyAverage(7, tz)
+	avgReqs, _, _, _ := db.DailyAverage(7, tz)
 	if want := 2.0 / 7.0; avgReqs < want-0.001 || avgReqs > want+0.001 {
 		t.Errorf("avg requests = %f, want %f", avgReqs, want)
 	}
@@ -187,7 +187,7 @@ func TestDailyAverageExcludesToday(t *testing.T) {
 
 func TestDailyAverageZeroDays(t *testing.T) {
 	db := newTestDB(t)
-	r, tk, err := db.DailyAverage(0, 480)
+	r, tk, _, err := db.DailyAverage(0, 480)
 	if err != nil {
 		t.Fatalf("DailyAverage(0): %v", err)
 	}
@@ -275,7 +275,10 @@ func TestTokensTodayForKeyStaysCacheExclusive(t *testing.T) {
 }
 
 func TestTzOffsetClampsOutOfRange(t *testing.T) {
-	for _, tc := range []struct{ in int; want string }{
+	for _, tc := range []struct {
+		in   int
+		want string
+	}{
 		{480, ", '+480 minutes'"},
 		{-300, ", '-300 minutes'"},
 		{9999, ", '+0 minutes'"},  // clamped

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	_ "modernc.org/sqlite"
 )
@@ -33,6 +34,14 @@ type RequestLog struct {
 	APIKeyName       string    `json:"api_key_name,omitempty"`
 	Account          string    `json:"account,omitempty"`       // upstream account (email/id) that served the request
 	FailoverFrom     string    `json:"failover_from,omitempty"` // comma-separated accounts that 429'd before the serving one
+
+	// CostUSD is list API cost for this request, priced at write time and frozen.
+	// Recomputing history at today's rates would silently rewrite what past
+	// months cost every time a provider changes a price. CostKnown is false when
+	// the model has no price at all — stored as SQL NULL, rendered as "—", and
+	// deliberately not conflated with a genuine $0.
+	CostUSD   float64 `json:"cost_usd"`
+	CostKnown bool    `json:"cost_known"`
 }
 
 // SetUsage copies a canonical breakdown into the log entry.
@@ -44,8 +53,22 @@ func (l *RequestLog) SetUsage(u types.TokenUsage) {
 	l.ReasoningTokens = u.Reasoning
 }
 
+// usage rebuilds the canonical breakdown from the stored columns, so pricing
+// consumes exactly what SetUsage stored regardless of which handler wrote it.
+func (l *RequestLog) usage() types.TokenUsage {
+	return types.TokenUsage{
+		Input:      l.PromptTokens,
+		CacheRead:  l.CacheReadTokens,
+		CacheWrite: l.CacheWriteTokens,
+		Output:     l.CompletionTokens,
+		Reasoning:  l.ReasoningTokens,
+	}
+}
+
 // TokenBreakdown is the four-bucket split attached to any aggregate row, so the
-// UI can render input/output/cache/thinking wherever it shows a total.
+// UI can render input/output/cache/thinking wherever it shows a total. It also
+// carries the summed cost, which is derived from those same buckets and is
+// wanted everywhere they are.
 type TokenBreakdown struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
@@ -57,6 +80,12 @@ type TokenBreakdown struct {
 	// pure Anthropic traffic claim "0 thinking tokens", when the truth is that
 	// nobody told us — the same distinction the per-row "—" preserves.
 	ReasoningKnownRequests int `json:"reasoning_known_requests"`
+
+	// CostUSD sums only the rows that had a price. CostKnownRequests is how many
+	// those were, so the UI can say "$4.10 (of 900 requests, 12 unpriced)"
+	// instead of quietly presenting a partial total as the whole bill.
+	CostUSD           float64 `json:"cost_usd"`
+	CostKnownRequests int     `json:"cost_known_requests"`
 }
 
 // totalTokensExpr is the display accounting: the four disjoint buckets added up.
@@ -68,17 +97,21 @@ const totalTokensExpr = "(prompt_tokens + cache_read_tokens + cache_write_tokens
 // reasoning_tokens is -1 on rows whose upstream never reported it, so the sum
 // clamps each row to 0 rather than subtracting, and the trailing count tells the
 // UI whether that 0 means "none" or "unknown".
+// cost_usd is NULL on unpriced rows, so SUM skips them on its own and the
+// trailing count says how many rows actually contributed.
 const breakdownCols = `COALESCE(SUM(prompt_tokens), 0),
 	COALESCE(SUM(completion_tokens), 0),
 	COALESCE(SUM(cache_read_tokens), 0),
 	COALESCE(SUM(cache_write_tokens), 0),
 	COALESCE(SUM(MAX(reasoning_tokens, 0)), 0),
-	COALESCE(SUM(reasoning_tokens >= 0), 0)`
+	COALESCE(SUM(reasoning_tokens >= 0), 0),
+	COALESCE(SUM(cost_usd), 0),
+	COALESCE(SUM(cost_usd IS NOT NULL), 0)`
 
 // scanArgs returns the destinations for breakdownCols, in order.
 func (b *TokenBreakdown) scanArgs() []any {
 	return []any{&b.PromptTokens, &b.CompletionTokens, &b.CacheReadTokens, &b.CacheWriteTokens,
-		&b.ReasoningTokens, &b.ReasoningKnownRequests}
+		&b.ReasoningTokens, &b.ReasoningKnownRequests, &b.CostUSD, &b.CostKnownRequests}
 }
 
 type KeyStats struct {
@@ -93,6 +126,10 @@ type KeyStats struct {
 	// larger display total; colouring the row by that one would warn about a
 	// limit that is nowhere near being hit.
 	QuotaUsedToday int `json:"quota_used_today"`
+	// CostUSD / CostToday are list API cost over the same windows as the token
+	// figures beside them.
+	CostUSD   float64 `json:"cost_usd"`
+	CostToday float64 `json:"cost_today"`
 }
 
 // BucketStats is one point on the time-series trend (hourly or daily bucket).
@@ -163,6 +200,8 @@ func filterClause(col, val string) (string, []any) {
 
 type DB struct {
 	db *sql.DB
+	// prices may be nil, in which case every request is recorded as unpriced.
+	prices *pricing.Table
 }
 
 func Open(dir string) (*DB, error) {
@@ -186,6 +225,72 @@ func Open(dir string) (*DB, error) {
 	return &DB{db: db}, nil
 }
 
+// SetPricing installs the price table and backfills any rows that have no cost
+// yet. Call it once, before serving.
+//
+// Pricing lives on the DB rather than in the handlers because Record is the one
+// funnel every request already goes through — five call sites build a
+// RequestLog, and none of them should have to remember to cost it.
+func (d *DB) SetPricing(t *pricing.Table) {
+	d.prices = t
+	if n, err := d.backfillCosts(); err != nil {
+		fmt.Printf("warning: could not backfill request costs: %v\n", err)
+	} else if n > 0 {
+		fmt.Printf("priced %d historical request(s)\n", n)
+	}
+}
+
+// Pricing exposes the installed table (nil when costing is off) so the admin
+// API can show what a model is being billed at without a second copy of it
+// being threaded through the handler constructor.
+func (d *DB) Pricing() *pricing.Table { return d.prices }
+
+// backfillCosts values rows written before costing existed, or by an earlier
+// run whose table had no price for that model. It is priced at *today's* rates,
+// which is an approximation the live path never makes — but the alternative is a
+// dashboard whose history reads as free. One UPDATE per distinct model keeps it
+// to a handful of statements even on a large table.
+func (d *DB) backfillCosts() (int64, error) {
+	if d.prices == nil {
+		return 0, nil
+	}
+	rows, err := d.db.Query(`SELECT DISTINCT model FROM request_logs WHERE cost_usd IS NULL`)
+	if err != nil {
+		return 0, err
+	}
+	var models []string
+	for rows.Next() {
+		var m string
+		if rows.Scan(&m) == nil {
+			models = append(models, m)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	var total int64
+	for _, model := range models {
+		p, ok := d.prices.Lookup(model)
+		if !ok {
+			continue // stays NULL: unknown, not free
+		}
+		res, err := d.db.Exec(`
+			UPDATE request_logs
+			SET cost_usd = (prompt_tokens * ? + cache_read_tokens * ? + cache_write_tokens * ?
+				+ completion_tokens * ?) / 1000000.0
+			WHERE model = ? AND cost_usd IS NULL`,
+			p.Input, p.CacheRead, p.CacheWrite, p.Output, model)
+		if err != nil {
+			return total, err
+		}
+		n, _ := res.RowsAffected()
+		total += n
+	}
+	return total, nil
+}
+
 func migrate(db *sql.DB) error {
 	_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS request_logs (
@@ -204,7 +309,8 @@ func migrate(db *sql.DB) error {
 			error             TEXT DEFAULT '',
 			api_key_name      TEXT DEFAULT '',
 			account           TEXT DEFAULT '',
-			failover_from     TEXT DEFAULT ''
+			failover_from     TEXT DEFAULT '',
+			cost_usd          REAL
 		);
 		CREATE INDEX IF NOT EXISTS idx_logs_time ON request_logs(time);
 		CREATE INDEX IF NOT EXISTS idx_logs_model ON request_logs(model);
@@ -226,18 +332,30 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE request_logs ADD COLUMN cache_read_tokens INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE request_logs ADD COLUMN cache_write_tokens INTEGER DEFAULT 0")
 	db.Exec("ALTER TABLE request_logs ADD COLUMN reasoning_tokens INTEGER DEFAULT -1")
+	// Cost column (existing DBs). No DEFAULT on purpose: NULL means "not priced",
+	// which is exactly what every pre-existing row is until backfillCosts runs.
+	db.Exec("ALTER TABLE request_logs ADD COLUMN cost_usd REAL")
 	return nil
 }
 
 func (d *DB) Record(log *RequestLog) error {
+	// Price here, once, at the single write funnel. The entry may already carry a
+	// cost (a caller that knows better, or a test), in which case leave it alone.
+	if !log.CostKnown && d.prices != nil {
+		log.CostUSD, log.CostKnown = d.prices.Cost(log.Model, log.usage())
+	}
+	var cost any // NULL when unpriced
+	if log.CostKnown {
+		cost = log.CostUSD
+	}
 	_, err := d.db.Exec(`
 		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from, cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.Time.UTC().Format(time.RFC3339), log.Model, log.Backend, log.LatencyMs,
 		log.Status, log.PromptTokens, log.CompletionTokens,
 		log.CacheReadTokens, log.CacheWriteTokens, log.ReasoningTokens,
-		log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom,
+		log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom, cost,
 	)
 	return err
 }
@@ -264,7 +382,8 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 
 	rows, err := d.db.Query(`
 		SELECT id, time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from,
+			cost_usd
 		FROM request_logs `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		return nil, 0, err
@@ -275,12 +394,14 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 	for rows.Next() {
 		var l RequestLog
 		var t string
+		var cost sql.NullFloat64
 		if err := rows.Scan(&l.ID, &t, &l.Model, &l.Backend, &l.LatencyMs, &l.Status,
 			&l.PromptTokens, &l.CompletionTokens, &l.CacheReadTokens, &l.CacheWriteTokens, &l.ReasoningTokens,
-			&l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom); err != nil {
+			&l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom, &cost); err != nil {
 			continue
 		}
 		l.Time, _ = time.Parse(time.RFC3339, t)
+		l.CostUSD, l.CostKnown = cost.Float64, cost.Valid
 		logs = append(logs, l)
 	}
 	return logs, total, nil
@@ -394,7 +515,8 @@ func (d *DB) StatsByKey() ([]KeyStats, error) {
 		SELECT api_key_name,
 			COUNT(*),
 			COALESCE(SUM` + totalTokensExpr + `, 0),
-			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0)
+			COALESCE(SUM(CASE WHEN status >= 400 THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(cost_usd), 0)
 		FROM request_logs
 		WHERE api_key_name != ''
 		GROUP BY api_key_name
@@ -408,13 +530,14 @@ func (d *DB) StatsByKey() ([]KeyStats, error) {
 	var result []KeyStats
 	for rows.Next() {
 		var s KeyStats
-		rows.Scan(&s.KeyName, &s.RequestCount, &s.TotalTokens, &s.ErrorCount)
+		rows.Scan(&s.KeyName, &s.RequestCount, &s.TotalTokens, &s.ErrorCount, &s.CostUSD)
 		d.db.QueryRow(`
 			SELECT COALESCE(SUM`+totalTokensExpr+`, 0),
 				COALESCE(SUM(prompt_tokens + completion_tokens), 0),
-				COUNT(*)
+				COUNT(*),
+				COALESCE(SUM(cost_usd), 0)
 			FROM request_logs WHERE api_key_name = ? AND date(time) = ?`,
-			s.KeyName, today).Scan(&s.TokensToday, &s.QuotaUsedToday, &s.RequestsToday)
+			s.KeyName, today).Scan(&s.TokensToday, &s.QuotaUsedToday, &s.RequestsToday, &s.CostToday)
 		result = append(result, s)
 	}
 	return result, nil
@@ -446,10 +569,11 @@ func (d *DB) RequestsTodayForKey(keyName string) int {
 	return count
 }
 
-func (d *DB) TotalStats() (requests int, tokens int, err error) {
+func (d *DB) TotalStats() (requests int, tokens int, cost float64, err error) {
 	err = d.db.QueryRow(`
-		SELECT COALESCE(COUNT(*), 0), COALESCE(SUM` + totalTokensExpr + `, 0)
-		FROM request_logs`).Scan(&requests, &tokens)
+		SELECT COALESCE(COUNT(*), 0), COALESCE(SUM`+totalTokensExpr+`, 0),
+			COALESCE(SUM(cost_usd), 0)
+		FROM request_logs`).Scan(&requests, &tokens, &cost)
 	return
 }
 

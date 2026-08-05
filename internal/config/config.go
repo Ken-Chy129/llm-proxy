@@ -5,6 +5,7 @@ import (
 	"os"
 	"sync"
 
+	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -14,6 +15,7 @@ type Config struct {
 	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
 	Codex       CodexConfig       `yaml:"codex"`
 	Kimi        KimiConfig        `yaml:"kimi"`
+	Pricing     PricingConfig     `yaml:"pricing"`
 
 	// mu guards only the ServerConfig fields the dashboard can rewrite while the
 	// server is serving: Port, AdminUser, AdminPassword, TrayToken. Everything
@@ -85,6 +87,33 @@ type KimiConfig struct {
 	APIKeyEnv string        `yaml:"api_key_env"`
 	APIFormat string        `yaml:"api_format"`
 	Models    []ModelConfig `yaml:"models"`
+}
+
+// PricingConfig overrides or extends the built-in per-model price table used to
+// cost requests. Prices are USD per 1M tokens.
+//
+// Two reasons this exists: published rates change and a rebuild is a silly way
+// to track them, and a model this proxy serves may not be in the built-in table
+// at all (a private endpoint, a subscription seat, a renamed alias). A model
+// with no price anywhere is recorded as *unknown* cost rather than $0 — write
+// an all-zeros entry here to say "this one really is free".
+type PricingConfig struct {
+	Models []pricing.Price `yaml:"models"`
+}
+
+// ModelAliases returns the alias → upstream-model mapping for every backend that
+// has one (Vertex and Kimi; the OAuth backends pass the name through unchanged).
+// Pricing uses it so a freely-named alias still resolves to its model's price.
+func (c *Config) ModelAliases() map[string]string {
+	out := make(map[string]string, len(c.Vertex.Models)+len(c.Kimi.Models))
+	for _, list := range [][]ModelConfig{c.Vertex.Models, c.Kimi.Models} {
+		for _, m := range list {
+			if m.Name != "" && m.Model != "" {
+				out[m.Name] = m.Model
+			}
+		}
+	}
+	return out
 }
 
 // Environment fallbacks for the dashboard credentials. Containerised deploys

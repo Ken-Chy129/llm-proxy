@@ -58,3 +58,24 @@ kimi:
       model: "kimi-for-coding"
     - name: "kimi-for-coding-highspeed"
       model: "kimi-for-coding-highspeed"
+
+# Cost accounting. Every request is priced at write time from a built-in table
+# of published list rates (Anthropic / OpenAI / Moonshot) and shown on the
+# dashboard. Note this is what the tokens *would* cost on the pay-per-token API:
+# Claude Code and Codex subscription traffic is not billed per request.
+#
+# This section is optional, and the dashboard writes it for you (Config →
+# Models → click a model's price). Use it to correct a rate that has changed, or
+# to price a model the built-in table has never heard of. Values are USD per 1M
+# tokens; a model with no price anywhere is reported as unknown rather than $0,
+# so write an all-zeros entry to declare one genuinely free.
+# pricing:
+#   models:
+#     - name: "kimi-for-coding"   # subscription seat: no per-token cost
+#       input: 0
+#       output: 0
+#     - name: "my-private-model"
+#       input: 1.5
+#       output: 6.0
+#       cache_read: 0.15
+#       cache_write: 1.875

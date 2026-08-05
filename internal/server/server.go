@@ -55,6 +55,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.GET("/status", adminHandler.Status)
 	admin.GET("/logs", adminHandler.Logs)
 	admin.GET("/stats", adminHandler.Stats)
+	admin.GET("/pricing", adminHandler.Pricing)
 	admin.GET("/config", adminHandler.Config)
 	admin.PUT("/config", adminHandler.UpdateConfig)
 	admin.POST("/sync-models", adminHandler.SyncModels)
@@ -152,6 +153,20 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	fmt.Printf("models: %v\n", r.AllModels())
+	// An unpriced model is invisible in every cost total on the dashboard, and
+	// nothing else would ever say so — the totals just quietly come up short.
+	if table := statsDB.Pricing(); table != nil {
+		var unpriced []string
+		for _, model := range r.AllModels() {
+			if _, ok := table.Lookup(model); !ok {
+				unpriced = append(unpriced, model)
+			}
+		}
+		if len(unpriced) > 0 {
+			fmt.Printf("note: no price for %v — their tokens are excluded from cost totals (set pricing.models in %s)\n",
+				unpriced, configPath)
+		}
+	}
 	// Loud, because the symptom is silent: the dashboard just refuses every login
 	// and nothing explains why.
 	if !cfg.AdminConfigured() {

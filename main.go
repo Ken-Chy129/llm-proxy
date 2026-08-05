@@ -9,6 +9,7 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/server"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
@@ -33,6 +34,11 @@ func main() {
 		log.Fatalf("open stats db: %v", err)
 	}
 	defer statsDB.Close()
+	// Costing has to be installed before anything is served: it prices each
+	// request as it is recorded, and backfills whatever history is unpriced.
+	priceTable := pricing.New(cfg.Pricing.Models)
+	priceTable.SetAliases(cfg.ModelAliases())
+	statsDB.SetPricing(priceTable)
 
 	// Vertex: configured via config file (ADC) or dashboard-uploaded credentials
 	vertexExec := executor.NewVertexExecutor(cfg.Vertex)

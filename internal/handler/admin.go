@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/gin-gonic/gin"
@@ -213,13 +215,14 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		backends = append(backends, entry)
 	}
 
-	totalReqs, totalTokens, _ := h.statsDB.TotalStats()
+	totalReqs, totalTokens, totalCost, _ := h.statsDB.TotalStats()
 
 	c.JSON(http.StatusOK, gin.H{
 		"backends":       backends,
 		"all_models":     h.router.AllModels(),
 		"total_requests": totalReqs,
 		"total_tokens":   totalTokens,
+		"total_cost_usd": totalCost,
 	})
 }
 
@@ -317,6 +320,24 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 	})
 }
 
+// Pricing returns the effective per-model price table, plus the served models
+// that have no price at all. The second list is the actionable half: an
+// unpriced model is silently missing from every cost total on the dashboard,
+// and the fix is a `pricing.models` entry in config.yaml.
+func (h *AdminHandler) Pricing(c *gin.Context) {
+	table := h.statsDB.Pricing()
+	unpriced := []string{}
+	for _, model := range h.router.AllModels() {
+		if _, ok := table.Lookup(model); !ok {
+			unpriced = append(unpriced, model)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"models":   table.All(),
+		"unpriced": unpriced,
+	})
+}
+
 func (h *AdminHandler) Config(c *gin.Context) {
 	adminUser, _ := h.cfg.AdminCreds()
 	c.JSON(http.StatusOK, gin.H{
@@ -347,6 +368,10 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"api_format":  h.cfg.Kimi.APIFormat,
 			"models":      h.cfg.Kimi.Models,
 		},
+		// Only the overrides, not the effective table — the Models editor needs to
+		// tell "you changed this" from "this is the built-in rate", and /api/pricing
+		// serves the effective figures.
+		"pricing": gin.H{"models": h.cfg.Pricing.Models},
 	})
 }
 
@@ -366,6 +391,42 @@ func cleanModelList(in []string) ([]string, error) {
 		out = append(out, m)
 	}
 	return out, nil
+}
+
+// cleanPriceOverrides validates the price rows the Models editor sends back.
+// A row with every field at zero is kept, not dropped — "this model is free" is
+// a real statement, and the only way to say it (an absent row means *unpriced*).
+func cleanPriceOverrides(in []pricing.Price) ([]pricing.Price, error) {
+	out := make([]pricing.Price, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, p := range in {
+		p.Name = strings.TrimSpace(p.Name)
+		if p.Name == "" {
+			continue
+		}
+		if seen[p.Name] {
+			return nil, fmt.Errorf("pricing: duplicate model %s", p.Name)
+		}
+		seen[p.Name] = true
+		for field, v := range map[string]float64{
+			"input": p.Input, "output": p.Output, "cache_read": p.CacheRead, "cache_write": p.CacheWrite,
+		} {
+			if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+				return nil, fmt.Errorf("pricing: %s %s must be a non-negative number", p.Name, field)
+			}
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// applyPricing rebuilds the live price table from the current config. Rebuilding
+// also backfills, so a model that was unpriced until now gets its accumulated
+// history valued the moment a price is saved.
+func (h *AdminHandler) applyPricing() {
+	t := pricing.New(h.cfg.Pricing.Models)
+	t.SetAliases(h.cfg.ModelAliases())
+	h.statsDB.SetPricing(t)
 }
 
 func cleanModelMappings(in []config.ModelConfig, provider string) ([]config.ModelConfig, error) {
@@ -408,6 +469,11 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		Kimi *struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"kimi"`
+		// Pointer for the same reason as TrayToken: a client that PUTs a config
+		// without this key must not wipe every price override.
+		Pricing *struct {
+			Models []pricing.Price `json:"models"`
+		} `json:"pricing"`
 		Server struct {
 			Port          int    `json:"port"`
 			AdminUser     string `json:"admin_user"`
@@ -443,6 +509,14 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	kimiModels := h.cfg.Kimi.Models
 	if req.Kimi != nil {
 		kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi")
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	priceOverrides := h.cfg.Pricing.Models
+	if req.Pricing != nil {
+		priceOverrides, err = cleanPriceOverrides(req.Pricing.Models)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -495,6 +569,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	if req.Server.Port != 0 {
 		h.cfg.SetPort(req.Server.Port)
 	}
+	// After the model lists, so the alias map it reads is the new one.
+	h.cfg.Pricing.Models = priceOverrides
+	h.applyPricing()
 
 	if err := config.Save(h.configPath, h.cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save config: " + err.Error()})
