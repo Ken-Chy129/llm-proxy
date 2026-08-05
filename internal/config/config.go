@@ -62,9 +62,12 @@ type VertexConfig struct {
 	Models    []ModelConfig `yaml:"models"`
 }
 
+// ModelConfig is one served model. Model is the upstream id to call; empty
+// means "same as Name", which is the common case — writing the name twice is
+// noise, and omitempty keeps it out of the file the dashboard rewrites.
 type ModelConfig struct {
 	Name  string `yaml:"name"`
-	Model string `yaml:"model"`
+	Model string `yaml:"model,omitempty"`
 }
 
 type ClaudeOAuthConfig struct {

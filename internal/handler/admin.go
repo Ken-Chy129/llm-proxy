@@ -435,16 +435,23 @@ func cleanModelMappings(in []config.ModelConfig, provider string) ([]config.Mode
 	for _, item := range in {
 		name := strings.TrimSpace(item.Name)
 		model := strings.TrimSpace(item.Model)
-		if name == "" && model == "" {
+		if name == "" {
+			// A row with only an upstream names nothing and can serve nothing.
+			if model != "" {
+				return nil, fmt.Errorf("%s models: a row needs a model name", provider)
+			}
 			continue
 		}
-		if name == "" || model == "" {
-			return nil, fmt.Errorf("%s models: each row needs both an alias and a model", provider)
-		}
 		if seen[name] {
-			return nil, fmt.Errorf("%s models: duplicate alias %s", provider, name)
+			return nil, fmt.Errorf("%s models: duplicate model %s", provider, name)
 		}
 		seen[name] = true
+		// model may be empty: that is the common case, "call upstream by the same
+		// name". Storing the name twice would be noise in config.yaml, and an
+		// identity mapping is indistinguishable from a rename in the editor.
+		if model == name {
+			model = ""
+		}
 		out = append(out, config.ModelConfig{Name: name, Model: model})
 	}
 	return out, nil
@@ -456,25 +463,27 @@ func cleanModelMappings(in []config.ModelConfig, provider string) ([]config.Mode
 // the config file, with port requiring a restart to take effect (admin
 // credentials apply live because loginHandler reads cfg on every request).
 func (h *AdminHandler) UpdateConfig(c *gin.Context) {
+	// Every section is a pointer, so an absent one means "leave it alone". The
+	// dashboard saves Models and Admin independently — with value structs, saving
+	// the admin password would send `claude_oauth: {}` and silently wipe the
+	// model lists.
 	var req struct {
-		ClaudeOAuth struct {
+		ClaudeOAuth *struct {
 			Models []string `json:"models"`
 		} `json:"claude_oauth"`
-		Codex struct {
+		Codex *struct {
 			Models []string `json:"models"`
 		} `json:"codex"`
-		Vertex struct {
+		Vertex *struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"vertex"`
 		Kimi *struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"kimi"`
-		// Pointer for the same reason as TrayToken: a client that PUTs a config
-		// without this key must not wipe every price override.
 		Pricing *struct {
 			Models []pricing.Price `json:"models"`
 		} `json:"pricing"`
-		Server struct {
+		Server *struct {
 			Port          int    `json:"port"`
 			AdminUser     string `json:"admin_user"`
 			AdminPassword string `json:"admin_password"`
@@ -490,57 +499,62 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		return
 	}
 
-	// --- validate ---
-	claudeModels, err := cleanModelList(req.ClaudeOAuth.Models)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "claude models: " + err.Error()})
-		return
+	// --- validate everything before touching anything ---
+	var err error
+	claudeModels := h.cfg.ClaudeOAuth.Models
+	if req.ClaudeOAuth != nil {
+		if claudeModels, err = cleanModelList(req.ClaudeOAuth.Models); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "claude models: " + err.Error()})
+			return
+		}
 	}
-	codexModels, err := cleanModelList(req.Codex.Models)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "codex models: " + err.Error()})
-		return
+	codexModels := h.cfg.Codex.Models
+	if req.Codex != nil {
+		if codexModels, err = cleanModelList(req.Codex.Models); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "codex models: " + err.Error()})
+			return
+		}
 	}
-	vertexModels, err := cleanModelMappings(req.Vertex.Models, "vertex")
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
+	vertexModels := h.cfg.Vertex.Models
+	if req.Vertex != nil {
+		if vertexModels, err = cleanModelMappings(req.Vertex.Models, "vertex"); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
 	}
 	kimiModels := h.cfg.Kimi.Models
 	if req.Kimi != nil {
-		kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi")
-		if err != nil {
+		if kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi"); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 	}
 	priceOverrides := h.cfg.Pricing.Models
 	if req.Pricing != nil {
-		priceOverrides, err = cleanPriceOverrides(req.Pricing.Models)
-		if err != nil {
+		if priceOverrides, err = cleanPriceOverrides(req.Pricing.Models); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
 	}
 	// Port is optional: 0 means "leave unchanged". When provided it must be valid.
-	if req.Server.Port != 0 && (req.Server.Port < 1 || req.Server.Port > 65535) {
+	if req.Server != nil && req.Server.Port != 0 && (req.Server.Port < 1 || req.Server.Port > 65535) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "server port must be between 1 and 65535"})
 		return
 	}
 
 	// --- detect restart-required changes before mutating cfg ---
 	var restart []string
-	if req.Server.Port != 0 && req.Server.Port != h.cfg.Port() {
+	if req.Server != nil && req.Server.Port != 0 && req.Server.Port != h.cfg.Port() {
 		restart = append(restart, "port")
 	}
 
 	// --- apply live ---
-	if h.claudeExec != nil && h.cfg.ClaudeOAuth.Enabled {
+	if req.ClaudeOAuth != nil && h.claudeExec != nil && h.cfg.ClaudeOAuth.Enabled {
 		h.claudeExec.SetModels(claudeModels)
 		h.router.UnregisterBackend("claude")
 		h.router.Register(h.claudeExec, "claude")
 	}
-	if h.vertexExec != nil {
+	if req.Vertex != nil && h.vertexExec != nil {
 		h.vertexExec.SetModels(vertexModels)
 		if h.vertexExec.Configured() {
 			h.router.UnregisterBackend("vertex")
@@ -554,21 +568,21 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			h.router.Register(h.kimiExec, "kimi")
 		}
 	}
-	h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
-	if req.Server.TrayToken != nil {
-		h.cfg.SetTrayToken(strings.TrimSpace(*req.Server.TrayToken))
+	if req.Server != nil {
+		h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
+		if req.Server.TrayToken != nil {
+			h.cfg.SetTrayToken(strings.TrimSpace(*req.Server.TrayToken))
+		}
+		if req.Server.Port != 0 {
+			h.cfg.SetPort(req.Server.Port)
+		}
 	}
 
 	// --- update in-memory cfg, then persist ---
 	h.cfg.ClaudeOAuth.Models = claudeModels
 	h.cfg.Codex.Models = codexModels
 	h.cfg.Vertex.Models = vertexModels
-	if req.Kimi != nil {
-		h.cfg.Kimi.Models = kimiModels
-	}
-	if req.Server.Port != 0 {
-		h.cfg.SetPort(req.Server.Port)
-	}
+	h.cfg.Kimi.Models = kimiModels
 	// After the model lists, so the alias map it reads is the new one.
 	h.cfg.Pricing.Models = priceOverrides
 	h.applyPricing()

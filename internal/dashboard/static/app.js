@@ -897,11 +897,29 @@ function filterToBar(label) {
   loadStats();
 }
 
-function setCfgStatus(text, cls) {
-  const el = document.getElementById('cfg-status');
-  el.textContent = text;
-  el.className = 'cfg-status' + (cls ? ' ' + cls : '');
+// A save used to leave "Saved." pinned to the page forever, which stops carrying
+// information the moment you read it twice — you cannot tell the confirmation of
+// the save you just made from the one before it. Feedback for a momentary event
+// should be momentary; only errors stay, because those still need acting on.
+function toast(text, kind) {
+  if (!text) return;
+  const host = document.getElementById('toast-host');
+  if (!host) return;
+  const t = el('div', 'toast' + (kind ? ' toast-' + kind : ''), text);
+  // Newest on top, and never more than a handful stacked up.
+  host.prepend(t);
+  while (host.children.length > 3) host.lastElementChild.remove();
+  requestAnimationFrame(() => t.classList.add('is-in'));
+  const life = kind === 'err' ? 6000 : 2600;
+  const close = () => {
+    t.classList.remove('is-in');
+    setTimeout(() => t.remove(), 220);
+  };
+  t.onclick = close;
+  setTimeout(close, life);
 }
+
+
 
 // el builds an element in one call — this file creates a few hundred of them and
 // the three-line createElement/className/textContent dance drowns the structure.
@@ -915,9 +933,16 @@ function el(tag, cls, text) {
 }
 
 // --- Models editor ---------------------------------------------------------
-// One row per model, identical shape across all four backends:
+// One row per model:
 //
-//   [ alias clients call ] → [ upstream model ]   [ $3 / $15 ]   [✕]
+//   [ model name ]              ↦          [ $3 / $15 ]   [✕]
+//
+// The name is both what clients call and what we call upstream — the executors
+// pass it through unchanged unless told otherwise, and that is the case for
+// nearly every row. Renaming is therefore an *attribute* of a model, like its
+// price, not a second column that sits half-empty forever: the ↦ slot is a ghost
+// until you hover it or it holds a value. Only Vertex and Kimi resolve names at
+// all, so the other two backends have no slot rather than an inert one.
 //
 // The four backends used to have two different editors — chips for the OAuth
 // ones (which cannot be edited, only deleted and retyped) and full-width
@@ -936,11 +961,11 @@ const MODEL_GROUPS = [
   },
   {
     id: 'vertex', label: 'Vertex', live: true, mapped: true,
-    hint: 'alias → underlying Vertex model',
+    hint: 'served by Vertex AI · ↦ to call upstream by another name',
   },
   {
     id: 'kimi', label: 'Kimi', live: true, mapped: true,
-    hint: 'alias → Kimi upstream model; the API key stays in its env var',
+    hint: 'the API key stays in its env var · ↦ to call upstream by another name',
   },
   {
     id: 'codex', label: 'Codex', live: false, mapped: false,
@@ -1033,7 +1058,12 @@ function renderModelGroup(g) {
   head.appendChild(el('span', 'mdl-group-hint', g.hint));
   const add = el('button', 'mdl-add', '+ add');
   add.type = 'button';
-  add.onclick = () => { list.push({ name: '', model: '' }); renderModels(); focusModelRow(g.id, list.length - 1); };
+  add.onclick = () => {
+    list.push({ name: '', model: '' });
+    setPanelDirty('models', true);
+    renderModels();
+    focusModelRow(g.id, list.length - 1);
+  };
   head.appendChild(add);
   wrap.appendChild(head);
 
@@ -1046,9 +1076,6 @@ function renderModelGroup(g) {
 }
 
 function renderModelRow(g, m, i, list) {
-  // Passthrough backends get no arrow and no upstream cell — the name simply
-  // spans them. Repeating "same upstream" on every row was ten lines of text
-  // saying what the group header already says once.
   const row = el('div', 'mdl-row' + (g.mapped ? '' : ' mdl-row-plain'));
   row.dataset.group = g.id;
   row.dataset.index = String(i);
@@ -1058,7 +1085,7 @@ function renderModelRow(g, m, i, list) {
   name.value = m.name || '';
   name.placeholder = 'model name';
   name.spellcheck = false;
-  name.oninput = () => { m.name = name.value; refreshPriceCell(row, g, m); };
+  name.oninput = () => { m.name = name.value; refreshPriceCell(row, g, m); setPanelDirty('models', true); };
   // Enter appends the next row and focuses it, so a list can be typed straight
   // through the way the old chip input allowed.
   name.onkeydown = e => {
@@ -1070,16 +1097,7 @@ function renderModelRow(g, m, i, list) {
   };
   row.appendChild(name);
 
-  if (g.mapped) {
-    row.appendChild(el('span', 'mdl-arrow', '→'));
-    const upstream = document.createElement('input');
-    upstream.className = 'mdl-upstream';
-    upstream.value = m.model || '';
-    upstream.placeholder = 'upstream model';
-    upstream.spellcheck = false;
-    upstream.oninput = () => { m.model = upstream.value; refreshPriceCell(row, g, m); };
-    row.appendChild(upstream);
-  }
+  if (g.mapped) row.appendChild(renderMapCell(row, g, m));
 
   const price = el('button', 'mdl-price');
   price.type = 'button';
@@ -1089,11 +1107,35 @@ function renderModelRow(g, m, i, list) {
   const del = el('button', 'mdl-del', '✕');
   del.type = 'button';
   del.title = 'Remove';
-  del.onclick = () => { list.splice(i, 1); renderModels(); };
+  del.onclick = () => { list.splice(i, 1); setPanelDirty('models', true); renderModels(); };
   row.appendChild(del);
 
   paintPriceCell(price, g, m);
   return row;
+}
+
+// The rename slot. One input, ghosted by CSS when empty — a click-to-create
+// button would need a state machine to answer "what if they type nothing".
+function renderMapCell(row, g, m) {
+  const wrap = el('label', 'mdl-map');
+  wrap.title = 'Optional: call the upstream model by a different name. ' +
+    'Blank means the name on the left is sent as-is.';
+  wrap.appendChild(el('span', 'mdl-map-mark', '↦'));
+  const inp = document.createElement('input');
+  inp.className = 'mdl-upstream';
+  inp.value = m.model || '';
+  inp.placeholder = 'upstream name';
+  inp.spellcheck = false;
+  const sync = () => wrap.classList.toggle('has-map', !!inp.value.trim());
+  inp.oninput = () => {
+    m.model = inp.value;
+    sync();
+    refreshPriceCell(row, g, m);
+    setPanelDirty('models', true);
+  };
+  sync();
+  wrap.appendChild(inp);
+  return wrap;
 }
 
 function focusModelRow(groupId, index) {
@@ -1138,7 +1180,7 @@ function togglePriceEditor(row, g, m) {
   if (open) return;
 
   const key = normalizeModel(m.name);
-  if (!key) { setCfgStatus('Name the model first, then set its price.', 'err'); return; }
+  if (!key) { toast('Name the model first, then set its price.', 'err'); return; }
   const current = resolvePrice(m.name, g.mapped ? m.model : m.name);
 
   const box = el('div', 'mdl-edit');
@@ -1155,6 +1197,7 @@ function togglePriceEditor(row, g, m) {
     // not silently zero the other three.
     inp.value = current ? String(current.price[field] ?? 0) : '';
     inp.placeholder = '0';
+    inp.oninput = () => setPanelDirty('models', true);
     inputs[field] = inp;
     f.appendChild(inp);
     fields.appendChild(f);
@@ -1170,7 +1213,8 @@ function togglePriceEditor(row, g, m) {
       priceOverrides.delete(key);
       box.remove();
       refreshPriceCell(row, g, m);
-      setCfgStatus('Reverted to the built-in price — Save Config to persist.', '');
+      setPanelDirty('models', true);
+      toast('Reverted to the built-in price — save to persist.');
     };
     actions.appendChild(reset);
   }
@@ -1181,7 +1225,7 @@ function togglePriceEditor(row, g, m) {
     for (const [field] of PRICE_FIELDS) {
       const v = parseFloat(inputs[field].value);
       if (inputs[field].value !== '' && (!isFinite(v) || v < 0)) {
-        setCfgStatus(`${field} must be a non-negative number.`, 'err');
+        toast(`${field} must be a non-negative number.`, 'err');
         return;
       }
       p[field] = inputs[field].value === '' ? 0 : v;
@@ -1189,7 +1233,8 @@ function togglePriceEditor(row, g, m) {
     priceOverrides.set(key, p);
     box.remove();
     refreshPriceCell(row, g, m);
-    setCfgStatus('Price set — Save Config to persist.', '');
+    setPanelDirty('models', true);
+    toast('Price set — save to persist.');
   };
   actions.appendChild(apply);
   box.appendChild(actions);
@@ -1217,7 +1262,14 @@ async function loadConfig() {
   });
 
   // The Go structs marshal with capitalised keys in some paths; accept both.
-  const pairs = list => (list || []).map(m => ({ name: m.Name ?? m.name ?? '', model: m.Model ?? m.model ?? '' }));
+  // An upstream equal to the name is not a rename — older configs spell identity
+  // mappings out in full, and showing them as renames would suggest the two can
+  // drift apart when nothing is actually mapped.
+  const pairs = list => (list || []).map(m => {
+    const name = m.Name ?? m.name ?? '';
+    const model = m.Model ?? m.model ?? '';
+    return { name, model: model === name ? '' : model };
+  });
   cfgModels = {
     claude: (d.claude_oauth?.models || []).map(n => ({ name: n, model: '' })),
     codex: (d.codex?.models || []).map(n => ({ name: n, model: '' })),
@@ -1229,7 +1281,11 @@ async function loadConfig() {
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
   document.getElementById('cfg-admin-pass').value = '';
   document.getElementById('cfg-tray-token').value = d.server?.tray_token || '';
-  setCfgStatus('', '');
+  ['cfg-admin-user', 'cfg-admin-pass', 'cfg-tray-token'].forEach(id => {
+    document.getElementById(id).oninput = () => setPanelDirty('admin', true);
+  });
+  setPanelDirty('models', false);
+  setPanelDirty('admin', false);
 }
 
 // Prefixed rather than random-looking so it is never mistaken for an `sk-` API
@@ -1239,30 +1295,64 @@ function genTrayToken() {
   crypto.getRandomValues(buf);
   const hex = [...buf].map(b => b.toString(16).padStart(2, '0')).join('');
   document.getElementById('cfg-tray-token').value = 'tray-' + hex;
-  setCfgStatus('Token generated — hit Save Config, then paste it into the widget.', '');
+  setPanelDirty('admin', true);
+  toast('Token generated — save, then paste it into the widget.');
 }
 
 function copyTrayToken(btn) {
   const val = document.getElementById('cfg-tray-token').value.trim();
-  if (!val) { setCfgStatus('Nothing to copy — generate a token first.', 'err'); return; }
+  if (!val) { toast('Nothing to copy — generate a token first.', 'err'); return; }
   copyKeyInline(btn, val);
 }
 
-async function saveConfig() {
+// Models and Admin are saved separately because they are separate decisions —
+// rotating the admin password should not re-publish the model lists, and a
+// failed model edit should not hold the password hostage. Every section of the
+// PUT body is optional server-side, so each save sends only its own.
+async function putConfig(body, btn, okMsg) {
+  if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Saving…'; }
+  try {
+    const r = await apiFetch('/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(d.error || 'Save failed', 'err'); return null; }
+    let msg = okMsg;
+    if (d.restart_required && d.restart_required.length) {
+      msg += ' · restart required for ' + d.restart_required.join(', ');
+    }
+    toast(msg, 'ok');
+    return d;
+  } catch (e) {
+    toast('Save failed: ' + e.message, 'err');
+    return null;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = btn.dataset.label || 'Save'; }
+  }
+}
+
+async function saveModels(btn) {
   const names = id => (cfgModels[id] || []).map(m => (m.name || '').trim()).filter(Boolean);
   const pairs = id => (cfgModels[id] || [])
     .map(m => ({ name: (m.name || '').trim(), model: (m.model || '').trim() }))
-    .filter(m => m.name || m.model);
+    .filter(m => m.name);
   // Overrides for models that are no longer listed here are kept, not pruned:
   // they may price a Codex model that auto-syncs at startup, or one served by a
   // backend this page does not edit. An unused row costs nothing.
-  const prices = [...priceOverrides.values()];
-  const body = {
+  const d = await putConfig({
     claude_oauth: { models: names('claude') },
     codex: { models: names('codex') },
     vertex: { models: pairs('vertex') },
     kimi: { models: pairs('kimi') },
-    pricing: { models: prices },
+    pricing: { models: [...priceOverrides.values()] },
+  }, btn, 'Models saved');
+  if (d) setPanelDirty('models', false);
+}
+
+async function saveAdmin(btn) {
+  const d = await putConfig({
     server: {
       admin_user: document.getElementById('cfg-admin-user').value.trim(),
       admin_password: document.getElementById('cfg-admin-pass').value,
@@ -1270,21 +1360,17 @@ async function saveConfig() {
       // revoke. The server treats a missing key (not an empty one) as "keep".
       tray_token: document.getElementById('cfg-tray-token').value.trim(),
     },
-  };
-  setCfgStatus('Saving…', '');
-  const r = await apiFetch('/api/config', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const d = await r.json().catch(() => ({}));
-  if (!r.ok) { setCfgStatus(d.error || 'Save failed', 'err'); return; }
-  let msg = 'Saved.';
-  if (d.restart_required && d.restart_required.length) {
-    msg += ' Restart required for: ' + d.restart_required.join(', ') + '.';
+  }, btn, 'Admin settings saved');
+  if (d) {
+    document.getElementById('cfg-admin-pass').value = '';
+    setPanelDirty('admin', false);
   }
-  setCfgStatus(msg, 'ok');
-  document.getElementById('cfg-admin-pass').value = '';
+}
+
+// The dirty mark answers "did my edit register?" without a second click. It is
+// per panel, because the two save independently.
+function setPanelDirty(panel, dirty) {
+  document.getElementById('save-' + panel)?.classList.toggle('is-dirty', !!dirty);
 }
 
 function switchTab(name, el) {
