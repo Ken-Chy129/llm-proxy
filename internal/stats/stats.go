@@ -510,7 +510,11 @@ func (d *DB) StatsSummary(daysBack int, filterCol, filterVal string) Summary {
 	return s
 }
 
-func (d *DB) StatsByKey() ([]KeyStats, error) {
+// StatsByKey returns lifetime totals plus a "today" slice per key. "Today" is the
+// viewer's calendar day (tzMinutes east of UTC), matching the tray's DayUsage so
+// the dashboard's Tokens/Requests/Cost Today line up with the widget instead of
+// silently drifting by the UTC offset.
+func (d *DB) StatsByKey(tzMinutes int) ([]KeyStats, error) {
 	rows, err := d.db.Query(`
 		SELECT api_key_name,
 			COUNT(*),
@@ -526,7 +530,9 @@ func (d *DB) StatsByKey() ([]KeyStats, error) {
 	}
 	defer rows.Close()
 
-	today := time.Now().UTC().Format("2006-01-02")
+	tzMod := tzOffset(tzMinutes)
+	dayExpr := "date(time" + tzMod + ")"
+	targetExpr := "date('now'" + tzMod + ")"
 	var result []KeyStats
 	for rows.Next() {
 		var s KeyStats
@@ -536,8 +542,8 @@ func (d *DB) StatsByKey() ([]KeyStats, error) {
 				COALESCE(SUM(prompt_tokens + completion_tokens), 0),
 				COUNT(*),
 				COALESCE(SUM(cost_usd), 0)
-			FROM request_logs WHERE api_key_name = ? AND date(time) = ?`,
-			s.KeyName, today).Scan(&s.TokensToday, &s.QuotaUsedToday, &s.RequestsToday, &s.CostToday)
+			FROM request_logs WHERE api_key_name = ? AND `+dayExpr+` = `+targetExpr,
+			s.KeyName).Scan(&s.TokensToday, &s.QuotaUsedToday, &s.RequestsToday, &s.CostToday)
 		result = append(result, s)
 	}
 	return result, nil

@@ -122,7 +122,7 @@ func TestCostFlowsIntoDimensionAndKeyStats(t *testing.T) {
 		t.Errorf("per-model tokens = %d, want 1100000", byModel[0].TotalTokens)
 	}
 
-	keys, err := db.StatsByKey()
+	keys, err := db.StatsByKey(0)
 	if err != nil {
 		t.Fatalf("by key: %v", err)
 	}

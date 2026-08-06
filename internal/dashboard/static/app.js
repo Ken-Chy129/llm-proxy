@@ -1673,7 +1673,8 @@ function copyKeyInline(btn, key) {
 
 let keysCache = [];
 async function loadKeys() {
-  const r = await apiFetch('/api/keys');
+  const tz = -new Date().getTimezoneOffset(); // minutes east of UTC — align "today" with the tray widget
+  const r = await apiFetch('/api/keys?tz=' + tz);
   const d = await r.json();
   keysCache = d.keys || [];
   const body = document.getElementById('keys-body');

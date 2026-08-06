@@ -723,8 +723,12 @@ func (h *AdminHandler) ToggleBackend(c *gin.Context) {
 }
 
 func (h *AdminHandler) ListKeys(c *gin.Context) {
+	// tz: viewer's offset in minutes east of UTC, so "today" matches the tray
+	// widget's local-calendar-day figures instead of drifting by the UTC offset.
+	tzMinutes, _ := strconv.Atoi(c.DefaultQuery("tz", "0"))
+
 	keys := h.keyStore.All()
-	keyStats, _ := h.statsDB.StatsByKey()
+	keyStats, _ := h.statsDB.StatsByKey(tzMinutes)
 	statsMap := make(map[string]*stats.KeyStats)
 	for i := range keyStats {
 		statsMap[keyStats[i].KeyName] = &keyStats[i]
