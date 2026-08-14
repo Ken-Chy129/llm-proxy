@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
@@ -12,6 +13,12 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/gin-gonic/gin"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
@@ -76,5 +83,63 @@ func TestSyncModelsRegistersAnyGenModelsLive(t *testing.T) {
 	}
 	if got := r.BackendName("gpt-5.6-luna"); got != "anygen" {
 		t.Fatalf("backend = %q, want anygen", got)
+	}
+}
+
+func TestAnyGenCreditsBecomeQuotaPayload(t *testing.T) {
+	quota := anyGenCreditsQuota(executor.AnyGenCredits{
+		Verified: true,
+		UserID:   "7530827736760778771",
+		Credits:  "51139",
+	})
+
+	if quota["kind"] != "credits" {
+		t.Fatalf("kind = %v, want credits", quota["kind"])
+	}
+	if quota["account_id"] != "anygen" {
+		t.Fatalf("account_id = %v, want anygen", quota["account_id"])
+	}
+	if quota["credits"] != "51139" {
+		t.Fatalf("credits = %v, want 51139", quota["credits"])
+	}
+	if quota["has_real_data"] != true {
+		t.Fatalf("has_real_data = %v, want true", quota["has_real_data"])
+	}
+}
+
+func TestRefreshQuotaSupportsAnyGenCredits(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"verified":true,"user_id":"7530827736760778771","credits":"52141"}`)
+	}))
+	defer server.Close()
+	serverURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldTransport := http.DefaultTransport
+	http.DefaultTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		req.URL.Scheme = serverURL.Scheme
+		req.URL.Host = serverURL.Host
+		return oldTransport.RoundTrip(req)
+	})
+	t.Cleanup(func() { http.DefaultTransport = oldTransport })
+
+	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{APIKeyEnv: "TEST_ANYGEN_LLM_KEY"})
+	h := &AdminHandler{anygenExec: anygenExec}
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "provider", Value: "anygen"}, {Key: "id", Value: "anygen"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/refresh-quota/anygen/anygen", nil)
+	h.RefreshQuota(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if !bytes.Contains(w.Body.Bytes(), []byte(`"credits":"52141"`)) {
+		t.Fatalf("response missing refreshed credits: %s", w.Body.String())
 	}
 }

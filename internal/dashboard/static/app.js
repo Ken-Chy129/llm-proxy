@@ -259,6 +259,18 @@ function tokenChips(t) {
   ].join('');
 }
 
+function renderBackendModels(models) {
+  const list = models || [];
+  const tags = list.map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join('');
+  if (list.length <= 8) return `<div class="backend-models">${tags}</div>`;
+  return `<details class="backend-models-collapsible"><summary><span>${list.length} models available</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
+}
+
+function formatIntegerString(value) {
+  const text = String(value ?? '');
+  return /^-?\d+$/.test(text) ? text.replace(/\B(?=(\d{3})+(?!\d))/g, ',') : text;
+}
+
 async function loadStatus() {
   const r = await apiFetch('/api/status');
   if (r.status === 401) { window.location.href = '/login'; return; }
@@ -339,8 +351,8 @@ async function loadStatus() {
     // No card dimming for paused backends — the top-right badge (Paused/Active/
     // Expired/Offline) and the header dot already convey state.
     return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${escapeHTML(b.name)}</span><span class="backend-badge ${bc}">${bl}</span></div>`
-      + `<div class="backend-info">${escapeHTML(b.info || '')}</div>`
-      + `<div class="backend-models">${(b.models || []).map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join('')}</div>`
+      + `<div class="backend-info"${b.endpoint ? ` title="${escapeHTML(b.endpoint)}"` : ''}>${escapeHTML(b.info || '')}</div>`
+      + renderBackendModels(b.models)
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   };
   // OAuth/credential backends (account-rotated) vs API-key backends group into
@@ -364,7 +376,7 @@ async function loadStatus() {
     const quotaCards = allQuotas.map(q => {
       const planCls = q.plan_type?.toLowerCase().includes('pro') ? 'plan-pro' : q.plan_type?.toLowerCase().includes('plus') ? 'plan-plus' : 'plan-team';
       const planLabel = q.plan_type || 'Unknown';
-      const displayName = q.email || q.account_id;
+      const displayName = q.email || q.display_name || q.account_id;
       const renderRow = (w) => {
         if (!w) return '';
         const pct = Math.round(w.remaining_percent || 0);
@@ -372,7 +384,9 @@ async function loadStatus() {
         return `<div class="quota-row"><div class="quota-row-header"><span class="quota-row-label">${w.label}</span><span class="quota-row-value"><span class="pct">${pct}%</span>${w.reset_at || ''}</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:${Math.min(pct, 100)}%;background:${barColor}"></div></div></div>`;
       };
       let rows = '';
-      if (q.has_real_data) {
+      if (q.kind === 'credits' && q.has_real_data) {
+        rows = `<div class="quota-credit"><div class="quota-credit-value" title="${escapeHTML(q.credits)} credits">${escapeHTML(formatIntegerString(q.credits))}</div><div class="quota-credit-label">available credits</div></div>`;
+      } else if (q.has_real_data) {
         rows = renderRow(q.primary) + renderRow(q.secondary);
         if (q.additional) { q.additional.forEach(a => { if (a.primary) rows += renderRow(a.primary); }); }
       } else {

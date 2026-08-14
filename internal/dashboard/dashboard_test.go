@@ -115,10 +115,29 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 		"anygen: { models: names('anygen') }",
 		"b.name === 'anygen'",
 		"modelBackends.get(model) !== 'anygen'",
+		"function renderBackendModels(models)",
+		"backend-models-collapsible",
+		"q.kind === 'credits'",
+		"quota-credit-value",
 		"choices?.[0]?.message?.content",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("AnyGen dashboard integration missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	styles := string(css)
+	for _, want := range []string{
+		".backend-models-collapsible",
+		".backend-model-list{",
+		".quota-credit-value{",
+	} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("AnyGen compact/quota styles missing %q", want)
 		}
 	}
 }

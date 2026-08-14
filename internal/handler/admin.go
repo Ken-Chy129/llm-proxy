@@ -106,17 +106,17 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		disabled := h.tokenStore.IsBackendDisabled("anygen")
 		status := "not_authenticated"
 		info := "Missing environment variable " + h.anygenExec.APIKeyEnv()
+		var creditsQuota gin.H
 		if h.anygenExec.Configured() {
 			status = "active"
-			info = h.anygenExec.BaseURL() + " · key: " + h.anygenExec.APIKeyEnv()
+			info = "key: " + h.anygenExec.APIKeyEnv()
 			if len(h.anygenExec.Models()) == 0 {
 				status = "not_authenticated"
 				info += " · no models synced"
 			}
 			if credits, ok := h.anygenExec.Credits(); ok {
-				if credits.Verified {
-					info += " · credits: " + credits.Credits
-				} else {
+				creditsQuota = anyGenCreditsQuota(credits)
+				if !credits.Verified {
 					status = "not_authenticated"
 					info += " · key not verified"
 				}
@@ -125,13 +125,18 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		if disabled {
 			status = "disabled"
 		}
-		backends = append(backends, gin.H{
+		entry := gin.H{
 			"name":     "anygen",
 			"status":   status,
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.anygenExec.Models(),
-		})
+			"endpoint": h.anygenExec.BaseURL(),
+		}
+		if creditsQuota != nil {
+			entry["quotas"] = []gin.H{creditsQuota}
+		}
+		backends = append(backends, entry)
 	}
 
 	// OAuth providers
@@ -684,6 +689,15 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 func (h *AdminHandler) RefreshQuota(c *gin.Context) {
 	provider := c.Param("provider")
 	id := c.Param("id")
+	if provider == "anygen" && h.anygenExec != nil {
+		credits, err := h.anygenExec.RefreshCredits(c.Request.Context())
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"ok": true, "quota": anyGenCreditsQuota(credits)})
+		return
+	}
 	if provider == "codex" && h.codexOAuth != nil {
 		if err := h.codexOAuth.FetchQuotaForAccountByID(c.Request.Context(), id); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -703,6 +717,18 @@ func (h *AdminHandler) RefreshQuota(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported provider"})
+}
+
+func anyGenCreditsQuota(credits executor.AnyGenCredits) gin.H {
+	return gin.H{
+		"kind":          "credits",
+		"account_id":    "anygen",
+		"display_name":  "Platform balance",
+		"plan_type":     "Credits",
+		"has_real_data": credits.Verified && strings.TrimSpace(credits.Credits) != "",
+		"verified":      credits.Verified,
+		"credits":       credits.Credits,
+	}
 }
 
 // SetVertexCredentials accepts an uploaded GCP credential JSON from the
