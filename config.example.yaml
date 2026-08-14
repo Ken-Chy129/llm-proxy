@@ -60,8 +60,10 @@ kimi:
 # AnyGen uses one app-scoped sk-ag key for Chat Completions and Models. The key
 # must grant exactly those two actions with whole_app=false. The live model list
 # is fetched for free at startup; models below are used only if that sync fails.
-# Chat Completions is non-streaming only. Credits come from the platform-native
-# /v1/openapi/key/verify endpoint, outside this app base URL.
+# Chat Completions is non-streaming only. /v1/responses waits for the completed
+# result and adapts it to typed Responses SSE for clients such as Codex CLI.
+# Credits come from the platform-native /v1/openapi/key/verify endpoint, outside
+# this app base URL.
 anygen:
   enabled: false
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"

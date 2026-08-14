@@ -141,7 +141,7 @@ anygen:
     - "gpt-5.6-luna"
 ```
 
-启动时代理会调用上游 `GET /models` 动态注册当前可见模型；该查询不触发模型调用、不扣积分。AnyGen Chat Completions 只支持非流式请求，`stream:true` 会被明确拒绝。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 AnyGen Backend 卡片中。
+启动时代理会调用上游 `GET /models` 动态注册当前可见模型；该查询不触发模型调用、不扣积分。AnyGen Chat Completions 仍只支持非流式请求，`stream:true` 会被明确拒绝；Codex CLI 使用的 `/v1/responses` 会由代理等待完整结果后转换为标准 Responses SSE，支持文本和 function call 事件。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 Quota 页面中。
 
 Claude Code：
 
@@ -366,7 +366,7 @@ nohup ./llm-proxy -config config.yaml > /var/log/llm-proxy.log 2>&1 &
   │
   ├─ /v1/messages           → Router → 透传或转换 → Claude / Vertex / Kimi
   ├─ /v1/chat/completions   → Router → Executor → 后端 API（AnyGen 仅非流式）
-  ├─ /v1/responses          → Codex 直通或转换 ──→ chatgpt.com / Kimi
+  ├─ /v1/responses          → Codex 直通或 Chat→Responses SSE 转换 ──→ chatgpt.com / Kimi / AnyGen
   ├─ /v1/images/generations → Codex Tool Call ───→ chatgpt.com
   └─ /v1/models             → 返回所有已注册模型
 
@@ -375,7 +375,8 @@ Executor（执行器）：
   ClaudeOAuthExecutor  → OpenAI ↔ Anthropic Messages API ↔ api.anthropic.com
   CodexExecutor        → OpenAI ↔ Codex Responses API    ↔ chatgpt.com
   KimiExecutor         → OpenAI/Responses/Anthropic      ↔ Kimi Chat Completions
-  AnyGenExecutor       → OpenAI Chat Completions         ↔ AnyGen App API
+  AnyGenExecutor       → 非流式 Chat Completions          ↔ AnyGen App API
+  ResponsesHandler     → 完整 Chat 结果转标准 Responses SSE
 ```
 
 ## 技术栈
