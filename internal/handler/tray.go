@@ -270,7 +270,7 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 	}
 
 	// Backend health, so the tray can flag a wholly dead backend.
-	for _, name := range []string{"claude", "codex", "kimi", "vertex"} {
+	for _, name := range []string{"claude", "codex", "kimi", "anygen", "vertex"} {
 		configured := false
 		switch name {
 		case "claude":
@@ -279,6 +279,8 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 			configured = h.cfg.Codex.Enabled
 		case "kimi":
 			configured = h.kimiExec != nil && h.cfg.Kimi.Enabled && h.kimiExec.Configured()
+		case "anygen":
+			configured = h.anygenExec != nil && h.cfg.AnyGen.Enabled && h.anygenExec.Configured() && len(h.anygenExec.Models()) > 0
 		case "vertex":
 			configured = h.vertexExec != nil && h.vertexExec.Configured()
 		}

@@ -6,7 +6,7 @@
 
 [简体中文](README.md) | **English**
 
-Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth), OpenAI Codex (OAuth), and Kimi API behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
+Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth), OpenAI Codex (OAuth), Kimi API, and AnyGen API behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
@@ -14,7 +14,7 @@ Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Cl
 
 - **Multi-protocol** — OpenAI `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` + Anthropic `/v1/messages` passthrough or translation
 - **Drop-in compatible** — Works directly with Claude Code, Codex CLI, and OpenAI SDKs
-- **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth, Kimi API — auto-dispatched by model name
+- **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth, Kimi API, AnyGen API — auto-dispatched by model name
 - **Account pooling + failover** — Round-robin load balancing; on an upstream 429 the request fails over to the next account, and expired tokens are auto-skipped
 - **Multi API-key management** — Issue per-caller keys with individual daily token limits; create/revoke from the dashboard
 - **Visual analytics** — Time-series trend plus breakdowns by model / key / backend / account (timezone-aware)
@@ -119,6 +119,27 @@ kimi:
 
 Kimi Coding may accept an unknown model string without rejecting the request, so the upstream IDs must exactly match `/v1/models`. K3's upstream ID is `k3`, not `kimi-k3`.
 
+### AnyGen through the proxy
+
+The AnyGen `sk-ag` key is read only from an environment variable:
+
+```bash
+export ANYGEN_LLM_KEY="your_sk-ag_key"
+```
+
+Grant the key exactly the app's `Chat Completions` and `Models` actions with `whole_app=false`, then configure the app-scoped API base URL:
+
+```yaml
+anygen:
+  enabled: true
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  api_key_env: "ANYGEN_LLM_KEY"
+  models:                         # used only when startup sync fails
+    - "gpt-5.6-luna"
+```
+
+At startup the proxy calls upstream `GET /models` and registers the visible models dynamically. The model-list request invokes no model and consumes no credits. AnyGen Chat Completions is non-streaming only; `stream:true` is rejected explicitly. Credits are fetched from the platform-native `GET https://www.anygen.io/v1/openapi/key/verify` endpoint, outside the app's `/api/v1` base URL, and shown on the AnyGen Backend card.
+
 Claude Code:
 
 ```bash
@@ -184,8 +205,9 @@ curl https://your-domain/v1/images/generations \
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | Browser OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | Browser OAuth |
 | Kimi Code | kimi-k3 (upstream `k3`), kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` environment variable |
+| AnyGen | Synced dynamically from `/models` at startup (for example GPT, Gemini, Claude, and DeepSeek models) | `ANYGEN_LLM_KEY` environment variable |
 
-> Model lists are editable from the dashboard's **Config** tab; Codex auto-fetches its available models after login.
+> Model lists are editable from the dashboard's **Config** tab; Codex and AnyGen sync available models from upstream. The configured AnyGen list is only a fallback for failed startup sync.
 
 ## Auth & API Keys
 
@@ -235,6 +257,13 @@ kimi:
   models:
     - name: "kimi-k3"
       model: "kimi-k3"
+
+anygen:
+  enabled: true
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  api_key_env: "ANYGEN_LLM_KEY"
+  models:                              # Fallback list; synced for free at startup
+    - "gpt-5.6-luna"
 ```
 
 ## Dashboard
@@ -247,7 +276,7 @@ Visit `http://your-domain:9090/` and login with admin credentials.
 
 **Stats** — Time-series trend (toggle requests / tokens / cost / errors, timezone-aware), with a breakdown by model / key / backend / account below.
 
-**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Only Vertex and Kimi resolve names at all, so the other two backends have no slot. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
+**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Only Vertex and Kimi resolve names, so Claude OAuth, Codex, and AnyGen have no mapping slot. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
 
 **Cost accounting** — every request is priced as it is recorded, from a built-in table of published list rates (Anthropic / OpenAI / Moonshot), with input, cache read, cache write and output billed separately. The figure is *list API price*: Claude Code and Codex subscription traffic is not billed per request, so it answers "what would these tokens have cost on the pay-per-token API".
 
@@ -319,7 +348,7 @@ nohup ./llm-proxy -config config.yaml > /var/log/llm-proxy.log 2>&1 &
 Client Request
   │
   ├─ /v1/messages           → Router → Passthrough/translate → Claude / Vertex / Kimi
-  ├─ /v1/chat/completions   → Router → Executor ────────→ Backend API
+  ├─ /v1/chat/completions   → Router → Executor ────────→ Backend API (AnyGen: non-streaming only)
   ├─ /v1/responses          → Passthrough/translate ────→ chatgpt.com / Kimi
   ├─ /v1/images/generations → Codex tool call ──────────→ chatgpt.com
   └─ /v1/models             → List all registered models
@@ -329,6 +358,7 @@ Executors:
   ClaudeOAuthExecutor  → OpenAI ↔ Anthropic Messages API ↔ api.anthropic.com
   CodexExecutor        → OpenAI ↔ Codex Responses API    ↔ chatgpt.com
   KimiExecutor         → OpenAI/Responses/Anthropic      ↔ Kimi Chat Completions
+  AnyGenExecutor       → OpenAI Chat Completions         ↔ AnyGen App API
 ```
 
 ## Tech Stack

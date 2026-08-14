@@ -57,6 +57,18 @@ kimi:
     - name: "kimi-for-coding"
     - name: "kimi-for-coding-highspeed"
 
+# AnyGen uses one app-scoped sk-ag key for Chat Completions and Models. The key
+# must grant exactly those two actions with whole_app=false. The live model list
+# is fetched for free at startup; models below are used only if that sync fails.
+# Chat Completions is non-streaming only. Credits come from the platform-native
+# /v1/openapi/key/verify endpoint, outside this app base URL.
+anygen:
+  enabled: false
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  api_key_env: "ANYGEN_LLM_KEY"
+  models:
+    - "gpt-5.6-luna"
+
 # Cost accounting. Every request is priced at write time from a built-in table
 # of published list rates (Anthropic / OpenAI / Moonshot) and shown on the
 # dashboard. Note this is what the tokens *would* cost on the pay-per-token API:

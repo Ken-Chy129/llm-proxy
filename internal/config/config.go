@@ -15,6 +15,7 @@ type Config struct {
 	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
 	Codex       CodexConfig       `yaml:"codex"`
 	Kimi        KimiConfig        `yaml:"kimi"`
+	AnyGen      AnyGenConfig      `yaml:"anygen"`
 	Pricing     PricingConfig     `yaml:"pricing"`
 
 	// mu guards only the ServerConfig fields the dashboard can rewrite while the
@@ -90,6 +91,16 @@ type KimiConfig struct {
 	APIKeyEnv string        `yaml:"api_key_env"`
 	APIFormat string        `yaml:"api_format"`
 	Models    []ModelConfig `yaml:"models"`
+}
+
+// AnyGenConfig keeps the sk-ag credential outside config.yaml. Models are a
+// startup fallback only: a configured backend replaces them with the zero-cost
+// model list returned by AnyGen's OpenAI-compatible /models endpoint.
+type AnyGenConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	BaseURL   string   `yaml:"base_url"`
+	APIKeyEnv string   `yaml:"api_key_env"`
+	Models    []string `yaml:"models"`
 }
 
 // PricingConfig overrides or extends the built-in per-model price table used to

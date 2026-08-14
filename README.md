@@ -6,7 +6,7 @@
 
 **简体中文** | [English](README_EN.md)
 
-为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）、OpenAI Codex（OAuth）和 Kimi API 统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
+为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）、OpenAI Codex（OAuth）、Kimi API 和 AnyGen API 统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
@@ -14,7 +14,7 @@
 
 - **多协议兼容** — OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations` + Anthropic `/v1/messages` 透传或协议转换
 - **开箱即用** — Claude Code、Codex CLI、OpenAI SDK 均可直连，零适配成本
-- **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth、Kimi API，按模型名自动分发
+- **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth、Kimi API、AnyGen API，按模型名自动分发
 - **多账号轮转 + 故障转移** — Round-robin 负载均衡；某账号被上游 429 限流时自动切换到下一个账号，过期 Token 自动跳过
 - **多 API Key 管理** — 为不同调用方签发独立密钥，每个密钥可设每日 Token 限额，仪表板增删改
 - **可视化统计** — 时间趋势图 + 按模型 / 密钥 / 后端 / 账号的多维度拆分（自适应时区）
@@ -122,6 +122,27 @@ kimi:
 
 重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。Kimi Coding API 对未知模型名可能仍返回成功，因此上游 ID 必须使用 `/v1/models` 返回的精确值；K3 的 ID 是 `k3`，不是 `kimi-k3`。
 
+### 通过代理使用 AnyGen
+
+AnyGen 的 `sk-ag` Key 只从环境变量读取：
+
+```bash
+export ANYGEN_LLM_KEY="你的_sk-ag_Key"
+```
+
+Key 应精确授权 App 的 `Chat Completions` 和 `Models` 两条 action，并设置 `whole_app=false`。配置 App API base URL：
+
+```yaml
+anygen:
+  enabled: true
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  api_key_env: "ANYGEN_LLM_KEY"
+  models:                         # 仅在启动同步失败时使用
+    - "gpt-5.6-luna"
+```
+
+启动时代理会调用上游 `GET /models` 动态注册当前可见模型；该查询不触发模型调用、不扣积分。AnyGen Chat Completions 只支持非流式请求，`stream:true` 会被明确拒绝。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 AnyGen Backend 卡片中。
+
 Claude Code：
 
 ```bash
@@ -203,8 +224,9 @@ curl https://your-domain/v1/images/generations \
 | Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | 浏览器 OAuth |
 | Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | 浏览器 OAuth |
 | Kimi Code | kimi-k3（上游 `k3`）, kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` 环境变量 |
+| AnyGen | 启动时从 `/models` 动态同步（如 gpt-5.6-luna、Gemini、Claude、DeepSeek） | `ANYGEN_LLM_KEY` 环境变量 |
 
-> 模型列表可在仪表板的 **Config** 页在线编辑；Codex 登录后会自动从上游拉取可用模型。
+> 模型列表可在仪表板的 **Config** 页在线编辑；Codex 和 AnyGen 会从上游同步可用模型，配置中的 AnyGen 列表仅作为同步失败时的回退。
 
 ## 鉴权与 API Key
 
@@ -252,6 +274,13 @@ kimi:
   models:
     - name: "kimi-k3"
       model: "kimi-k3"
+
+anygen:
+  enabled: true
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  api_key_env: "ANYGEN_LLM_KEY"          # 这里只写环境变量名，不写 sk-ag Key
+  models:                                 # 回退列表；启动时免费同步
+    - "gpt-5.6-luna"
 ```
 
 ## 管理仪表板
@@ -264,7 +293,7 @@ kimi:
 
 **Stats** — 时间趋势图（请求数 / Token / 花费 / 错误数可切换，自适应时区），下方按模型 / 密钥 / 后端 / 账号拆分。
 
-**Config → Models** — 一行一个模型，四个后端同一形状。名字既是客户端调用的名字、也是发给上游的名字（执行器默认原样透传），只有需要**改名**时才填 `model:`——行内 `↦` 槽位平时是幽灵态，鼠标移过去或已填值时才显形。只有 Vertex / Kimi 支持改名（Claude OAuth 和 Codex 的执行器不做名字解析），所以另两组没有这个槽位。Models 和 Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
+**Config → Models** — 一行一个模型，各后端使用同一形状。名字既是客户端调用的名字、也是发给上游的名字（执行器默认原样透传），只有需要**改名**时才填 `model:`——行内 `↦` 槽位平时是幽灵态，鼠标移过去或已填值时才显形。只有 Vertex / Kimi 支持改名（Claude OAuth、Codex 和 AnyGen 的执行器不做名字解析），所以其他组没有这个槽位。Models 和 Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
 
 **花费统计** — 每条请求在落库时按内置价格表（Anthropic / OpenAI / Moonshot 公开单价）算出金额并冻结，input、cache read、cache write、output 四个桶分别计价。注意这是**按量计费 API 的等价价格**：Claude Code / Codex 订阅账号并不按请求扣费，这个数字表示"同样的 token 走官方 API 要多少钱"。
 
@@ -336,7 +365,7 @@ nohup ./llm-proxy -config config.yaml > /var/log/llm-proxy.log 2>&1 &
 客户端请求
   │
   ├─ /v1/messages           → Router → 透传或转换 → Claude / Vertex / Kimi
-  ├─ /v1/chat/completions   → Router → Executor → 后端 API
+  ├─ /v1/chat/completions   → Router → Executor → 后端 API（AnyGen 仅非流式）
   ├─ /v1/responses          → Codex 直通或转换 ──→ chatgpt.com / Kimi
   ├─ /v1/images/generations → Codex Tool Call ───→ chatgpt.com
   └─ /v1/models             → 返回所有已注册模型
@@ -346,6 +375,7 @@ Executor（执行器）：
   ClaudeOAuthExecutor  → OpenAI ↔ Anthropic Messages API ↔ api.anthropic.com
   CodexExecutor        → OpenAI ↔ Codex Responses API    ↔ chatgpt.com
   KimiExecutor         → OpenAI/Responses/Anthropic      ↔ Kimi Chat Completions
+  AnyGenExecutor       → OpenAI Chat Completions         ↔ AnyGen App API
 ```
 
 ## 技术栈

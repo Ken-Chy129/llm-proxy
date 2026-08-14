@@ -31,10 +31,11 @@ type AdminHandler struct {
 	codexExec   *executor.CodexExecutor
 	vertexExec  *executor.VertexExecutor
 	kimiExec    *executor.KimiExecutor
+	anygenExec  *executor.AnyGenExecutor
 }
 
-func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor) *AdminHandler {
-	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec}
+func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor) *AdminHandler {
+	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, anygenExec: anygenExec}
 }
 
 // formatLocalTime renders a timestamp as HH:MM, prefixing the date (MM-DD) when
@@ -96,6 +97,40 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.kimiExec.Models(),
+		})
+	}
+
+	// AnyGen — models are synced from the free OpenAI-compatible endpoint; the
+	// platform-native key verification response supplies the current credits.
+	if h.anygenExec != nil && h.cfg.AnyGen.Enabled {
+		disabled := h.tokenStore.IsBackendDisabled("anygen")
+		status := "not_authenticated"
+		info := "Missing environment variable " + h.anygenExec.APIKeyEnv()
+		if h.anygenExec.Configured() {
+			status = "active"
+			info = h.anygenExec.BaseURL() + " · key: " + h.anygenExec.APIKeyEnv()
+			if len(h.anygenExec.Models()) == 0 {
+				status = "not_authenticated"
+				info += " · no models synced"
+			}
+			if credits, ok := h.anygenExec.Credits(); ok {
+				if credits.Verified {
+					info += " · credits: " + credits.Credits
+				} else {
+					status = "not_authenticated"
+					info += " · key not verified"
+				}
+			}
+		}
+		if disabled {
+			status = "disabled"
+		}
+		backends = append(backends, gin.H{
+			"name":     "anygen",
+			"status":   status,
+			"disabled": disabled,
+			"info":     info,
+			"models":   h.anygenExec.Models(),
 		})
 	}
 
@@ -368,6 +403,12 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"api_format":  h.cfg.Kimi.APIFormat,
 			"models":      h.cfg.Kimi.Models,
 		},
+		"anygen": gin.H{
+			"enabled":     h.cfg.AnyGen.Enabled,
+			"base_url":    h.cfg.AnyGen.BaseURL,
+			"api_key_env": h.cfg.AnyGen.APIKeyEnv,
+			"models":      h.cfg.AnyGen.Models,
+		},
 		// Only the overrides, not the effective table — the Models editor needs to
 		// tell "you changed this" from "this is the built-in rate", and /api/pricing
 		// serves the effective figures.
@@ -480,6 +521,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		Kimi *struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"kimi"`
+		AnyGen *struct {
+			Models []string `json:"models"`
+		} `json:"anygen"`
 		Pricing *struct {
 			Models []pricing.Price `json:"models"`
 		} `json:"pricing"`
@@ -526,6 +570,13 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	if req.Kimi != nil {
 		if kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi"); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+	anygenModels := h.cfg.AnyGen.Models
+	if req.AnyGen != nil {
+		if anygenModels, err = cleanModelList(req.AnyGen.Models); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "anygen models: " + err.Error()})
 			return
 		}
 	}
@@ -583,6 +634,7 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	h.cfg.Codex.Models = codexModels
 	h.cfg.Vertex.Models = vertexModels
 	h.cfg.Kimi.Models = kimiModels
+	h.cfg.AnyGen.Models = anygenModels
 	// After the model lists, so the alias map it reads is the new one.
 	h.cfg.Pricing.Models = priceOverrides
 	h.applyPricing()
@@ -614,6 +666,16 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 	if h.claudeOAuth != nil {
 		h.claudeOAuth.FetchAllQuotas(c.Request.Context())
 		results["claude"] = gin.H{"quotas": "refreshed"}
+	}
+	if h.anygenExec != nil && h.cfg.AnyGen.Enabled && h.anygenExec.Configured() {
+		models, err := h.anygenExec.SyncModels(c.Request.Context())
+		if err != nil {
+			results["anygen"] = gin.H{"error": err.Error()}
+		} else {
+			h.router.UnregisterBackend("anygen")
+			h.router.Register(h.anygenExec, "anygen")
+			results["anygen"] = gin.H{"models": models, "count": len(models)}
+		}
 	}
 
 	c.JSON(http.StatusOK, results)

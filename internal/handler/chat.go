@@ -46,6 +46,12 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	start := time.Now()
 
 	if req.Stream {
+		if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{"message": "the selected backend supports non-streaming Chat Completions only", "type": "invalid_request_error"},
+			})
+			return
+		}
 		h.handleStream(c, exec, &req, start)
 		return
 	}

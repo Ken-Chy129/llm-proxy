@@ -102,3 +102,23 @@ func TestStatusRefreshPatchesRenderedListsInsteadOfReplacingThem(t *testing.T) {
 		}
 	}
 }
+
+func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"id: 'anygen', label: 'AnyGen'",
+		"anygen: (d.anygen?.models || [])",
+		"anygen: { models: names('anygen') }",
+		"b.name === 'anygen'",
+		"modelBackends.get(model) !== 'anygen'",
+		"choices?.[0]?.message?.content",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("AnyGen dashboard integration missing %q", want)
+		}
+	}
+}

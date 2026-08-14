@@ -1,6 +1,7 @@
 let logPage = 0;
 const logLimit = 30;
 let statusBooted = false;
+let modelBackends = new Map();
 
 function apiFetch(url, opts) {
   return fetch(url, opts);
@@ -262,6 +263,15 @@ async function loadStatus() {
   const r = await apiFetch('/api/status');
   if (r.status === 401) { window.location.href = '/login'; return; }
   const d = await r.json();
+  modelBackends = new Map();
+  (d.backends || []).forEach(b => {
+    if (b.status !== 'active' || b.disabled) return;
+    (b.models || []).forEach(model => {
+      // The server registers AnyGen after the existing backends, so an enabled
+      // AnyGen model owns an overlapping ID and must also determine stream mode.
+      if (b.name === 'anygen' || !modelBackends.has(model)) modelBackends.set(model, b.name);
+    });
+  });
   document.getElementById('total-requests').textContent = (d.total_requests || 0).toLocaleString();
   // All-time tokens run to nine digits now that cache is counted, and the exact
   // figure is never what this readout is for — it answers "what order of
@@ -323,7 +333,8 @@ async function loadStatus() {
         addBtn += `<button class="btn-add" style="margin-left:4px;color:var(--red);border-color:var(--red)" onclick="removeVertexCredentials()">Remove</button>`;
       }
     }
-    const syncBtn = isOAuth && b.status === 'active' ? `<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>` : '';
+    const canSync = isOAuth || b.name === 'anygen';
+    const syncBtn = canSync && b.status === 'active' ? `<button class="btn-add" style="margin-left:4px" onclick="syncModels()">Sync</button>` : '';
     const toggleBtn = `<button class="btn-add" style="${b.disabled ? 'color:var(--green);border-color:var(--green)' : 'color:var(--yellow);border-color:var(--yellow)'}" onclick="toggleBackend('${b.name}')">${b.disabled ? 'Enable' : 'Pause'}</button>`;
     // No card dimming for paused backends — the top-right badge (Paused/Active/
     // Expired/Offline) and the header dot already convey state.
@@ -422,6 +433,7 @@ function showChatStatus(model) {
 
 async function sendChat() {
   const model = document.getElementById('chat-model').value;
+  const supportsStreaming = modelBackends.get(model) !== 'anygen';
   const input = document.getElementById('chat-input').value.trim();
   if (!input) return;
   const output = document.getElementById('chat-output');
@@ -434,9 +446,17 @@ async function sendChat() {
   try {
     const resp = await apiFetch('/v1/chat/completions', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: input }], stream: true })
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: input }], stream: supportsStreaming })
     });
     if (!resp.ok) { const e = await resp.json(); hideChatStatus(); output.classList.remove('waiting'); output.textContent = 'Error: ' + (e.error?.message || resp.statusText); return; }
+    if (!supportsStreaming) {
+      const completion = await resp.json();
+      const text = completion.choices?.[0]?.message?.content || '';
+      hideChatStatus();
+      output.classList.remove('waiting');
+      output.textContent = text || 'No visible text returned.';
+      return;
+    }
     const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
     while (true) {
       const { done, value } = await reader.read(); if (done) break;
@@ -1009,7 +1029,7 @@ function el(tag, cls, text) {
 // nearly every row. Renaming is therefore an *attribute* of a model, like its
 // price, not a second column that sits half-empty forever: the ↦ slot is a ghost
 // until you hover it or it holds a value. Only Vertex and Kimi resolve names at
-// all, so the other two backends have no slot rather than an inert one.
+// all, so the other backends have no slot rather than an inert one.
 //
 // The four backends used to have two different editors — chips for the OAuth
 // ones (which cannot be edited, only deleted and retyped) and full-width
@@ -1035,13 +1055,17 @@ const MODEL_GROUPS = [
     hint: 'the API key stays in its env var · ↦ to call upstream by another name',
   },
   {
+    id: 'anygen', label: 'AnyGen', live: false, mapped: false,
+    hint: 'fallback list only — AnyGen re-syncs the free /models endpoint at startup',
+  },
+  {
     id: 'codex', label: 'Codex', live: false, mapped: false,
     hint: 'fallback list only — Codex re-syncs from the API at startup',
   },
 ];
 
 // cfgModels[group] = [{name, model}] — model is unused for unmapped groups.
-let cfgModels = { claude: [], vertex: [], kimi: [], codex: [] };
+let cfgModels = { claude: [], vertex: [], kimi: [], anygen: [], codex: [] };
 // Effective price table from /api/pricing, plus the local override edits. Both
 // are keyed by normalised model name; overrides also keep the name as typed, so
 // saving round-trips it verbatim into config.yaml.
@@ -1342,6 +1366,7 @@ async function loadConfig() {
     codex: (d.codex?.models || []).map(n => ({ name: n, model: '' })),
     vertex: pairs(d.vertex?.models),
     kimi: pairs(d.kimi?.models),
+    anygen: (d.anygen?.models || []).map(n => ({ name: n, model: '' })),
   };
   renderModels();
 
@@ -1413,6 +1438,7 @@ async function saveModels(btn) {
     codex: { models: names('codex') },
     vertex: { models: pairs('vertex') },
     kimi: { models: pairs('kimi') },
+    anygen: { models: names('anygen') },
     pricing: { models: [...priceOverrides.values()] },
   }, btn, 'Models saved');
   if (d) setPanelDirty('models', false);

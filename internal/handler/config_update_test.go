@@ -34,6 +34,7 @@ func newConfigHandler(t *testing.T) (*AdminHandler, *config.Config, string) {
 	cfg.Codex.Models = []string{"gpt-5.5"}
 	cfg.Vertex.Models = []config.ModelConfig{{Name: "sonnet", Model: "claude-sonnet-4-6"}}
 	cfg.Kimi.Models = []config.ModelConfig{{Name: "kimi-k3", Model: "k3"}}
+	cfg.AnyGen.Models = []string{"gpt-5.6-luna"}
 
 	db, err := stats.Open(dir)
 	if err != nil {
@@ -72,9 +73,9 @@ func TestUpdateConfigLeavesAbsentSectionsAlone(t *testing.T) {
 		t.Errorf("password = %q, want %q", pass, "after")
 	}
 	if len(cfg.ClaudeOAuth.Models) != 1 || len(cfg.Codex.Models) != 1 ||
-		len(cfg.Vertex.Models) != 1 || len(cfg.Kimi.Models) != 1 {
-		t.Fatalf("an admin-only save clobbered the model lists: claude=%v codex=%v vertex=%v kimi=%v",
-			cfg.ClaudeOAuth.Models, cfg.Codex.Models, cfg.Vertex.Models, cfg.Kimi.Models)
+		len(cfg.Vertex.Models) != 1 || len(cfg.Kimi.Models) != 1 || len(cfg.AnyGen.Models) != 1 {
+		t.Fatalf("an admin-only save clobbered the model lists: claude=%v codex=%v vertex=%v kimi=%v anygen=%v",
+			cfg.ClaudeOAuth.Models, cfg.Codex.Models, cfg.Vertex.Models, cfg.Kimi.Models, cfg.AnyGen.Models)
 	}
 
 	// And the same must hold on disk, not just in memory.
@@ -84,6 +85,9 @@ func TestUpdateConfigLeavesAbsentSectionsAlone(t *testing.T) {
 	}
 	if len(reloaded.Vertex.Models) != 1 || reloaded.Vertex.Models[0].Name != "sonnet" {
 		t.Errorf("persisted vertex models = %v, want the original single entry", reloaded.Vertex.Models)
+	}
+	if len(reloaded.AnyGen.Models) != 1 || reloaded.AnyGen.Models[0] != "gpt-5.6-luna" {
+		t.Errorf("persisted anygen models = %v, want the original fallback", reloaded.AnyGen.Models)
 	}
 }
 

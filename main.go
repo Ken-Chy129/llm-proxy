@@ -109,6 +109,34 @@ func main() {
 		}
 	}
 
+	// AnyGen API: app-scoped OpenAI-compatible Chat Completions + Models with
+	// one sk-ag key. The model list is free to query and replaces the config
+	// fallback whenever startup sync succeeds. Registering after the other
+	// backends gives an enabled AnyGen backend ownership of overlapping model IDs.
+	anygenExec := executor.NewAnyGenExecutor(cfg.AnyGen)
+	if cfg.AnyGen.Enabled {
+		if !anygenExec.Configured() {
+			log.Printf("anygen enabled but %s is not set; backend not registered", anygenExec.APIKeyEnv())
+		} else {
+			if models, err := anygenExec.SyncModels(context.Background()); err != nil {
+				log.Printf("failed to fetch anygen models, using config fallback: %v", err)
+			} else {
+				log.Printf("synced %d anygen models", len(models))
+			}
+			if credits, err := anygenExec.RefreshCredits(context.Background()); err != nil {
+				log.Printf("failed to query anygen credits: %v", err)
+			} else {
+				log.Printf("verified anygen key (user=%s, credits=%s)", credits.UserID, credits.Credits)
+			}
+			if len(anygenExec.Models()) > 0 {
+				r.Register(anygenExec, "anygen")
+				log.Printf("registered anygen executor: %v (base=%s, key_env=%s)", anygenExec.Models(), anygenExec.BaseURL(), anygenExec.APIKeyEnv())
+			} else {
+				log.Printf("anygen has no synced or fallback models; backend not registered")
+			}
+		}
+	}
+
 	keyStore := auth.NewKeyStore(tokenStore.Dir())
 
 	// Cleanup old logs (retain 90 days), run at startup and daily
@@ -125,7 +153,7 @@ func main() {
 
 	// Periodically refresh OAuth quotas so account selection sees current
 	// reset/limit data (window reset times roll forward over time).
-	if claudeOAuth != nil || codexOAuth != nil {
+	if claudeOAuth != nil || codexOAuth != nil || (cfg.AnyGen.Enabled && anygenExec.Configured()) {
 		go func() {
 			for range time.NewTicker(5 * time.Minute).C {
 				if claudeOAuth != nil {
@@ -134,11 +162,16 @@ func main() {
 				if codexOAuth != nil {
 					codexOAuth.FetchAllQuotas(context.Background())
 				}
+				if cfg.AnyGen.Enabled && anygenExec.Configured() {
+					if _, err := anygenExec.RefreshCredits(context.Background()); err != nil {
+						log.Printf("refresh anygen credits: %v", err)
+					}
+				}
 			}
 		}()
 	}
 
-	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec); err != nil {
+	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, anygenExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

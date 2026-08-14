@@ -82,6 +82,13 @@ type Executor interface {
 	Models() []string
 }
 
+// StreamingSupport is optional. Executors that omit it are assumed to support
+// streaming for backward compatibility; a non-streaming backend implements it
+// so the handler can reject the request before writing SSE headers.
+type StreamingSupport interface {
+	SupportsStreaming() bool
+}
+
 type ResponsesExecutor interface {
 	OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error)
 }
