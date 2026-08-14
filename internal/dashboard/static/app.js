@@ -12,6 +12,54 @@ function escapeHTML(value) {
   })[ch]);
 }
 
+function htmlFragment(html) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  return template.content;
+}
+
+// Status is polled every 15 seconds. Keep live DOM nodes when their rendered
+// content is unchanged so a background refresh cannot reset focus, animations,
+// scroll anchoring, or force a full section layout.
+function syncHTML(el, html) {
+  const next = htmlFragment(html);
+  const currentNodes = el.childNodes;
+  const nextNodes = next.childNodes;
+  const unchanged = currentNodes.length === nextNodes.length
+    && Array.from(currentNodes).every((node, i) => node.isEqualNode(nextNodes[i]));
+  if (unchanged) return false;
+  el.replaceChildren(next);
+  return true;
+}
+
+function syncKeyedHTML(container, entries) {
+  const existing = new Map(Array.from(container.children).map(node => [node.dataset.refreshKey, node]));
+  const retained = new Set();
+
+  entries.forEach(({key, html}, index) => {
+    const fragment = htmlFragment(html);
+    const next = fragment.firstElementChild;
+    if (!next || fragment.childElementCount !== 1) throw new Error('keyed render must produce one element');
+    next.dataset.refreshKey = key;
+
+    let node = existing.get(key);
+    if (!node) {
+      node = next;
+    } else if (!node.isEqualNode(next)) {
+      node.replaceWith(next);
+      node = next;
+    }
+
+    const atIndex = container.children[index];
+    if (atIndex !== node) container.insertBefore(node, atIndex || null);
+    retained.add(key);
+  });
+
+  Array.from(container.children).forEach(node => {
+    if (!retained.has(node.dataset.refreshKey)) node.remove();
+  });
+}
+
 // --- token breakdown -------------------------------------------------------
 // Presentation uses "input is the whole prompt" semantics:
 //
@@ -289,8 +337,8 @@ async function loadStatus() {
   const OAUTH_BACKENDS = ['claude', 'codex', 'vertex'];
   const oauthList = d.backends.filter(b => OAUTH_BACKENDS.includes(b.name));
   const apiList = d.backends.filter(b => !OAUTH_BACKENDS.includes(b.name));
-  oauthEl.innerHTML = oauthList.map(backendCard).join('');
-  apiEl.innerHTML = apiList.map(backendCard).join('');
+  syncKeyedHTML(oauthEl, oauthList.map(b => ({key: b.name, html: backendCard(b)})));
+  syncKeyedHTML(apiEl, apiList.map(b => ({key: b.name, html: backendCard(b)})));
   document.getElementById('api-group').style.display = apiList.length ? '' : 'none';
 
   // Render per-account quota cards
@@ -302,7 +350,7 @@ async function loadStatus() {
   const qEmpty = document.getElementById('quota-empty');
   qEmpty.style.display = allQuotas.length ? 'none' : '';
   {
-    qGrid.innerHTML = allQuotas.map(q => {
+    const quotaCards = allQuotas.map(q => {
       const planCls = q.plan_type?.toLowerCase().includes('pro') ? 'plan-pro' : q.plan_type?.toLowerCase().includes('plus') ? 'plan-plus' : 'plan-team';
       const planLabel = q.plan_type || 'Unknown';
       const displayName = q.email || q.account_id;
@@ -322,23 +370,29 @@ async function loadStatus() {
       const refreshBtn = `<button class="btn-delete" style="font-size:11px;color:var(--accent)" onclick="refreshQuota('${q.provider}','${q.account_id}')">&#8635;</button>`;
       const fetchedAt = q.fetched_at ? `<span style="font-size:10px;color:var(--text-2);margin-left:auto">cached ${q.fetched_at}</span>` : '';
       const providerLabel = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
-      return `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${providerLabel}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`;
-    }).join('');
+      return {
+        key: JSON.stringify([q.provider || '', q.account_id || '']),
+        html: `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${providerLabel}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`,
+      };
+    });
+    syncKeyedHTML(qGrid, quotaCards);
   }
 
   const sel = document.getElementById('chat-model');
   const prevModel = sel.value;
   const statusIcon = s => s === 'active' ? '✓' : s === 'expired' ? '!' : '✗';
-  sel.innerHTML = d.backends.map(b => {
+  const modelOptions = d.backends.map(b => {
     const lbl = b.name.charAt(0).toUpperCase() + b.name.slice(1) + ' (' + statusIcon(b.status) + ')';
     return `<optgroup label="${lbl}">${(b.models || []).map(m =>
       `<option value="${m}"${b.status !== 'active' ? ' disabled' : ''}>${m}</option>`
     ).join('')}</optgroup>`;
   }).join('');
-  const prev = prevModel && sel.querySelector(`option[value="${prevModel}"]:not([disabled])`);
-  if (prev) prev.selected = true;
-  else { const first = sel.querySelector('option:not([disabled])'); if (first) first.selected = true; }
-  if (sel._sync) sel._sync();
+  if (syncHTML(sel, modelOptions)) {
+    const prev = prevModel && sel.querySelector(`option[value="${prevModel}"]:not([disabled])`);
+    if (prev) prev.selected = true;
+    else { const first = sel.querySelector('option:not([disabled])'); if (first) first.selected = true; }
+    if (sel._sync) sel._sync();
+  }
 }
 
 let chatStatusTimer = 0;

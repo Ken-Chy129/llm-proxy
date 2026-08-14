@@ -68,3 +68,37 @@ func TestLogTableConstrainsLongErrorRows(t *testing.T) {
 		}
 	}
 }
+
+func TestStatusRefreshPatchesRenderedListsInsteadOfReplacingThem(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+
+	// /api/status is polled while the page is visible. Replacing these containers'
+	// innerHTML on every response destroys and recreates otherwise-identical DOM,
+	// which causes visible layout jumps and loses transient element state.
+	for _, forbidden := range []string{
+		"oauthEl.innerHTML =",
+		"apiEl.innerHTML =",
+		"qGrid.innerHTML =",
+		"sel.innerHTML =",
+	} {
+		if strings.Contains(script, forbidden) {
+			t.Errorf("status refresh still replaces a rendered container with %q", forbidden)
+		}
+	}
+
+	for _, want := range []string{
+		"function syncKeyedHTML(",
+		"syncKeyedHTML(oauthEl,",
+		"syncKeyedHTML(apiEl,",
+		"syncKeyedHTML(qGrid,",
+		"syncHTML(sel,",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("status refresh is missing incremental DOM sync %q", want)
+		}
+	}
+}
