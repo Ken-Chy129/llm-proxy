@@ -136,12 +136,14 @@ relay:
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
   models:
+    - name: "claude-opus-5"
+    - name: "claude-fable-5"
     - name: "claude-sonnet-4-5-20250929"
     - name: "claude-opus-4-5-20251101"
     - name: "claude-haiku-4-5-20251001"
 ```
 
-Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions 和 Responses 请求由代理做协议转换。上述三个模型已实际验证可调用，上游 `/v1/models` 中列出的其他模型不代表一定有可用账号。
+Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions 和 Responses 请求由代理做协议转换。上述五个模型均已实际验证可调用。该上游的 `/v1/models` 列表并不完整，`claude-opus-5` 和 `claude-fable-5` 虽未列出，但直接调用可用。
 
 ### 通过代理使用 AnyGen
 

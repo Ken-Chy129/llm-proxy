@@ -39,6 +39,8 @@ var defaultKimiCodingModels = []config.ModelConfig{
 }
 
 var defaultRelayModels = []config.ModelConfig{
+	{Name: "claude-opus-5"},
+	{Name: "claude-fable-5"},
 	{Name: "claude-sonnet-4-5-20250929"},
 	{Name: "claude-opus-4-5-20251101"},
 	{Name: "claude-haiku-4-5-20251001"},

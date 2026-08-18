@@ -133,12 +133,14 @@ relay:
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
   models:
+    - name: "claude-opus-5"
+    - name: "claude-fable-5"
     - name: "claude-sonnet-4-5-20250929"
     - name: "claude-opus-4-5-20251101"
     - name: "claude-haiku-4-5-20251001"
 ```
 
-Claude Code `/v1/messages` traffic is passed through natively; OpenAI Chat Completions and Responses traffic is translated by the proxy. These three models were verified end-to-end; other IDs advertised by the upstream `/v1/models` endpoint may not have a usable account behind them.
+Claude Code `/v1/messages` traffic is passed through natively; OpenAI Chat Completions and Responses traffic is translated by the proxy. All five models above were verified end-to-end. This relay's `/v1/models` response is incomplete: `claude-opus-5` and `claude-fable-5` work when called directly even though they are not advertised.
 
 ### AnyGen through the proxy
 
