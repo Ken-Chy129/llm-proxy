@@ -191,9 +191,9 @@ func (t *Table) reindex() {
 	})
 }
 
-// SetAliases registers the proxy's alias → upstream-model mapping (the Vertex
-// and Kimi `name: / model:` pairs). Without it, an alias that doesn't look like
-// its upstream — "sonnet" → "claude-sonnet-4-6" — is unpriced, and since the
+// SetAliases registers the proxy's alias → upstream-model mapping (the Vertex,
+// Kimi and Relay `name: / model:` pairs). Without it, an alias that doesn't
+// look like its upstream — "sonnet" → "claude-sonnet-4-6" — is unpriced, and since the
 // alias is what gets recorded on the request, its cost would silently vanish
 // from every total. Call it again whenever the config changes.
 func (t *Table) SetAliases(aliases map[string]string) {

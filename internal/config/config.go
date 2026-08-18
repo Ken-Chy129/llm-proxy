@@ -127,7 +127,7 @@ type PricingConfig struct {
 }
 
 // ModelAliases returns the alias → upstream-model mapping for every backend that
-// has one (Vertex and Kimi; the OAuth backends pass the name through unchanged).
+// has one (Vertex, Kimi and Relay; OAuth backends pass names through unchanged).
 // Pricing uses it so a freely-named alias still resolves to its model's price.
 func (c *Config) ModelAliases() map[string]string {
 	out := make(map[string]string, len(c.Vertex.Models)+len(c.Kimi.Models)+len(c.Relay.Models))

@@ -6,7 +6,7 @@
 
 [简体中文](README.md) | **English**
 
-Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth), OpenAI Codex (OAuth), Kimi API, and AnyGen API behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
+Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Claude (Vertex AI / OAuth / Anthropic-compatible relays), OpenAI Codex (OAuth), Kimi API, and AnyGen API behind compatible API endpoints with multi-account pooling, 429 failover, multi-key management, usage analytics, and a built-in dashboard.
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
@@ -14,7 +14,7 @@ Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Cl
 
 - **Multi-protocol** — OpenAI `/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` + Anthropic `/v1/messages` passthrough or translation
 - **Drop-in compatible** — Works directly with Claude Code, Codex CLI, and OpenAI SDKs
-- **Multi-backend routing** — Vertex AI, Claude OAuth, Codex OAuth, Kimi API, AnyGen API — auto-dispatched by model name
+- **Multi-backend routing** — Vertex AI, Claude OAuth, Anthropic-compatible relays, Codex OAuth, Kimi API, AnyGen API — auto-dispatched by model name
 - **Account pooling + failover** — Round-robin load balancing; on an upstream 429 the request fails over to the next account, and expired tokens are auto-skipped
 - **Multi API-key management** — Issue per-caller keys with individual daily token limits; create/revoke from the dashboard
 - **Visual analytics** — Time-series trend plus breakdowns by model / key / backend / account (timezone-aware)
@@ -118,6 +118,27 @@ kimi:
 ```
 
 Kimi Coding may accept an unknown model string without rejecting the request, so the upstream IDs must exactly match `/v1/models`. K3's upstream ID is `k3`, not `kimi-k3`.
+
+### Anthropic-compatible relay
+
+The relay token is read only from the environment and is never persisted:
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="your-relay-token"
+```
+
+```yaml
+relay:
+  enabled: true
+  base_url: "http://34.80.212.77/api"
+  auth_token_env: "ANTHROPIC_AUTH_TOKEN"
+  models:
+    - name: "claude-sonnet-4-5-20250929"
+    - name: "claude-opus-4-5-20251101"
+    - name: "claude-haiku-4-5-20251001"
+```
+
+Claude Code `/v1/messages` traffic is passed through natively; OpenAI Chat Completions and Responses traffic is translated by the proxy. These three models were verified end-to-end; other IDs advertised by the upstream `/v1/models` endpoint may not have a usable account behind them.
 
 ### AnyGen through the proxy
 
@@ -276,7 +297,7 @@ Visit `http://your-domain:9090/` and login with admin credentials.
 
 **Stats** — Time-series trend (toggle requests / tokens / cost / errors, timezone-aware), with a breakdown by model / key / backend / account below.
 
-**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Only Vertex and Kimi resolve names, so Claude OAuth, Codex, and AnyGen have no mapping slot. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
+**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Vertex, Kimi, and Relay resolve names; Claude OAuth, Codex, and AnyGen do not. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
 
 **Cost accounting** — every request is priced as it is recorded, from a built-in table of published list rates (Anthropic / OpenAI / Moonshot), with input, cache read, cache write and output billed separately. The figure is *list API price*: Claude Code and Codex subscription traffic is not billed per request, so it answers "what would these tokens have cost on the pay-per-token API".
 

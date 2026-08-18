@@ -6,7 +6,7 @@
 
 **简体中文** | [English](README_EN.md)
 
-为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth）、OpenAI Codex（OAuth）、Kimi API 和 AnyGen API 统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
+为 **Claude Code** 和 **Codex CLI** 设计的轻量 AI API 代理。将 Claude（Vertex AI / OAuth / Anthropic 兼容中转）、OpenAI Codex（OAuth）、Kimi API 和 AnyGen API 统一暴露为兼容 API，支持多账号池、429 自动故障转移、多密钥管理、用量统计和管理仪表板。
 
 ![Dashboard — Stats](docs/dashboard-stats.png)
 
@@ -14,7 +14,7 @@
 
 - **多协议兼容** — OpenAI `/v1/chat/completions`、`/v1/responses`、`/v1/images/generations` + Anthropic `/v1/messages` 透传或协议转换
 - **开箱即用** — Claude Code、Codex CLI、OpenAI SDK 均可直连，零适配成本
-- **多后端路由** — Vertex AI、Claude OAuth、Codex OAuth、Kimi API、AnyGen API，按模型名自动分发
+- **多后端路由** — Vertex AI、Claude OAuth、Anthropic 兼容中转、Codex OAuth、Kimi API、AnyGen API，按模型名自动分发
 - **多账号轮转 + 故障转移** — Round-robin 负载均衡；某账号被上游 429 限流时自动切换到下一个账号，过期 Token 自动跳过
 - **多 API Key 管理** — 为不同调用方签发独立密钥，每个密钥可设每日 Token 限额，仪表板增删改
 - **可视化统计** — 时间趋势图 + 按模型 / 密钥 / 后端 / 账号的多维度拆分（自适应时区）
@@ -121,6 +121,27 @@ kimi:
 ```
 
 重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。Kimi Coding API 对未知模型名可能仍返回成功，因此上游 ID 必须使用 `/v1/models` 返回的精确值；K3 的 ID 是 `k3`，不是 `kimi-k3`。
+
+### 接入 Anthropic 兼容中转
+
+中转 token 只从环境变量读取，不会写入配置文件或仪表盘：
+
+```bash
+export ANTHROPIC_AUTH_TOKEN="你的中转_token"
+```
+
+```yaml
+relay:
+  enabled: true
+  base_url: "http://34.80.212.77/api"
+  auth_token_env: "ANTHROPIC_AUTH_TOKEN"
+  models:
+    - name: "claude-sonnet-4-5-20250929"
+    - name: "claude-opus-4-5-20251101"
+    - name: "claude-haiku-4-5-20251001"
+```
+
+Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions 和 Responses 请求由代理做协议转换。上述三个模型已实际验证可调用，上游 `/v1/models` 中列出的其他模型不代表一定有可用账号。
 
 ### 通过代理使用 AnyGen
 
@@ -293,7 +314,7 @@ anygen:
 
 **Stats** — 时间趋势图（请求数 / Token / 花费 / 错误数可切换，自适应时区），下方按模型 / 密钥 / 后端 / 账号拆分。
 
-**Config → Models** — 一行一个模型，各后端使用同一形状。名字既是客户端调用的名字、也是发给上游的名字（执行器默认原样透传），只有需要**改名**时才填 `model:`——行内 `↦` 槽位平时是幽灵态，鼠标移过去或已填值时才显形。只有 Vertex / Kimi 支持改名（Claude OAuth、Codex 和 AnyGen 的执行器不做名字解析），所以其他组没有这个槽位。Models 和 Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
+**Config → Models** — 一行一个模型，各后端使用同一形状。名字既是客户端调用的名字、也是发给上游的名字（执行器默认原样透传），只有需要**改名**时才填 `model:`——行内 `↦` 槽位平时是幽灵态，鼠标移过去或已填值时才显形。Vertex / Kimi / Relay 支持改名（Claude OAuth、Codex 和 AnyGen 的执行器不做名字解析）。Models 和 Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
 
 **花费统计** — 每条请求在落库时按内置价格表（Anthropic / OpenAI / Moonshot 公开单价）算出金额并冻结，input、cache read、cache write、output 四个桶分别计价。注意这是**按量计费 API 的等价价格**：Claude Code / Codex 订阅账号并不按请求扣费，这个数字表示"同样的 token 走官方 API 要多少钱"。
 

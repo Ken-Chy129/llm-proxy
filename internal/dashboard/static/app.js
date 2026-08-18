@@ -1042,10 +1042,10 @@ function el(tag, cls, text) {
 // pass it through unchanged unless told otherwise, and that is the case for
 // nearly every row. Renaming is therefore an *attribute* of a model, like its
 // price, not a second column that sits half-empty forever: the ↦ slot is a ghost
-// until you hover it or it holds a value. Only Vertex and Kimi resolve names at
+// until you hover it or it holds a value. Vertex, Kimi and Relay resolve names at
 // all, so the other backends have no slot rather than an inert one.
 //
-// The four backends used to have two different editors — chips for the OAuth
+// The original backends used to have two different editors — chips for the OAuth
 // ones (which cannot be edited, only deleted and retyped) and full-width
 // two-input rows for the mapped ones (three lines of vertical space per model).
 // They are the same thing: a name the client calls, optionally pointing at a
@@ -1069,6 +1069,10 @@ const MODEL_GROUPS = [
     hint: 'the API key stays in its env var · ↦ to call upstream by another name',
   },
   {
+    id: 'relay', label: 'Relay', live: true, mapped: true,
+    hint: 'Anthropic-compatible upstream · auth token stays in its env var',
+  },
+  {
     id: 'anygen', label: 'AnyGen', live: false, mapped: false,
     hint: 'fallback list only — AnyGen re-syncs the free /models endpoint at startup',
   },
@@ -1079,7 +1083,7 @@ const MODEL_GROUPS = [
 ];
 
 // cfgModels[group] = [{name, model}] — model is unused for unmapped groups.
-let cfgModels = { claude: [], vertex: [], kimi: [], anygen: [], codex: [] };
+let cfgModels = { claude: [], vertex: [], kimi: [], relay: [], anygen: [], codex: [] };
 // Effective price table from /api/pricing, plus the local override edits. Both
 // are keyed by normalised model name; overrides also keep the name as typed, so
 // saving round-trips it verbatim into config.yaml.
@@ -1380,6 +1384,7 @@ async function loadConfig() {
     codex: (d.codex?.models || []).map(n => ({ name: n, model: '' })),
     vertex: pairs(d.vertex?.models),
     kimi: pairs(d.kimi?.models),
+    relay: pairs(d.relay?.models),
     anygen: (d.anygen?.models || []).map(n => ({ name: n, model: '' })),
   };
   renderModels();
@@ -1452,6 +1457,7 @@ async function saveModels(btn) {
     codex: { models: names('codex') },
     vertex: { models: pairs('vertex') },
     kimi: { models: pairs('kimi') },
+    relay: { models: pairs('relay') },
     anygen: { models: names('anygen') },
     pricing: { models: [...priceOverrides.values()] },
   }, btn, 'Models saved');

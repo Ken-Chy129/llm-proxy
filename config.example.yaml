@@ -57,6 +57,18 @@ kimi:
     - name: "kimi-for-coding"
     - name: "kimi-for-coding-highspeed"
 
+# Generic Anthropic-compatible relay. The token is read from the environment;
+# never paste it into this file or the dashboard. The models below were verified
+# against the default relay endpoint on 2026-08-18.
+relay:
+  enabled: false
+  base_url: "http://34.80.212.77/api"
+  auth_token_env: "ANTHROPIC_AUTH_TOKEN"
+  models:
+    - name: "claude-sonnet-4-5-20250929"
+    - name: "claude-opus-4-5-20251101"
+    - name: "claude-haiku-4-5-20251001"
+
 # AnyGen uses one app-scoped sk-ag key for Chat Completions and Models. The key
 # must grant exactly those two actions with whole_app=false. The live model list
 # is fetched for free at startup; models below are used only if that sync fails.

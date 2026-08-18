@@ -16,6 +16,7 @@ services:
       # Set this in the host shell or a Compose .env file excluded from Git.
       - MOONSHOT_API_KEY=${MOONSHOT_API_KEY:-}
       - ANYGEN_LLM_KEY=${ANYGEN_LLM_KEY:-}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-}
       # Dashboard login fallback, used only when config.yaml leaves
       # admin_user/admin_password empty. With neither set, login is refused
       # outright rather than accepting a blank form.
