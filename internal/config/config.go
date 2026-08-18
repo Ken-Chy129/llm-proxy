@@ -15,6 +15,7 @@ type Config struct {
 	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
 	Codex       CodexConfig       `yaml:"codex"`
 	Kimi        KimiConfig        `yaml:"kimi"`
+	Relay       RelayConfig       `yaml:"relay"`
 	AnyGen      AnyGenConfig      `yaml:"anygen"`
 	Pricing     PricingConfig     `yaml:"pricing"`
 
@@ -93,6 +94,16 @@ type KimiConfig struct {
 	Models    []ModelConfig `yaml:"models"`
 }
 
+// RelayConfig describes an Anthropic-compatible upstream authenticated with a
+// static token read from the environment. Keeping only the environment variable
+// name here prevents relay credentials from being persisted by dashboard saves.
+type RelayConfig struct {
+	Enabled      bool          `yaml:"enabled"`
+	BaseURL      string        `yaml:"base_url"`
+	AuthTokenEnv string        `yaml:"auth_token_env"`
+	Models       []ModelConfig `yaml:"models"`
+}
+
 // AnyGenConfig keeps the sk-ag credential outside config.yaml. Models are a
 // startup fallback only: a configured backend replaces them with the zero-cost
 // model list returned by AnyGen's OpenAI-compatible /models endpoint.
@@ -119,8 +130,8 @@ type PricingConfig struct {
 // has one (Vertex and Kimi; the OAuth backends pass the name through unchanged).
 // Pricing uses it so a freely-named alias still resolves to its model's price.
 func (c *Config) ModelAliases() map[string]string {
-	out := make(map[string]string, len(c.Vertex.Models)+len(c.Kimi.Models))
-	for _, list := range [][]ModelConfig{c.Vertex.Models, c.Kimi.Models} {
+	out := make(map[string]string, len(c.Vertex.Models)+len(c.Kimi.Models)+len(c.Relay.Models))
+	for _, list := range [][]ModelConfig{c.Vertex.Models, c.Kimi.Models, c.Relay.Models} {
 		for _, m := range list {
 			if m.Name != "" && m.Model != "" {
 				out[m.Name] = m.Model

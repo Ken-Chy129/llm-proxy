@@ -22,6 +22,8 @@ import (
 const (
 	defaultKimiBaseURL   = "https://api.moonshot.cn/v1"
 	defaultKimiAPIKeyEnv = "MOONSHOT_API_KEY"
+	defaultRelayBaseURL  = "http://34.80.212.77/api"
+	defaultRelayTokenEnv = "ANTHROPIC_AUTH_TOKEN"
 )
 
 var defaultKimiOpenAIModels = []config.ModelConfig{
@@ -36,11 +38,18 @@ var defaultKimiCodingModels = []config.ModelConfig{
 	{Name: "kimi-for-coding-highspeed", Model: "kimi-for-coding-highspeed"},
 }
 
+var defaultRelayModels = []config.ModelConfig{
+	{Name: "claude-sonnet-4-5-20250929"},
+	{Name: "claude-opus-4-5-20251101"},
+	{Name: "claude-haiku-4-5-20251001"},
+}
+
 // KimiExecutor connects the proxy's internal Chat Completions contract to the
 // OpenAI-compatible Kimi API. It also implements AnthropicExecutor so Claude
 // Code can use the same models through /v1/messages.
 type KimiExecutor struct {
 	mu         sync.RWMutex
+	backend    string
 	baseURL    string
 	apiKeyEnv  string
 	apiFormat  string
@@ -70,12 +79,48 @@ func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
 		models = append([]config.ModelConfig(nil), defaults...)
 	}
 	return &KimiExecutor{
+		backend:    "kimi",
 		baseURL:    baseURL,
 		apiKeyEnv:  apiKeyEnv,
 		apiFormat:  apiFormat,
 		models:     models,
 		httpClient: http.DefaultClient,
 	}
+}
+
+// NewRelayExecutor reuses the API-key executor's Anthropic-compatible mode for
+// a generic relay. The concrete return type remains KimiExecutor so the mature
+// request/stream translation code stays shared rather than being duplicated.
+func NewRelayExecutor(cfg config.RelayConfig) *KimiExecutor {
+	baseURL := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
+	if baseURL == "" {
+		baseURL = defaultRelayBaseURL
+	}
+	authTokenEnv := strings.TrimSpace(cfg.AuthTokenEnv)
+	if authTokenEnv == "" {
+		authTokenEnv = defaultRelayTokenEnv
+	}
+	models := cfg.Models
+	if len(models) == 0 {
+		models = append([]config.ModelConfig(nil), defaultRelayModels...)
+	}
+	return &KimiExecutor{
+		backend:    "relay",
+		baseURL:    baseURL,
+		apiKeyEnv:  authTokenEnv,
+		apiFormat:  "anthropic",
+		models:     models,
+		httpClient: http.DefaultClient,
+	}
+}
+
+func (e *KimiExecutor) Backend() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.backend == "" {
+		return "kimi"
+	}
+	return e.backend
 }
 
 func (e *KimiExecutor) Models() []string {
@@ -132,7 +177,7 @@ func (e *KimiExecutor) apiKey() (string, error) {
 	envName := e.APIKeyEnv()
 	key := strings.TrimSpace(os.Getenv(envName))
 	if key == "" {
-		return "", fmt.Errorf("kimi API key environment variable %s is not set", envName)
+		return "", fmt.Errorf("%s API key environment variable %s is not set", e.Backend(), envName)
 	}
 	return key, nil
 }
@@ -176,7 +221,7 @@ func (e *KimiExecutor) openChat(ctx context.Context, req *types.ChatCompletionRe
 
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("kimi request: %w", err)
+		return nil, fmt.Errorf("%s request: %w", e.Backend(), err)
 	}
 	return resp, nil
 }
@@ -196,7 +241,7 @@ func (e *KimiExecutor) Execute(ctx context.Context, req *types.ChatCompletionReq
 		return nil, fmt.Errorf("read kimi response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(body)}
+		return nil, &HTTPError{Backend: e.Backend(), Status: resp.StatusCode, Body: string(body)}
 	}
 
 	var completion types.ChatCompletionResponse
@@ -218,7 +263,7 @@ func (e *KimiExecutor) ExecuteStream(ctx context.Context, req *types.ChatComplet
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(body)}
+		return nil, &HTTPError{Backend: e.Backend(), Status: resp.StatusCode, Body: string(body)}
 	}
 
 	flusher, canFlush := w.(interface{ Flush() })
@@ -278,7 +323,7 @@ func (e *KimiExecutor) openAnthropic(ctx context.Context, body []byte, clientHea
 	}
 	resp, err := e.httpClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("kimi anthropic request: %w", err)
+		return nil, fmt.Errorf("%s anthropic request: %w", e.Backend(), err)
 	}
 	return resp, nil
 }
@@ -302,7 +347,7 @@ func (e *KimiExecutor) executeAnthropicChat(ctx context.Context, req *types.Chat
 		return nil, fmt.Errorf("read kimi anthropic response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(respBody)}
+		return nil, &HTTPError{Backend: e.Backend(), Status: resp.StatusCode, Body: string(respBody)}
 	}
 	var anthropicResp types.AnthropicResponse
 	if err := json.Unmarshal(respBody, &anthropicResp); err != nil {
@@ -327,7 +372,7 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return nil, &HTTPError{Backend: "kimi", Status: resp.StatusCode, Body: string(respBody)}
+		return nil, &HTTPError{Backend: e.Backend(), Status: resp.StatusCode, Body: string(respBody)}
 	}
 
 	chunkID := fmt.Sprintf("chatcmpl-%s", uuid.New().String()[:24])
