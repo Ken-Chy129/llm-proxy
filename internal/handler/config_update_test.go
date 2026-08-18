@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -34,6 +35,7 @@ func newConfigHandler(t *testing.T) (*AdminHandler, *config.Config, string) {
 	cfg.Codex.Models = []string{"gpt-5.5"}
 	cfg.Vertex.Models = []config.ModelConfig{{Name: "sonnet", Model: "claude-sonnet-4-6"}}
 	cfg.Kimi.Models = []config.ModelConfig{{Name: "kimi-k3", Model: "k3"}}
+	cfg.Relay.Models = []config.ModelConfig{{Name: "relay-sonnet", Model: "claude-sonnet-4-5-20250929"}}
 	cfg.AnyGen.Models = []string{"gpt-5.6-luna"}
 
 	db, err := stats.Open(dir)
@@ -73,9 +75,9 @@ func TestUpdateConfigLeavesAbsentSectionsAlone(t *testing.T) {
 		t.Errorf("password = %q, want %q", pass, "after")
 	}
 	if len(cfg.ClaudeOAuth.Models) != 1 || len(cfg.Codex.Models) != 1 ||
-		len(cfg.Vertex.Models) != 1 || len(cfg.Kimi.Models) != 1 || len(cfg.AnyGen.Models) != 1 {
-		t.Fatalf("an admin-only save clobbered the model lists: claude=%v codex=%v vertex=%v kimi=%v anygen=%v",
-			cfg.ClaudeOAuth.Models, cfg.Codex.Models, cfg.Vertex.Models, cfg.Kimi.Models, cfg.AnyGen.Models)
+		len(cfg.Vertex.Models) != 1 || len(cfg.Kimi.Models) != 1 || len(cfg.Relay.Models) != 1 || len(cfg.AnyGen.Models) != 1 {
+		t.Fatalf("an admin-only save clobbered the model lists: claude=%v codex=%v vertex=%v kimi=%v relay=%v anygen=%v",
+			cfg.ClaudeOAuth.Models, cfg.Codex.Models, cfg.Vertex.Models, cfg.Kimi.Models, cfg.Relay.Models, cfg.AnyGen.Models)
 	}
 
 	// And the same must hold on disk, not just in memory.
@@ -88,6 +90,33 @@ func TestUpdateConfigLeavesAbsentSectionsAlone(t *testing.T) {
 	}
 	if len(reloaded.AnyGen.Models) != 1 || reloaded.AnyGen.Models[0] != "gpt-5.6-luna" {
 		t.Errorf("persisted anygen models = %v, want the original fallback", reloaded.AnyGen.Models)
+	}
+}
+
+func TestUpdateConfigPersistsRelayModels(t *testing.T) {
+	h, cfg, path := newConfigHandler(t)
+
+	code, body := putConfig(t, h, `{"relay":{"models":[
+		{"name":"relay-opus","model":"claude-opus-4-5-20251101"},
+		{"name":"claude-haiku-4-5-20251001","model":"claude-haiku-4-5-20251001"}
+	]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("save failed (%d): %s", code, body)
+	}
+	want := []config.ModelConfig{
+		{Name: "relay-opus", Model: "claude-opus-4-5-20251101"},
+		{Name: "claude-haiku-4-5-20251001"},
+	}
+	if !slices.Equal(cfg.Relay.Models, want) {
+		t.Fatalf("relay models = %v, want %v", cfg.Relay.Models, want)
+	}
+
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !slices.Equal(reloaded.Relay.Models, want) {
+		t.Fatalf("persisted relay models = %v, want %v", reloaded.Relay.Models, want)
 	}
 }
 

@@ -109,6 +109,18 @@ func main() {
 		}
 	}
 
+	// Anthropic-compatible relay: native Messages passthrough for Claude Code,
+	// with Chat Completions/Responses translated by the shared API-key executor.
+	relayExec := executor.NewRelayExecutor(cfg.Relay)
+	if cfg.Relay.Enabled {
+		if relayExec.Configured() {
+			r.Register(relayExec, "relay")
+			log.Printf("registered relay executor: %v (base=%s, key_env=%s)", relayExec.Models(), relayExec.BaseURL(), relayExec.APIKeyEnv())
+		} else {
+			log.Printf("relay enabled but %s is not set; backend not registered", relayExec.APIKeyEnv())
+		}
+	}
+
 	// AnyGen API: app-scoped OpenAI-compatible Chat Completions + Models with
 	// one sk-ag key. The model list is free to query and replaces the config
 	// fallback whenever startup sync succeeds. Registering after the other
@@ -171,7 +183,7 @@ func main() {
 		}()
 	}
 
-	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, anygenExec); err != nil {
+	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

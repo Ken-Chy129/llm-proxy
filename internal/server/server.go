@@ -20,7 +20,7 @@ import (
 func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *auth.TokenStore, keyStore *auth.KeyStore, statsDB *stats.DB,
 	claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth,
 	claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor,
-	vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor,
+	vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor,
 	anygenExec *executor.AnyGenExecutor) error {
 
 	gin.SetMode(gin.ReleaseMode)
@@ -28,7 +28,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
-	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, anygenExec)
+	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 

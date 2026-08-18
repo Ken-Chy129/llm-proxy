@@ -31,11 +31,12 @@ type AdminHandler struct {
 	codexExec   *executor.CodexExecutor
 	vertexExec  *executor.VertexExecutor
 	kimiExec    *executor.KimiExecutor
+	relayExec   *executor.KimiExecutor
 	anygenExec  *executor.AnyGenExecutor
 }
 
-func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor) *AdminHandler {
-	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, anygenExec: anygenExec}
+func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor) *AdminHandler {
+	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, relayExec: relayExec, anygenExec: anygenExec}
 }
 
 // formatLocalTime renders a timestamp as HH:MM, prefixing the date (MM-DD) when
@@ -97,6 +98,27 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.kimiExec.Models(),
+		})
+	}
+
+	// Relay — Anthropic-compatible upstream authenticated by an environment token.
+	if h.relayExec != nil && h.cfg.Relay.Enabled {
+		disabled := h.tokenStore.IsBackendDisabled("relay")
+		status := "not_authenticated"
+		info := "Missing environment variable " + h.relayExec.APIKeyEnv()
+		if h.relayExec.Configured() {
+			status = "active"
+			info = h.relayExec.BaseURL() + " · anthropic · key: " + h.relayExec.APIKeyEnv()
+		}
+		if disabled {
+			status = "disabled"
+		}
+		backends = append(backends, gin.H{
+			"name":     "relay",
+			"status":   status,
+			"disabled": disabled,
+			"info":     info,
+			"models":   h.relayExec.Models(),
 		})
 	}
 
@@ -408,6 +430,12 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"api_format":  h.cfg.Kimi.APIFormat,
 			"models":      h.cfg.Kimi.Models,
 		},
+		"relay": gin.H{
+			"enabled":        h.cfg.Relay.Enabled,
+			"base_url":       h.cfg.Relay.BaseURL,
+			"auth_token_env": h.cfg.Relay.AuthTokenEnv,
+			"models":         h.cfg.Relay.Models,
+		},
 		"anygen": gin.H{
 			"enabled":     h.cfg.AnyGen.Enabled,
 			"base_url":    h.cfg.AnyGen.BaseURL,
@@ -526,6 +554,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		Kimi *struct {
 			Models []config.ModelConfig `json:"models"`
 		} `json:"kimi"`
+		Relay *struct {
+			Models []config.ModelConfig `json:"models"`
+		} `json:"relay"`
 		AnyGen *struct {
 			Models []string `json:"models"`
 		} `json:"anygen"`
@@ -578,6 +609,13 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			return
 		}
 	}
+	relayModels := h.cfg.Relay.Models
+	if req.Relay != nil {
+		if relayModels, err = cleanModelMappings(req.Relay.Models, "relay"); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
 	anygenModels := h.cfg.AnyGen.Models
 	if req.AnyGen != nil {
 		if anygenModels, err = cleanModelList(req.AnyGen.Models); err != nil {
@@ -624,6 +662,13 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			h.router.Register(h.kimiExec, "kimi")
 		}
 	}
+	if req.Relay != nil && h.relayExec != nil && h.cfg.Relay.Enabled {
+		h.relayExec.SetModels(relayModels)
+		h.router.UnregisterBackend("relay")
+		if h.relayExec.Configured() {
+			h.router.Register(h.relayExec, "relay")
+		}
+	}
 	if req.Server != nil {
 		h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
 		if req.Server.TrayToken != nil {
@@ -639,6 +684,7 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	h.cfg.Codex.Models = codexModels
 	h.cfg.Vertex.Models = vertexModels
 	h.cfg.Kimi.Models = kimiModels
+	h.cfg.Relay.Models = relayModels
 	h.cfg.AnyGen.Models = anygenModels
 	// After the model lists, so the alias map it reads is the new one.
 	h.cfg.Pricing.Models = priceOverrides
