@@ -11,6 +11,10 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
+// errNoAnthropicSecondary is returned when a fallback chain is asked to serve
+// the Anthropic Messages API but the secondary backend cannot speak it.
+var errNoAnthropicSecondary = errors.New("fallback secondary does not support Anthropic Messages API")
+
 // HTTPError carries the upstream HTTP status code alongside the error, so
 // handlers can record the real status (429/400/…) instead of a blanket 500.
 type HTTPError struct {
@@ -40,6 +44,55 @@ type accountRecorder struct {
 }
 
 type ctxAccountKey struct{}
+
+type backendRecorder struct {
+	mu         sync.Mutex
+	backend    string
+	failedOver []string
+}
+
+type ctxBackendKey struct{}
+
+// WithBackendRecorder returns a derived context that captures which backend
+// actually served the request, which differs from the routing table entry when a
+// fallback chain moves traffic to its secondary. The getter reports the serving
+// backend, or "" when nothing recorded.
+func WithBackendRecorder(ctx context.Context) (context.Context, func() string) {
+	r := &backendRecorder{}
+	ctx = context.WithValue(ctx, ctxBackendKey{}, r)
+	return ctx, func() string {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.backend
+	}
+}
+
+// BackendFallbackFrom reports the backends that were exhausted before the
+// serving one, in order. Empty when no fallback happened.
+func BackendFallbackFrom(ctx context.Context) []string {
+	if r, ok := ctx.Value(ctxBackendKey{}).(*backendRecorder); ok {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return append([]string(nil), r.failedOver...)
+	}
+	return nil
+}
+
+func recordBackend(ctx context.Context, backend string) {
+	if r, ok := ctx.Value(ctxBackendKey{}).(*backendRecorder); ok {
+		r.mu.Lock()
+		r.backend = backend
+		r.mu.Unlock()
+	}
+}
+
+func recordBackendFallover(ctx context.Context, backend string) {
+	if r, ok := ctx.Value(ctxBackendKey{}).(*backendRecorder); ok {
+		r.mu.Lock()
+		r.failedOver = append(r.failedOver, backend)
+		r.mu.Unlock()
+	}
+}
 
 // WithAccountRecorder returns a derived context that captures which upstream
 // account an executor selects while handling the request, plus a getter to read

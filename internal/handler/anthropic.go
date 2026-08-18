@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,11 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/gin-gonic/gin"
 )
 
 type AnthropicHandler struct {
@@ -80,11 +81,13 @@ func anthropicErrStatus(err error) int {
 
 func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.AnthropicExecutor, model string, body []byte, start time.Time) {
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx, getBackend := executor.WithBackendRecorder(ctx)
 	stream, statusCode, err := ae.OpenAnthropicStream(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
+	served := getBackend()
 	if err != nil {
 		log.Printf("anthropic stream open error: %v", err)
-		h.recordAnthropicLog(c, model, start, true, nil, err, anthropicErrStatus(err), account, failedOver)
+		h.recordAnthropicLog(c, model, start, true, nil, err, anthropicErrStatus(err), account, failedOver, served, ctx)
 		anthropicError(c, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
@@ -92,7 +95,7 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 
 	if statusCode != http.StatusOK {
 		errBody, _ := io.ReadAll(stream)
-		h.recordAnthropicLog(c, model, start, true, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver)
+		h.recordAnthropicLog(c, model, start, true, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver, served, ctx)
 		c.Data(statusCode, "application/json", errBody)
 		return
 	}
@@ -103,7 +106,7 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 	c.Writer.Flush()
 
 	usage, copyErr := copyStreamAndExtractUsage(stream, c.Writer)
-	h.recordAnthropicLog(c, model, start, true, usage, copyErr, http.StatusOK, account, failedOver)
+	h.recordAnthropicLog(c, model, start, true, usage, copyErr, http.StatusOK, account, failedOver, served, ctx)
 	if copyErr != nil {
 		log.Printf("anthropic stream copy error: %v", copyErr)
 	}
@@ -111,21 +114,23 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 
 func (h *AnthropicHandler) handleAnthropicRaw(c *gin.Context, ae executor.AnthropicExecutor, model string, body []byte, start time.Time) {
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx, getBackend := executor.WithBackendRecorder(ctx)
 	respBody, statusCode, err := ae.ExecuteAnthropicRaw(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
+	served := getBackend()
 	if err != nil {
-		h.recordAnthropicLog(c, model, start, false, nil, err, anthropicErrStatus(err), account, failedOver)
+		h.recordAnthropicLog(c, model, start, false, nil, err, anthropicErrStatus(err), account, failedOver, served, ctx)
 		log.Printf("anthropic error: %v", err)
 		anthropicError(c, http.StatusBadGateway, "api_error", err.Error())
 		return
 	}
 	if statusCode >= 400 {
-		h.recordAnthropicLog(c, model, start, false, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver)
+		h.recordAnthropicLog(c, model, start, false, nil, fmt.Errorf("upstream error %d", statusCode), statusCode, account, failedOver, served, ctx)
 		c.Data(statusCode, "application/json", respBody)
 		return
 	}
 	usage := extractUsageFromResponse(respBody)
-	h.recordAnthropicLog(c, model, start, false, usage, nil, statusCode, account, failedOver)
+	h.recordAnthropicLog(c, model, start, false, usage, nil, statusCode, account, failedOver, served, ctx)
 	c.Data(statusCode, "application/json", respBody)
 }
 
@@ -204,14 +209,24 @@ func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.AnthropicUs
 	return &usage, nil
 }
 
-func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *types.AnthropicUsage, err error, status int, account string, failedOver []string) {
+func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *types.AnthropicUsage, err error, status int, account string, failedOver []string, servedBackend string, ctx context.Context) {
 	if h.statsDB == nil {
 		return
+	}
+	// A fallback chain reports which backend actually served, which differs from
+	// the routing table when the primary was exhausted. Without this, relay
+	// overflow traffic would be logged as if the subscription had served it.
+	backend := h.router.BackendName(model)
+	if servedBackend != "" {
+		backend = servedBackend
+	}
+	if from := executor.BackendFallbackFrom(ctx); len(from) > 0 {
+		failedOver = append(failedOver, from...)
 	}
 	entry := &stats.RequestLog{
 		Time:            time.Now(),
 		Model:           model,
-		Backend:         h.router.BackendName(model),
+		Backend:         backend,
 		LatencyMs:       time.Since(start).Milliseconds(),
 		Stream:          stream,
 		Status:          status,

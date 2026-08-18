@@ -143,7 +143,7 @@ func main() {
 	}
 
 	if cfg.Relay.Enabled {
-		if registerRelay(r, relayExec, true) {
+		if registerRelay(r, relayExec, claudeExec, true) {
 			log.Printf("registered relay executor: %v (base=%s, key_env=%s)", relayExec.Models(), relayExec.BaseURL(), relayExec.APIKeyEnv())
 		} else {
 			log.Printf("relay enabled but %s is not set; backend not registered", relayExec.APIKeyEnv())
@@ -192,11 +192,31 @@ func main() {
 // registerRelay is deliberately called after dynamically synced API backends.
 // Relay is explicit operator configuration and supports Anthropic Messages, so
 // its models must win collisions with broad model catalogs such as AnyGen.
-func registerRelay(r *router.Router, relayExec *executor.KimiExecutor, enabled bool) bool {
+//
+// Claude OAuth is the exception: where both can serve a model, the relay is
+// metered overflow behind the subscription rather than a replacement for it, so
+// the model is registered as a fallback chain (OAuth first, relay on 429). The
+// chain keeps the "claude" backend label because that is what serves the request
+// until the subscription is exhausted.
+func registerRelay(r *router.Router, relayExec *executor.KimiExecutor, claudeExec *executor.ClaudeOAuthExecutor, enabled bool) bool {
 	if !enabled || relayExec == nil || !relayExec.Configured() {
 		return false
 	}
-	r.Register(relayExec, "relay")
+	oauthModels := make(map[string]bool)
+	if claudeExec != nil {
+		for _, m := range claudeExec.Models() {
+			oauthModels[m] = true
+		}
+	}
+	for _, model := range relayExec.Models() {
+		if oauthModels[model] {
+			chain := executor.NewFallbackExecutor(claudeExec, relayExec, []string{model})
+			r.RegisterModel(model, chain, "claude")
+			log.Printf("model %s: claude oauth with relay overflow on 429", model)
+			continue
+		}
+		r.RegisterModel(model, relayExec, "relay")
+	}
 	return true
 }
 
