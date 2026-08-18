@@ -112,19 +112,12 @@ func main() {
 	// Anthropic-compatible relay: native Messages passthrough for Claude Code,
 	// with Chat Completions/Responses translated by the shared API-key executor.
 	relayExec := executor.NewRelayExecutor(cfg.Relay)
-	if cfg.Relay.Enabled {
-		if relayExec.Configured() {
-			r.Register(relayExec, "relay")
-			log.Printf("registered relay executor: %v (base=%s, key_env=%s)", relayExec.Models(), relayExec.BaseURL(), relayExec.APIKeyEnv())
-		} else {
-			log.Printf("relay enabled but %s is not set; backend not registered", relayExec.APIKeyEnv())
-		}
-	}
 
 	// AnyGen API: app-scoped OpenAI-compatible Chat Completions + Models with
 	// one sk-ag key. The model list is free to query and replaces the config
-	// fallback whenever startup sync succeeds. Registering after the other
-	// backends gives an enabled AnyGen backend ownership of overlapping model IDs.
+	// fallback whenever startup sync succeeds. It may initially claim overlapping
+	// model IDs; the explicitly configured Relay below reclaims its own models so
+	// Claude Code never lands on AnyGen's non-Anthropic executor by accident.
 	anygenExec := executor.NewAnyGenExecutor(cfg.AnyGen)
 	if cfg.AnyGen.Enabled {
 		if !anygenExec.Configured() {
@@ -146,6 +139,14 @@ func main() {
 			} else {
 				log.Printf("anygen has no synced or fallback models; backend not registered")
 			}
+		}
+	}
+
+	if cfg.Relay.Enabled {
+		if registerRelay(r, relayExec, true) {
+			log.Printf("registered relay executor: %v (base=%s, key_env=%s)", relayExec.Models(), relayExec.BaseURL(), relayExec.APIKeyEnv())
+		} else {
+			log.Printf("relay enabled but %s is not set; backend not registered", relayExec.APIKeyEnv())
 		}
 	}
 
@@ -186,6 +187,17 @@ func main() {
 	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// registerRelay is deliberately called after dynamically synced API backends.
+// Relay is explicit operator configuration and supports Anthropic Messages, so
+// its models must win collisions with broad model catalogs such as AnyGen.
+func registerRelay(r *router.Router, relayExec *executor.KimiExecutor, enabled bool) bool {
+	if !enabled || relayExec == nil || !relayExec.Configured() {
+		return false
+	}
+	r.Register(relayExec, "relay")
+	return true
 }
 
 func syncCodexModels(oauth *auth.CodexOAuth, exec *executor.CodexExecutor, r *router.Router) {
