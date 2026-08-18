@@ -11,3 +11,4 @@ llm-proxy-linux-amd64
 .env
 .env.*
 !.env.example
+.learnings/
