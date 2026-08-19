@@ -3,6 +3,7 @@ package router
 import (
 	"context"
 	"io"
+	"net/http"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,6 +21,15 @@ func (s *stubExecutor) ExecuteStream(context.Context, *types.ChatCompletionReque
 	return nil, nil
 }
 func (s *stubExecutor) Models() []string { return s.models }
+
+type stubAnthropicExecutor struct{ stubExecutor }
+
+func (s *stubAnthropicExecutor) ExecuteAnthropicRaw(context.Context, []byte, http.Header) ([]byte, int, error) {
+	return nil, http.StatusOK, nil
+}
+func (s *stubAnthropicExecutor) OpenAnthropicStream(context.Context, []byte, http.Header) (io.ReadCloser, int, error) {
+	return io.NopCloser(strings.NewReader("")), http.StatusOK, nil
+}
 
 // pausedBackends reports the named backends as disabled.
 type pausedBackends map[string]bool
@@ -135,6 +145,109 @@ func TestUnregisterBackendRemovesItsModels(t *testing.T) {
 		if strings.HasPrefix(m, "gpt-") {
 			t.Errorf("AllModels() still contains %q after UnregisterBackend", m)
 		}
+	}
+}
+
+func TestBackendPriorityDoesNotDependOnRegistrationOrder(t *testing.T) {
+	r := New()
+	r.SetBackendPriority([]string{"claude", "anygen", "relay"})
+
+	claude := &stubExecutor{models: []string{"claude-fable-5"}}
+	relay := &stubExecutor{models: []string{"claude-fable-5"}}
+	anygen := &stubExecutor{models: []string{"claude-fable-5"}}
+
+	// This is the production failure sequence: OAuth and relay are installed at
+	// startup, then a later AnyGen model sync registers the same model again.
+	r.Register(claude, "claude")
+	r.Register(relay, "relay")
+	r.Register(anygen, "anygen")
+
+	got, err := r.Resolve("claude-fable-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got != claude {
+		t.Fatalf("Resolve() = %p, want OAuth executor %p", got, claude)
+	}
+	if backend := r.BackendName("claude-fable-5"); backend != "claude" {
+		t.Fatalf("BackendName() = %q, want claude", backend)
+	}
+}
+
+func TestBackendPriorityCanChangeLive(t *testing.T) {
+	r := New()
+	claude := &stubExecutor{models: []string{"shared"}}
+	anygen := &stubExecutor{models: []string{"shared"}}
+	r.Register(claude, "claude")
+	r.Register(anygen, "anygen")
+
+	r.SetBackendPriority([]string{"claude", "anygen"})
+	if got, _ := r.Resolve("shared"); got != claude {
+		t.Fatal("shared model did not initially resolve to claude")
+	}
+
+	r.SetBackendPriority([]string{"anygen", "claude"})
+	if got, _ := r.Resolve("shared"); got != anygen {
+		t.Fatal("shared model did not switch to anygen after priority update")
+	}
+}
+
+func TestResolveSkipsDisabledHigherPriorityBackend(t *testing.T) {
+	r := New()
+	claude := &stubExecutor{models: []string{"shared"}}
+	relay := &stubExecutor{models: []string{"shared"}}
+	r.Register(claude, "claude")
+	r.Register(relay, "relay")
+	r.SetBackendPriority([]string{"claude", "relay"})
+	r.SetChecker(pausedBackends{"claude": true})
+
+	got, err := r.Resolve("shared")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got != relay {
+		t.Fatalf("Resolve() = %p, want enabled relay %p", got, relay)
+	}
+	if backend := r.BackendName("shared"); backend != "relay" {
+		t.Fatalf("BackendName() = %q, want relay", backend)
+	}
+}
+
+func TestModelsByBackendIncludesCandidatesThatDidNotWin(t *testing.T) {
+	r := New()
+	r.SetBackendPriority([]string{"claude", "anygen", "relay"})
+	r.Register(&stubExecutor{models: []string{"shared"}}, "claude")
+	r.Register(&stubExecutor{models: []string{"shared"}}, "anygen")
+	r.Register(&stubExecutor{models: []string{"shared"}}, "relay")
+
+	for _, backend := range []string{"claude", "anygen", "relay"} {
+		if got := r.ModelsByBackend(backend); !reflect.DeepEqual(got, []string{"shared"}) {
+			t.Errorf("ModelsByBackend(%q) = %v, want [shared]", backend, got)
+		}
+	}
+}
+
+func TestResolveAnthropicSkipsHigherPriorityIncompatibleBackend(t *testing.T) {
+	r := New()
+	anygen := &stubExecutor{models: []string{"shared"}}
+	relay := &stubAnthropicExecutor{stubExecutor{models: []string{"shared"}}}
+	r.Register(anygen, "anygen")
+	r.Register(relay, "relay")
+	r.SetBackendPriority([]string{"anygen", "relay"})
+
+	// Generic chat routing follows the configured order.
+	if got, _ := r.Resolve("shared"); got != anygen {
+		t.Fatal("generic Resolve() did not select higher-priority anygen")
+	}
+
+	// Anthropic Messages routing skips AnyGen because it cannot speak that
+	// protocol, then uses the next compatible backend.
+	got, backend, err := r.ResolveAnthropic("shared")
+	if err != nil {
+		t.Fatalf("ResolveAnthropic() error: %v", err)
+	}
+	if got != relay || backend != "relay" {
+		t.Fatalf("ResolveAnthropic() = (%T, %q), want relay", got, backend)
 	}
 }
 

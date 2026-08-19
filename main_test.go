@@ -8,11 +8,12 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 )
 
-func TestRegisterRelayOverridesOverlappingAnyGenModel(t *testing.T) {
+func TestRegisterRelayKeepsAnthropicMessagesAvailableWhenAnyGenOverlaps(t *testing.T) {
 	t.Setenv("TEST_RELAY_TOKEN", "relay-test-token")
 	t.Setenv("TEST_ANYGEN_TOKEN", "anygen-test-token")
 
 	r := router.New()
+	r.SetBackendPriority([]string{"anygen", "relay"})
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		Enabled:   true,
 		APIKeyEnv: "TEST_ANYGEN_TOKEN",
@@ -29,18 +30,21 @@ func TestRegisterRelayOverridesOverlappingAnyGenModel(t *testing.T) {
 		t.Fatal("registerRelay() = false, want true")
 	}
 
-	resolved, err := r.Resolve("claude-fable-5")
+	// Chat routing follows priority and chooses AnyGen.
+	if resolved, err := r.Resolve("claude-fable-5"); err != nil || resolved != anygenExec {
+		t.Fatalf("generic Resolve() = %T, %v; want AnyGen", resolved, err)
+	}
+
+	// Native Anthropic routing skips AnyGen and reaches the relay.
+	resolved, backend, err := r.ResolveAnthropic("claude-fable-5")
 	if err != nil {
-		t.Fatalf("Resolve() error: %v", err)
+		t.Fatalf("ResolveAnthropic() error: %v", err)
 	}
 	if resolved != relayExec {
 		t.Fatalf("overlapping model resolved to %T, want relay executor", resolved)
 	}
-	if got := r.BackendName("claude-fable-5"); got != "relay" {
-		t.Fatalf("backend = %q, want relay", got)
-	}
-	if _, ok := resolved.(executor.AnthropicExecutor); !ok {
-		t.Fatal("resolved relay model does not support Anthropic Messages")
+	if backend != "relay" {
+		t.Fatalf("Anthropic backend = %q, want relay", backend)
 	}
 }
 

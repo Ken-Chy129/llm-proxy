@@ -1,6 +1,7 @@
 package router
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,21 +10,24 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 )
 
+var ErrAnthropicUnsupported = errors.New("model does not support Anthropic Messages API")
+
 type BackendChecker interface {
 	IsBackendDisabled(backend string) bool
 }
 
 type Router struct {
-	mu              sync.RWMutex
-	modelToExecutor map[string]executor.Executor
-	modelToBackend  map[string]string
-	checker         BackendChecker
+	mu sync.RWMutex
+	// candidates keeps every backend that can serve a model. A backend refresh
+	// only changes its own candidate; it can never overwrite another backend.
+	candidates map[string]map[string]executor.Executor // model -> backend -> exec
+	priority   []string
+	checker    BackendChecker
 }
 
 func New() *Router {
 	return &Router{
-		modelToExecutor: make(map[string]executor.Executor),
-		modelToBackend:  make(map[string]string),
+		candidates: make(map[string]map[string]executor.Executor),
 	}
 }
 
@@ -37,25 +41,35 @@ func (r *Router) Register(exec executor.Executor, backend string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, model := range exec.Models() {
-		r.modelToExecutor[model] = exec
-		r.modelToBackend[model] = backend
+		r.registerModelLocked(model, exec, backend)
 	}
 }
 
 func (r *Router) RegisterModel(model string, exec executor.Executor, backend string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.modelToExecutor[model] = exec
-	r.modelToBackend[model] = backend
+	r.registerModelLocked(model, exec, backend)
+}
+
+func (r *Router) registerModelLocked(model string, exec executor.Executor, backend string) {
+	model = strings.TrimSpace(model)
+	backend = strings.TrimSpace(backend)
+	if model == "" || backend == "" || exec == nil {
+		return
+	}
+	if r.candidates[model] == nil {
+		r.candidates[model] = make(map[string]executor.Executor)
+	}
+	r.candidates[model][backend] = exec
 }
 
 func (r *Router) UnregisterBackend(backend string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for model, b := range r.modelToBackend {
-		if b == backend {
-			delete(r.modelToExecutor, model)
-			delete(r.modelToBackend, model)
+	for model, choices := range r.candidates {
+		delete(choices, backend)
+		if len(choices) == 0 {
+			delete(r.candidates, model)
 		}
 	}
 }
@@ -63,23 +77,118 @@ func (r *Router) UnregisterBackend(backend string) {
 func (r *Router) BackendName(model string) string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return r.modelToBackend[model]
+	_, backend, _ := r.resolveLocked(strings.TrimSpace(model))
+	return backend
 }
 
 func (r *Router) Resolve(model string) (executor.Executor, error) {
 	model = strings.TrimSpace(model)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	exec, ok := r.modelToExecutor[model]
+	exec, backend, ok := r.resolveLocked(model)
 	if !ok {
 		// List only usable models: naming a paused backend's model as "available"
 		// in a not-found error just sends the caller to the next error.
 		return nil, fmt.Errorf("model %q not found, available: %v", model, r.usableModelsLocked())
 	}
-	if backend := r.modelToBackend[model]; r.checker != nil && r.checker.IsBackendDisabled(backend) {
-		return nil, fmt.Errorf("backend %q is disabled", backend)
+	if exec == nil {
+		return nil, fmt.Errorf("all backends for model %q are disabled (highest priority: %q)", model, backend)
 	}
 	return exec, nil
+}
+
+// ResolveAnthropic applies the same backend priority while ignoring candidates
+// that cannot speak Anthropic's native Messages protocol. This lets a broad
+// OpenAI-only catalog rank above a relay for Chat Completions without breaking
+// Claude Code: /v1/messages simply moves to the next compatible candidate.
+func (r *Router) ResolveAnthropic(model string) (executor.AnthropicExecutor, string, error) {
+	model = strings.TrimSpace(model)
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	choices := r.candidates[model]
+	if len(choices) == 0 {
+		return nil, "", fmt.Errorf("model %q not found, available: %v", model, r.usableModelsLocked())
+	}
+	hasCompatible := false
+	for _, backend := range r.orderedBackendsLocked(choices) {
+		ae, ok := choices[backend].(executor.AnthropicExecutor)
+		if !ok {
+			continue
+		}
+		hasCompatible = true
+		if r.checker != nil && r.checker.IsBackendDisabled(backend) {
+			continue
+		}
+		return ae, backend, nil
+	}
+	if !hasCompatible {
+		return nil, "", fmt.Errorf("%w: %s", ErrAnthropicUnsupported, model)
+	}
+	return nil, "", fmt.Errorf("all Anthropic-compatible backends for model %q are disabled", model)
+}
+
+// SetBackendPriority atomically changes collision resolution. Backends omitted
+// from the list remain available after the configured entries, ordered by name,
+// so a partial setting cannot accidentally make a backend unreachable.
+func (r *Router) SetBackendPriority(priority []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := make(map[string]bool, len(priority))
+	r.priority = r.priority[:0]
+	for _, backend := range priority {
+		backend = strings.TrimSpace(backend)
+		if backend == "" || seen[backend] {
+			continue
+		}
+		seen[backend] = true
+		r.priority = append(r.priority, backend)
+	}
+}
+
+func (r *Router) BackendPriority() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return append([]string(nil), r.priority...)
+}
+
+// resolveLocked picks the first enabled candidate according to priority.
+// If candidates exist but all are disabled, exec is nil, backend names the
+// highest-priority candidate, and ok remains true.
+func (r *Router) resolveLocked(model string) (exec executor.Executor, backend string, ok bool) {
+	choices := r.candidates[model]
+	if len(choices) == 0 {
+		return nil, "", false
+	}
+	for _, b := range r.orderedBackendsLocked(choices) {
+		if backend == "" {
+			backend = b
+		}
+		if r.checker != nil && r.checker.IsBackendDisabled(b) {
+			continue
+		}
+		return choices[b], b, true
+	}
+	return nil, backend, true
+}
+
+func (r *Router) orderedBackendsLocked(choices map[string]executor.Executor) []string {
+	out := make([]string, 0, len(choices))
+	seen := make(map[string]bool, len(choices))
+	for _, backend := range r.priority {
+		if _, ok := choices[backend]; ok {
+			out = append(out, backend)
+			seen[backend] = true
+		}
+	}
+	var rest []string
+	for backend := range choices {
+		if !seen[backend] {
+			rest = append(rest, backend)
+		}
+	}
+	sort.Strings(rest)
+	return append(out, rest...)
 }
 
 // AllModels returns every registered model, including those on paused backends.
@@ -101,8 +210,8 @@ func (r *Router) UsableModels() []string {
 }
 
 func (r *Router) allModelsLocked() []string {
-	models := make([]string, 0, len(r.modelToExecutor))
-	for m := range r.modelToExecutor {
+	models := make([]string, 0, len(r.candidates))
+	for m := range r.candidates {
 		models = append(models, m)
 	}
 	sort.Strings(models)
@@ -113,12 +222,11 @@ func (r *Router) allModelsLocked() []string {
 // the lock is safe and already done by Resolve: it reads the token store's own
 // mutex and never calls back into the router.
 func (r *Router) usableModelsLocked() []string {
-	models := make([]string, 0, len(r.modelToExecutor))
-	for m := range r.modelToExecutor {
-		if r.checker != nil && r.checker.IsBackendDisabled(r.modelToBackend[m]) {
-			continue
+	models := make([]string, 0, len(r.candidates))
+	for m := range r.candidates {
+		if exec, _, ok := r.resolveLocked(m); ok && exec != nil {
+			models = append(models, m)
 		}
-		models = append(models, m)
 	}
 	sort.Strings(models)
 	return models
@@ -134,8 +242,8 @@ func (r *Router) ModelsByBackend(backend string) []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var models []string
-	for m, b := range r.modelToBackend {
-		if b == backend {
+	for m, choices := range r.candidates {
+		if _, ok := choices[backend]; ok {
 			models = append(models, m)
 		}
 	}

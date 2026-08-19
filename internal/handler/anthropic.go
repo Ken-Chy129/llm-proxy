@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,25 +49,22 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	exec, err := h.router.Resolve(meta.Model)
+	ae, backend, err := h.router.ResolveAnthropic(meta.Model)
 	if err != nil {
+		if errors.Is(err, router.ErrAnthropicUnsupported) {
+			anthropicError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
+			return
+		}
 		anthropicError(c, http.StatusNotFound, "not_found_error", err.Error())
-		return
-	}
-
-	ae, ok := exec.(executor.AnthropicExecutor)
-	if !ok {
-		anthropicError(c, http.StatusBadRequest, "invalid_request_error",
-			"model "+meta.Model+" does not support Anthropic Messages API")
 		return
 	}
 
 	start := time.Now()
 
 	if meta.Stream {
-		h.handleAnthropicStream(c, ae, meta.Model, body, start)
+		h.handleAnthropicStream(c, ae, backend, meta.Model, body, start)
 	} else {
-		h.handleAnthropicRaw(c, ae, meta.Model, body, start)
+		h.handleAnthropicRaw(c, ae, backend, meta.Model, body, start)
 	}
 }
 
@@ -79,12 +77,15 @@ func anthropicErrStatus(err error) int {
 	return http.StatusBadGateway
 }
 
-func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.AnthropicExecutor, model string, body []byte, start time.Time) {
+func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.AnthropicExecutor, resolvedBackend, model string, body []byte, start time.Time) {
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
 	ctx, getBackend := executor.WithBackendRecorder(ctx)
 	stream, statusCode, err := ae.OpenAnthropicStream(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	served := getBackend()
+	if served == "" {
+		served = resolvedBackend
+	}
 	if err != nil {
 		log.Printf("anthropic stream open error: %v", err)
 		h.recordAnthropicLog(c, model, start, true, nil, err, anthropicErrStatus(err), account, failedOver, served, ctx)
@@ -112,12 +113,15 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 	}
 }
 
-func (h *AnthropicHandler) handleAnthropicRaw(c *gin.Context, ae executor.AnthropicExecutor, model string, body []byte, start time.Time) {
+func (h *AnthropicHandler) handleAnthropicRaw(c *gin.Context, ae executor.AnthropicExecutor, resolvedBackend, model string, body []byte, start time.Time) {
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
 	ctx, getBackend := executor.WithBackendRecorder(ctx)
 	respBody, statusCode, err := ae.ExecuteAnthropicRaw(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	served := getBackend()
+	if served == "" {
+		served = resolvedBackend
+	}
 	if err != nil {
 		h.recordAnthropicLog(c, model, start, false, nil, err, anthropicErrStatus(err), account, failedOver, served, ctx)
 		log.Printf("anthropic error: %v", err)
