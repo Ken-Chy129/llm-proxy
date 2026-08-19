@@ -442,6 +442,9 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			"api_key_env": h.cfg.AnyGen.APIKeyEnv,
 			"models":      h.cfg.AnyGen.Models,
 		},
+		"routing": gin.H{
+			"backend_priority": h.cfg.BackendPriority(),
+		},
 		// Only the overrides, not the effective table — the Models editor needs to
 		// tell "you changed this" from "this is the built-in rate", and /api/pricing
 		// serves the effective figures.
@@ -560,6 +563,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		AnyGen *struct {
 			Models []string `json:"models"`
 		} `json:"anygen"`
+		Routing *struct {
+			BackendPriority []string `json:"backend_priority"`
+		} `json:"routing"`
 		Pricing *struct {
 			Models []pricing.Price `json:"models"`
 		} `json:"pricing"`
@@ -630,6 +636,13 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			return
 		}
 	}
+	backendPriority := h.cfg.BackendPriority()
+	if req.Routing != nil {
+		if backendPriority, err = config.NormalizeBackendPriority(req.Routing.BackendPriority); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "routing backend_priority: " + err.Error()})
+			return
+		}
+	}
 	// Port is optional: 0 means "leave unchanged". When provided it must be valid.
 	if req.Server != nil && req.Server.Port != 0 && (req.Server.Port < 1 || req.Server.Port > 65535) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "server port must be between 1 and 65535"})
@@ -669,6 +682,9 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 			h.router.Register(h.relayExec, "relay")
 		}
 	}
+	if req.Routing != nil {
+		h.router.SetBackendPriority(backendPriority)
+	}
 	if req.Server != nil {
 		h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
 		if req.Server.TrayToken != nil {
@@ -686,6 +702,11 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	h.cfg.Kimi.Models = kimiModels
 	h.cfg.Relay.Models = relayModels
 	h.cfg.AnyGen.Models = anygenModels
+	if req.Routing != nil {
+		// Already validated above; this setter owns the config lock needed by
+		// concurrent GET /api/config and atomic config saves.
+		_ = h.cfg.SetBackendPriority(backendPriority)
+	}
 	// After the model lists, so the alias map it reads is the new one.
 	h.cfg.Pricing.Models = priceOverrides
 	h.applyPricing()

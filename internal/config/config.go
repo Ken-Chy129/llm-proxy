@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
@@ -17,6 +18,7 @@ type Config struct {
 	Kimi        KimiConfig        `yaml:"kimi"`
 	Relay       RelayConfig       `yaml:"relay"`
 	AnyGen      AnyGenConfig      `yaml:"anygen"`
+	Routing     RoutingConfig     `yaml:"routing"`
 	Pricing     PricingConfig     `yaml:"pricing"`
 
 	// mu guards only the ServerConfig fields the dashboard can rewrite while the
@@ -114,6 +116,58 @@ type AnyGenConfig struct {
 	Models    []string `yaml:"models"`
 }
 
+type RoutingConfig struct {
+	// BackendPriority resolves models exposed by multiple backends. Earlier
+	// entries win; disabled and protocol-incompatible entries are skipped.
+	BackendPriority []string `yaml:"backend_priority"`
+}
+
+var DefaultBackendPriority = []string{
+	"claude",
+	"codex",
+	"vertex",
+	"kimi",
+	"anygen",
+	"relay",
+}
+
+var knownBackends = map[string]bool{
+	"claude": true,
+	"codex":  true,
+	"vertex": true,
+	"kimi":   true,
+	"anygen": true,
+	"relay":  true,
+}
+
+// NormalizeBackendPriority validates an external priority list and appends
+// omitted known backends in the stable default order. Partial configuration is
+// therefore safe and forward-compatible with the existing config files.
+func NormalizeBackendPriority(in []string) ([]string, error) {
+	out := make([]string, 0, len(DefaultBackendPriority))
+	seen := make(map[string]bool, len(DefaultBackendPriority))
+	for _, backend := range in {
+		backend = strings.TrimSpace(backend)
+		if backend == "" {
+			continue
+		}
+		if !knownBackends[backend] {
+			return nil, fmt.Errorf("unknown backend %q", backend)
+		}
+		if seen[backend] {
+			return nil, fmt.Errorf("duplicate backend %q", backend)
+		}
+		seen[backend] = true
+		out = append(out, backend)
+	}
+	for _, backend := range DefaultBackendPriority {
+		if !seen[backend] {
+			out = append(out, backend)
+		}
+	}
+	return out, nil
+}
+
 // PricingConfig overrides or extends the built-in per-model price table used to
 // cost requests. Prices are USD per 1M tokens.
 //
@@ -209,6 +263,23 @@ func (c *Config) SetPort(port int) {
 	c.Server.Port = port
 }
 
+func (c *Config) BackendPriority() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]string(nil), c.Routing.BackendPriority...)
+}
+
+func (c *Config) SetBackendPriority(priority []string) error {
+	normalized, err := NormalizeBackendPriority(priority)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.Routing.BackendPriority = normalized
+	c.mu.Unlock()
+	return nil
+}
+
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -221,6 +292,11 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
+	priority, err := NormalizeBackendPriority(cfg.Routing.BackendPriority)
+	if err != nil {
+		return nil, fmt.Errorf("routing.backend_priority: %w", err)
+	}
+	cfg.Routing.BackendPriority = priority
 	// The config file wins when both are present — it is the more explicit of the
 	// two, and silently preferring an inherited env var would make a checked-in
 	// value lie about what the server is actually using.

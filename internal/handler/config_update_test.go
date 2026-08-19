@@ -12,6 +12,7 @@ import (
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
+	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/gin-gonic/gin"
 )
@@ -37,6 +38,8 @@ func newConfigHandler(t *testing.T) (*AdminHandler, *config.Config, string) {
 	cfg.Kimi.Models = []config.ModelConfig{{Name: "kimi-k3", Model: "k3"}}
 	cfg.Relay.Models = []config.ModelConfig{{Name: "relay-sonnet", Model: "claude-sonnet-4-5-20250929"}}
 	cfg.AnyGen.Models = []string{"gpt-5.6-luna"}
+	r := router.New()
+	r.SetBackendPriority(cfg.BackendPriority())
 
 	db, err := stats.Open(dir)
 	if err != nil {
@@ -45,7 +48,7 @@ func newConfigHandler(t *testing.T) (*AdminHandler, *config.Config, string) {
 	t.Cleanup(func() { db.Close() })
 	db.SetPricing(pricing.New(nil))
 
-	return &AdminHandler{configPath: path, cfg: cfg, statsDB: db}, cfg, path
+	return &AdminHandler{configPath: path, cfg: cfg, statsDB: db, router: r}, cfg, path
 }
 
 func putConfig(t *testing.T, h *AdminHandler, body string) (int, string) {
@@ -202,5 +205,53 @@ func TestUpdateConfigAppliesPricingLive(t *testing.T) {
 	}
 	if p.Input != 2 || p.Output != 8 {
 		t.Errorf("price = %+v, want input 2 / output 8", p)
+	}
+}
+
+func TestUpdateConfigAppliesBackendPriorityLiveAndPersistsIt(t *testing.T) {
+	h, cfg, path := newConfigHandler(t)
+	h.router.RegisterModel("shared", &fakeBackend{}, "claude")
+	h.router.RegisterModel("shared", &fakeBackend{}, "anygen")
+
+	if got := h.router.BackendName("shared"); got != "claude" {
+		t.Fatalf("precondition: backend = %q, want claude", got)
+	}
+
+	code, body := putConfig(t, h, `{"routing":{"backend_priority":["anygen","claude","relay"]}}`)
+	if code != http.StatusOK {
+		t.Fatalf("save failed (%d): %s", code, body)
+	}
+	if got := h.router.BackendName("shared"); got != "anygen" {
+		t.Fatalf("live backend = %q, want anygen after priority update", got)
+	}
+	if got := cfg.BackendPriority(); len(got) < 3 || got[0] != "anygen" || got[1] != "claude" || got[2] != "relay" {
+		t.Fatalf("in-memory priority = %v", got)
+	}
+
+	reloaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.BackendPriority(); len(got) < 3 || got[0] != "anygen" || got[1] != "claude" || got[2] != "relay" {
+		t.Fatalf("persisted priority = %v", got)
+	}
+}
+
+func TestUpdateConfigRejectsInvalidBackendPriorityWithoutMutation(t *testing.T) {
+	for name, body := range map[string]string{
+		"duplicate": `{"routing":{"backend_priority":["claude","claude"]}}`,
+		"unknown":   `{"routing":{"backend_priority":["claude","mystery"]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			h, cfg, _ := newConfigHandler(t)
+			before := cfg.BackendPriority()
+			code, response := putConfig(t, h, body)
+			if code != http.StatusBadRequest {
+				t.Fatalf("code = %d, want 400; body=%s", code, response)
+			}
+			if got := cfg.BackendPriority(); !slices.Equal(got, before) {
+				t.Fatalf("priority mutated to %v after rejected request; want %v", got, before)
+			}
+		})
 	}
 }

@@ -18,7 +18,7 @@ Lightweight AI API proxy built for **Claude Code** and **Codex CLI**. Unifies Cl
 - **Account pooling + failover** — Round-robin load balancing; on an upstream 429 the request fails over to the next account, and expired tokens are auto-skipped
 - **Multi API-key management** — Issue per-caller keys with individual daily token limits; create/revoke from the dashboard
 - **Visual analytics** — Time-series trend plus breakdowns by model / key / backend / account (timezone-aware)
-- **Live config** — Edit each backend's model list and admin credentials from the dashboard; model changes apply instantly
+- **Live config** — Edit backend model lists, routing priority, and admin credentials from the dashboard; changes apply instantly
 - **Single binary** — Pure Go (including SQLite), no CGO, cross-compile and deploy
 - **Docker ready** — One command to start
 

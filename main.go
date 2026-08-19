@@ -25,6 +25,7 @@ func main() {
 	}
 
 	r := router.New()
+	r.SetBackendPriority(cfg.BackendPriority())
 	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir, cfg.Server.AccountStrategy)
 	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())

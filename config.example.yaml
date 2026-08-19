@@ -85,6 +85,18 @@ anygen:
   models:
     - "gpt-5.6-luna"
 
+# Stable collision resolution when several backends advertise the same model.
+# Model syncs update only that backend's candidates and never change this order.
+# Native Anthropic requests also skip backends that do not support /v1/messages.
+routing:
+  backend_priority:
+    - "claude"
+    - "codex"
+    - "vertex"
+    - "kimi"
+    - "anygen"
+    - "relay"
+
 # Cost accounting. Every request is priced at write time from a built-in table
 # of published list rates (Anthropic / OpenAI / Moonshot) and shown on the
 # dashboard. Note this is what the tokens *would* cost on the pay-per-token API:
