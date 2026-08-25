@@ -52,7 +52,7 @@ type responsesInputItem struct {
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments string          `json:"arguments,omitempty"`
-	Output    string          `json:"output,omitempty"`
+	Output    json.RawMessage `json:"output,omitempty"`
 }
 
 func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
@@ -119,7 +119,13 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		return
 	}
 
-	chatReq := h.toChatCompletionRequest(&req)
+	chatReq, conversionErr := h.toChatCompletionRequest(&req)
+	if conversionErr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": gin.H{"message": conversionErr.Error(), "type": "invalid_request_error", "param": "input"},
+		})
+		return
+	}
 	if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
 		chatReq.Stream = false
 		resp, execErr := exec.Execute(ctx, chatReq)
@@ -172,7 +178,7 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	}
 }
 
-func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types.ChatCompletionRequest {
+func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*types.ChatCompletionRequest, error) {
 	chatReq := &types.ChatCompletionRequest{
 		Model:       req.Model,
 		Stream:      true,
@@ -190,37 +196,93 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types
 	}
 
 	var inputItems []responsesInputItem
-	json.Unmarshal(req.Input, &inputItems)
+	if err := json.Unmarshal(req.Input, &inputItems); err != nil {
+		return nil, fmt.Errorf("invalid Responses input: %w", err)
+	}
+
+	var pendingToolCalls []types.ToolCall
+	unresolvedToolCalls := make(map[string]struct{})
+	flushToolCalls := func() error {
+		if len(pendingToolCalls) == 0 {
+			return nil
+		}
+		for _, toolCall := range pendingToolCalls {
+			if _, duplicate := unresolvedToolCalls[toolCall.ID]; duplicate {
+				return fmt.Errorf("duplicate function call %q", toolCall.ID)
+			}
+			unresolvedToolCalls[toolCall.ID] = struct{}{}
+		}
+		chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
+			Role:      "assistant",
+			ToolCalls: pendingToolCalls,
+		})
+		pendingToolCalls = nil
+		return nil
+	}
+	firstUnresolvedCall := func() string {
+		for callID := range unresolvedToolCalls {
+			return callID
+		}
+		return ""
+	}
 
 	for _, item := range inputItems {
 		switch {
+		case item.Type == "function_call":
+			if len(unresolvedToolCalls) > 0 {
+				return nil, fmt.Errorf("no function_call_output found for function call %q before the next call", firstUnresolvedCall())
+			}
+			if item.CallID == "" || item.Name == "" {
+				return nil, fmt.Errorf("function_call requires call_id and name")
+			}
+			pendingToolCalls = append(pendingToolCalls, types.ToolCall{
+				ID:   item.CallID,
+				Type: "function",
+				Function: types.ToolCallFunction{
+					Name:      item.Name,
+					Arguments: item.Arguments,
+				},
+			})
+		case item.Type == "function_call_output":
+			if err := flushToolCalls(); err != nil {
+				return nil, err
+			}
+			if item.CallID == "" {
+				return nil, fmt.Errorf("function_call_output requires call_id")
+			}
+			if _, ok := unresolvedToolCalls[item.CallID]; !ok {
+				return nil, fmt.Errorf("function_call_output %q has no matching function call", item.CallID)
+			}
+			outputContent, err := chatToolOutputContent(item.Output)
+			if err != nil {
+				return nil, fmt.Errorf("invalid output for function call %q: %w", item.CallID, err)
+			}
+			chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
+				Role:       "tool",
+				Content:    outputContent,
+				ToolCallID: item.CallID,
+			})
+			delete(unresolvedToolCalls, item.CallID)
 		case item.Role == "user" || item.Role == "assistant":
+			if err := flushToolCalls(); err != nil {
+				return nil, err
+			}
+			if callID := firstUnresolvedCall(); callID != "" {
+				return nil, fmt.Errorf("no function_call_output found for function call %q before the next message", callID)
+			}
 			content := normalizeResponsesContent(item.Content)
 			if len(content) == 0 {
 				content, _ = json.Marshal("")
 			}
 			msg := types.ChatMessage{Role: item.Role, Content: content}
 			chatReq.Messages = append(chatReq.Messages, msg)
-		case item.Type == "function_call":
-			chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
-				Role: "assistant",
-				ToolCalls: []types.ToolCall{{
-					ID:   item.CallID,
-					Type: "function",
-					Function: types.ToolCallFunction{
-						Name:      item.Name,
-						Arguments: item.Arguments,
-					},
-				}},
-			})
-		case item.Type == "function_call_output":
-			outputContent, _ := json.Marshal(item.Output)
-			chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
-				Role:       "tool",
-				Content:    outputContent,
-				ToolCallID: item.CallID,
-			})
 		}
+	}
+	if err := flushToolCalls(); err != nil {
+		return nil, err
+	}
+	if callID := firstUnresolvedCall(); callID != "" {
+		return nil, fmt.Errorf("no function_call_output found for function call %q", callID)
 	}
 
 	if len(chatReq.Messages) == 0 {
@@ -260,7 +322,59 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) *types
 		chatReq.ReasoningEffort = req.Reasoning.Effort
 	}
 
-	return chatReq
+	return chatReq, nil
+}
+
+func chatToolOutputContent(raw json.RawMessage) (json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil, fmt.Errorf("output is required")
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		if text == "" {
+			text = "(tool returned no output)"
+		}
+		return json.Marshal(text)
+	}
+
+	var items []map[string]interface{}
+	if err := json.Unmarshal(trimmed, &items); err == nil {
+		parts := make([]string, 0, len(items))
+		for _, item := range items {
+			if itemText, _ := item["text"].(string); itemText != "" {
+				parts = append(parts, itemText)
+				continue
+			}
+			switch itemType, _ := item["type"].(string); itemType {
+			case "input_image", "image", "image_url":
+				parts = append(parts, "[tool returned an image; image content is unavailable through the Chat Completions adapter]")
+			case "encrypted_content":
+				parts = append(parts, "[tool returned encrypted content]")
+			default:
+				encoded, err := json.Marshal(item)
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, string(encoded))
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "(tool returned no output)")
+		}
+		return json.Marshal(strings.Join(parts, "\n"))
+	}
+
+	var value interface{}
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(string(encoded))
 }
 
 // normalizeResponsesContent converts Responses API content block names into

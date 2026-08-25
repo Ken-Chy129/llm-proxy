@@ -29,7 +29,10 @@ func TestResponsesRequestConvertsCodexContentAndToolsToChatCompletions(t *testin
 		Tools: []json.RawMessage{tool},
 	}
 
-	chatReq := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	chatReq, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(chatReq.Messages) != 3 {
 		t.Fatalf("messages = %+v", chatReq.Messages)
 	}
@@ -53,6 +56,105 @@ func TestResponsesRequestConvertsCodexContentAndToolsToChatCompletions(t *testin
 	}
 	if len(chatReq.Tools[0].Function.Parameters) == 0 {
 		t.Fatal("tool parameters were dropped")
+	}
+}
+
+func TestResponsesRequestGroupsParallelFunctionCallsIntoOneAssistantMessage(t *testing.T) {
+	input := json.RawMessage(`[
+		{"role":"user","content":[{"type":"input_text","text":"inspect both files"}]},
+		{"type":"function_call","call_id":"call_1","name":"read_file","arguments":"{\"path\":\"a.go\"}"},
+		{"type":"function_call","call_id":"call_2","name":"read_file","arguments":"{\"path\":\"b.go\"}"},
+		{"type":"function_call_output","call_id":"call_1","output":"file a"},
+		{"type":"function_call_output","call_id":"call_2","output":"file b"}
+	]`)
+	req := &responsesRequest{Model: "gpt-5.6-sol", Input: input}
+
+	chatReq, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chatReq.Messages) != 4 {
+		t.Fatalf("messages = %+v, want user + one assistant tool-call message + two tool outputs", chatReq.Messages)
+	}
+	assistant := chatReq.Messages[1]
+	if assistant.Role != "assistant" || len(assistant.ToolCalls) != 2 {
+		t.Fatalf("parallel calls were not grouped: %+v", assistant)
+	}
+	if assistant.ToolCalls[0].ID != "call_1" || assistant.ToolCalls[1].ID != "call_2" {
+		t.Fatalf("tool call order = %+v", assistant.ToolCalls)
+	}
+	if chatReq.Messages[2].Role != "tool" || chatReq.Messages[2].ToolCallID != "call_1" ||
+		chatReq.Messages[3].Role != "tool" || chatReq.Messages[3].ToolCallID != "call_2" {
+		t.Fatalf("tool outputs = %+v", chatReq.Messages[2:])
+	}
+}
+
+func TestResponsesRequestPreservesStructuredFunctionCallOutputAsText(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"function_call","call_id":"call_1","name":"screenshot","arguments":"{}"},
+		{"type":"function_call_output","call_id":"call_1","output":[
+			{"type":"input_text","text":"screenshot ready"},
+			{"type":"input_image","image_url":"data:image/png;base64,AAAA"}
+		]}
+	]`)
+	req := &responsesRequest{Model: "gpt-5.6-sol", Input: input}
+
+	chatReq, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chatReq.Messages) != 2 {
+		t.Fatalf("messages = %+v", chatReq.Messages)
+	}
+	var output string
+	if err := json.Unmarshal(chatReq.Messages[1].Content, &output); err != nil {
+		t.Fatalf("decode tool output: %v; raw=%s", err, chatReq.Messages[1].Content)
+	}
+	if !strings.Contains(output, "screenshot ready") || !strings.Contains(output, "image") {
+		t.Fatalf("structured output was lost: %q", output)
+	}
+}
+
+func TestResponsesRejectsFunctionCallWithoutOutputBeforeAnyGen(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	upstreamCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","model":"gpt-5.6-sol","choices":[{"index":0,"message":{"role":"assistant","content":"unexpected"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   server.URL + "/api/v1",
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+		Models:    []string{"gpt-5.6-sol"},
+	})
+	r := router.New()
+	r.Register(anygenExec, "anygen")
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"inspect"}]},
+			{"type":"function_call","call_id":"call_missing","name":"read_file","arguments":"{}"}
+		]
+	}`))
+	h.HandleResponses(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("AnyGen was called %d times for invalid tool history", upstreamCalls)
+	}
+	if !strings.Contains(w.Body.String(), "call_missing") {
+		t.Fatalf("error does not identify the unmatched call: %s", w.Body.String())
 	}
 }
 
