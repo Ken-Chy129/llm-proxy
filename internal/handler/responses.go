@@ -46,13 +46,14 @@ type responsesRequest struct {
 }
 
 type responsesInputItem struct {
-	Role      string          `json:"role,omitempty"`
-	Content   json.RawMessage `json:"content,omitempty"`
-	Type      string          `json:"type,omitempty"`
-	CallID    string          `json:"call_id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Arguments json.RawMessage `json:"arguments,omitempty"`
-	Output    json.RawMessage `json:"output,omitempty"`
+	Role             string          `json:"role,omitempty"`
+	Content          json.RawMessage `json:"content,omitempty"`
+	Type             string          `json:"type,omitempty"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Arguments        json.RawMessage `json:"arguments,omitempty"`
+	Output           json.RawMessage `json:"output,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
 }
 
 func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
@@ -124,6 +125,10 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{"message": conversionErr.Error(), "type": "invalid_request_error", "param": "input"},
 		})
+		return
+	}
+	if trailingCompactionTrigger(req.Input) {
+		h.handleCompactionV2(c, ctx, exec, chatReq, req.Model, start, getAccount)
 		return
 	}
 	if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
@@ -228,6 +233,29 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 
 	for _, item := range inputItems {
 		switch {
+		case strings.EqualFold(item.Type, "compaction_trigger"):
+			// Codex remote-compaction-v2 marker. Handled by handleCompactionV2;
+			// Completions upstreams must never see it.
+			continue
+		case strings.EqualFold(item.Type, "compaction"):
+			if err := flushToolCalls(); err != nil {
+				return nil, err
+			}
+			if callID := firstUnresolvedCall(); callID != "" {
+				return nil, fmt.Errorf("no function_call_output found for function call %q before the next message", callID)
+			}
+			summary, ok := decodeCompactSummary(item.EncryptedContent)
+			if !ok {
+				continue
+			}
+			content, err := json.Marshal("[Conversation summary after compaction]\n" + summary)
+			if err != nil {
+				return nil, fmt.Errorf("encode compaction summary: %w", err)
+			}
+			chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
+				Role:    "user",
+				Content: content,
+			})
 		case item.Type == "function_call":
 			if len(unresolvedToolCalls) > 0 {
 				return nil, fmt.Errorf("no function_call_output found for function call %q before the next call", firstUnresolvedCall())
