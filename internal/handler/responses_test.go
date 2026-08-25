@@ -89,6 +89,60 @@ func TestResponsesRequestGroupsParallelFunctionCallsIntoOneAssistantMessage(t *t
 	}
 }
 
+func TestResponsesRequestNormalizesObjectFunctionCallArguments(t *testing.T) {
+	input := json.RawMessage(`[
+		{"type":"function_call","call_id":"call_1","name":"shell_command","arguments":{"command":"ls -la","timeout_ms":1000}},
+		{"type":"function_call_output","call_id":"call_1","output":"ok"}
+	]`)
+	req := &responsesRequest{Model: "gpt-5.6-sol", Input: input}
+
+	chatReq, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chatReq.Messages) != 2 || len(chatReq.Messages[0].ToolCalls) != 1 {
+		t.Fatalf("messages = %+v", chatReq.Messages)
+	}
+	arguments := chatReq.Messages[0].ToolCalls[0].Function.Arguments
+	if arguments != `{"command":"ls -la","timeout_ms":1000}` {
+		t.Fatalf("arguments = %q", arguments)
+	}
+}
+
+func TestChatToolCallArgumentsAcceptsStructuredJSONAndRejectsScalars(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     json.RawMessage
+		want    string
+		wantErr bool
+	}{
+		{name: "string", raw: json.RawMessage(`"{\"command\":\"pwd\"}"`), want: `{"command":"pwd"}`},
+		{name: "object", raw: json.RawMessage(`{ "command": "pwd" }`), want: `{"command":"pwd"}`},
+		{name: "array", raw: json.RawMessage(`[ { "path": "a.go" } ]`), want: `[{"path":"a.go"}]`},
+		{name: "null", raw: json.RawMessage(`null`), wantErr: true},
+		{name: "number", raw: json.RawMessage(`42`), wantErr: true},
+		{name: "boolean", raw: json.RawMessage(`true`), wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := chatToolCallArguments(tt.raw)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("chatToolCallArguments(%s) = %q, want error", tt.raw, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tt.want {
+				t.Fatalf("chatToolCallArguments(%s) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestResponsesRequestPreservesStructuredFunctionCallOutputAsText(t *testing.T) {
 	input := json.RawMessage(`[
 		{"type":"function_call","call_id":"call_1","name":"screenshot","arguments":"{}"},

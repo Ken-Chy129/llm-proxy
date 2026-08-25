@@ -51,7 +51,7 @@ type responsesInputItem struct {
 	Type      string          `json:"type,omitempty"`
 	CallID    string          `json:"call_id,omitempty"`
 	Name      string          `json:"name,omitempty"`
-	Arguments string          `json:"arguments,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Output    json.RawMessage `json:"output,omitempty"`
 }
 
@@ -235,12 +235,16 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 			if item.CallID == "" || item.Name == "" {
 				return nil, fmt.Errorf("function_call requires call_id and name")
 			}
+			arguments, err := chatToolCallArguments(item.Arguments)
+			if err != nil {
+				return nil, fmt.Errorf("invalid arguments for function call %q: %w", item.CallID, err)
+			}
 			pendingToolCalls = append(pendingToolCalls, types.ToolCall{
 				ID:   item.CallID,
 				Type: "function",
 				Function: types.ToolCallFunction{
 					Name:      item.Name,
-					Arguments: item.Arguments,
+					Arguments: arguments,
 				},
 			})
 		case item.Type == "function_call_output":
@@ -323,6 +327,30 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 	}
 
 	return chatReq, nil
+}
+
+func chatToolCallArguments(raw json.RawMessage) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return "", nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return "", fmt.Errorf("must not be null")
+	}
+
+	var text string
+	if err := json.Unmarshal(trimmed, &text); err == nil {
+		return text, nil
+	}
+
+	if trimmed[0] != '{' && trimmed[0] != '[' {
+		return "", fmt.Errorf("must be a JSON string, object, or array")
+	}
+	var compact bytes.Buffer
+	if err := json.Compact(&compact, trimmed); err != nil {
+		return "", err
+	}
+	return compact.String(), nil
 }
 
 func chatToolOutputContent(raw json.RawMessage) (json.RawMessage, error) {
