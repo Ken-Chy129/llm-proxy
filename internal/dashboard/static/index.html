@@ -252,6 +252,18 @@
   <div id="tab-config" class="hidden">
     <div class="panel">
       <div class="panel-header">
+        <span>Routing Priority</span>
+        <span class="mdl-legend">first compatible backend wins</span>
+        <button class="cfg-save" id="save-routing" onclick="saveRouting(this)">Save</button>
+      </div>
+      <div class="cfg-body">
+        <p class="cfg-hint">Used when multiple backends advertise the same model. Disabled or protocol-incompatible backends are skipped automatically; model syncs never reorder this list.</p>
+        <div id="cfg-routing-priority" class="route-priority" role="list" aria-label="Backend routing priority"></div>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:18px">
+      <div class="panel-header">
         <span>Models</span>
         <!-- The price column's unit belongs in the header, not repeated on 20 rows -->
         <span class="mdl-legend">price · USD per 1M tokens · in / out</span>

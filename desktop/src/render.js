@@ -733,7 +733,7 @@ function renderSpark(container, hourly, nowHour, axisEl) {
     bar.style.height = v > 0 ? `${Math.max(10, ratio * 100)}%` : '0%';
     slot.appendChild(bar);
     if (h === nowHour) slot.classList.add('now');
-    slot.title = `${String(h).padStart(2, '0')}:00 — ${fmtNum(v)} tokens`;
+    slot.title = `${String(h).padStart(2, '0')}:00 — ${fmtCompact(v)} tokens`;
     container.appendChild(slot);
   });
 

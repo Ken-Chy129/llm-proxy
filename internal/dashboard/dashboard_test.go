@@ -141,3 +141,45 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 		}
 	}
 }
+
+func TestRoutingPriorityEditorIsAccessibleAndPersistsThroughConfigAPI(t *testing.T) {
+	index, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index: %v", err)
+	}
+	html := string(index)
+	for _, want := range []string{
+		"id=\"cfg-routing-priority\"",
+		"id=\"save-routing\"",
+		"onclick=\"saveRouting(this)\"",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("routing priority markup missing %q", want)
+		}
+	}
+
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"d.routing?.backend_priority",
+		"function renderRoutingPriority()",
+		"aria-label",
+		"async function saveRouting(btn)",
+		"routing: { backend_priority: cfgPriority }",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("routing priority behavior missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	if !strings.Contains(string(css), ".route-priority{") {
+		t.Error("routing priority list has no dedicated layout styles")
+	}
+}

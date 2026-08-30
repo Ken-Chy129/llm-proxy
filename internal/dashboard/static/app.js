@@ -1084,6 +1084,7 @@ const MODEL_GROUPS = [
 
 // cfgModels[group] = [{name, model}] — model is unused for unmapped groups.
 let cfgModels = { claude: [], vertex: [], kimi: [], relay: [], anygen: [], codex: [] };
+let cfgPriority = [];
 // Effective price table from /api/pricing, plus the local override edits. Both
 // are keyed by normalised model name; overrides also keep the name as typed, so
 // saving round-trips it verbatim into config.yaml.
@@ -1150,6 +1151,50 @@ function renderModels() {
   const host = document.getElementById('cfg-models');
   host.innerHTML = '';
   MODEL_GROUPS.forEach(g => host.appendChild(renderModelGroup(g)));
+}
+
+function renderRoutingPriority() {
+  const host = document.getElementById('cfg-routing-priority');
+  if (!host) return;
+  host.innerHTML = '';
+  const labels = new Map(MODEL_GROUPS.map(g => [g.id, g.label]));
+  cfgPriority.forEach((backend, i) => {
+    const row = el('div', 'route-priority-row');
+    row.setAttribute('role', 'listitem');
+
+    const rank = el('span', 'route-rank', String(i + 1).padStart(2, '0'));
+    row.appendChild(rank);
+
+    const identity = el('div', 'route-identity');
+    identity.appendChild(el('span', 'route-name', labels.get(backend) || backend));
+    identity.appendChild(el('code', 'route-id', backend));
+    row.appendChild(identity);
+
+    const controls = el('div', 'route-controls');
+    const up = el('button', 'route-move', '↑');
+    up.type = 'button';
+    up.disabled = i === 0;
+    up.setAttribute('aria-label', `Move ${labels.get(backend) || backend} higher`);
+    up.onclick = () => moveRoutingBackend(i, -1);
+    controls.appendChild(up);
+
+    const down = el('button', 'route-move', '↓');
+    down.type = 'button';
+    down.disabled = i === cfgPriority.length - 1;
+    down.setAttribute('aria-label', `Move ${labels.get(backend) || backend} lower`);
+    down.onclick = () => moveRoutingBackend(i, 1);
+    controls.appendChild(down);
+    row.appendChild(controls);
+    host.appendChild(row);
+  });
+}
+
+function moveRoutingBackend(index, delta) {
+  const target = index + delta;
+  if (target < 0 || target >= cfgPriority.length) return;
+  [cfgPriority[index], cfgPriority[target]] = [cfgPriority[target], cfgPriority[index]];
+  renderRoutingPriority();
+  setPanelDirty('routing', true);
 }
 
 function renderModelGroup(g) {
@@ -1387,6 +1432,8 @@ async function loadConfig() {
     relay: pairs(d.relay?.models),
     anygen: (d.anygen?.models || []).map(n => ({ name: n, model: '' })),
   };
+  cfgPriority = [...(d.routing?.backend_priority || ['claude', 'codex', 'vertex', 'kimi', 'anygen', 'relay'])];
+  renderRoutingPriority();
   renderModels();
 
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
@@ -1396,6 +1443,7 @@ async function loadConfig() {
     document.getElementById(id).oninput = () => setPanelDirty('admin', true);
   });
   setPanelDirty('models', false);
+  setPanelDirty('routing', false);
   setPanelDirty('admin', false);
 }
 
@@ -1462,6 +1510,13 @@ async function saveModels(btn) {
     pricing: { models: [...priceOverrides.values()] },
   }, btn, 'Models saved');
   if (d) setPanelDirty('models', false);
+}
+
+async function saveRouting(btn) {
+  const d = await putConfig({
+    routing: { backend_priority: cfgPriority },
+  }, btn, 'Routing priority saved');
+  if (d) setPanelDirty('routing', false);
 }
 
 async function saveAdmin(btn) {
