@@ -24,10 +24,11 @@ func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-luna"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-luna"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-luna", Providers: []string{"anygen"}}})
 	h := NewChatHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -49,7 +50,10 @@ func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
 	}
 }
 
-func TestSyncModelsRegistersAnyGenModelsLive(t *testing.T) {
+// A sync refreshes what AnyGen *offers*. Serving it is a routing decision, so a
+// synced model that no route names must not become reachable on its own — that
+// is what used to let a 30-model catalog claim names nobody published.
+func TestSyncModelsUpdatesTheCatalogWithoutServingIt(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/v1/models" {
@@ -78,11 +82,23 @@ func TestSyncModelsRegistersAnyGenModelsLive(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
 	}
-	if _, err := r.Resolve("gpt-5.6-luna"); err != nil {
-		t.Fatalf("synced AnyGen model was not registered: %v", err)
+	if got := anygenExec.Catalog(); len(got) != 1 || got[0] != "gpt-5.6-luna" {
+		t.Fatalf("catalog = %v, want the synced model", got)
 	}
+	if _, err := r.Resolve("gpt-5.6-luna"); err == nil {
+		t.Fatal("a synced but unrouted model became reachable")
+	}
+
+	// Once a route names it, the same sync makes it servable.
+	if err := cfg.SetRoutes([]config.ModelRoute{{
+		Name:      "gpt-5.6-luna",
+		Providers: []config.ProviderRef{{Provider: "anygen"}},
+	}}); err != nil {
+		t.Fatalf("SetRoutes: %v", err)
+	}
+	h.applyRouting()
 	if got := r.BackendName("gpt-5.6-luna"); got != "anygen" {
-		t.Fatalf("backend = %q, want anygen", got)
+		t.Fatalf("backend = %q, want anygen once routed", got)
 	}
 }
 

@@ -21,58 +21,42 @@ import (
 
 const gcpScope = "https://www.googleapis.com/auth/cloud-platform"
 
-// DefaultVertexModels is used when the config has no vertex models defined,
-// e.g. when credentials are added at runtime through the dashboard.
-var DefaultVertexModels = []config.ModelConfig{
-	{Name: "claude-sonnet-4-6", Model: "claude-sonnet-4-6"},
-	{Name: "claude-opus-4-6", Model: "claude-opus-4-6"},
-	{Name: "claude-opus-4-6[1m]", Model: "claude-opus-4-6[1m]"},
-	{Name: "claude-haiku-4-5", Model: "claude-haiku-4-5-20251001"},
-}
-
 type VertexExecutor struct {
-	cfg    config.VertexConfig
-	models []string
+	cfg config.VertexConfig
 
 	mu          sync.RWMutex
+	models      []config.ModelConfig
 	projectID   string
 	region      string
 	tokenSource oauth2.TokenSource // set when credentials were uploaded; nil → ADC
 }
 
+// NewVertexExecutor builds the executor with no models: the routing table
+// installs them via SetModels once it is known which models name this provider.
 func NewVertexExecutor(cfg config.VertexConfig) *VertexExecutor {
-	if len(cfg.Models) == 0 {
-		cfg.Models = DefaultVertexModels
-	}
-	models := make([]string, len(cfg.Models))
-	for i, m := range cfg.Models {
-		models[i] = m.Name
-	}
 	region := cfg.Region
 	if region == "" {
 		region = "us-east5"
 	}
-	return &VertexExecutor{cfg: cfg, models: models, projectID: cfg.ProjectID, region: region}
+	return &VertexExecutor{cfg: cfg, projectID: cfg.ProjectID, region: region}
 }
 
 func (e *VertexExecutor) Models() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.models
-}
-
-// SetModels replaces the served model aliases at runtime. It updates both the
-// alias list returned by Models() and cfg.Models used by resolveModel for the
-// name→underlying-model mapping. Callers must re-register the executor with the
-// router afterwards so routing picks up the new aliases.
-func (e *VertexExecutor) SetModels(models []config.ModelConfig) {
-	names := make([]string, len(models))
-	for i, m := range models {
+	names := make([]string, len(e.models))
+	for i, m := range e.models {
 		names[i] = m.Name
 	}
+	return names
+}
+
+// SetModels replaces the models this provider serves, along with the
+// name→upstream-id mapping resolveModel needs. The routing table is the only
+// caller: it decides which models name this provider.
+func (e *VertexExecutor) SetModels(models []config.ModelConfig) {
 	e.mu.Lock()
-	e.cfg.Models = models
-	e.models = names
+	e.models = append([]config.ModelConfig(nil), models...)
 	e.mu.Unlock()
 }
 
@@ -156,7 +140,7 @@ func (e *VertexExecutor) ClearCredentials() bool {
 func (e *VertexExecutor) resolveModel(name string) string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	for _, m := range e.cfg.Models {
+	for _, m := range e.models {
 		// An empty Model means "no rename" — the entry exists to publish the
 		// name, not to point it somewhere else. Returning it verbatim would send
 		// an empty model id upstream.

@@ -60,6 +60,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.GET("/config", adminHandler.Config)
 	admin.PUT("/config", adminHandler.UpdateConfig)
 	admin.POST("/sync-models", adminHandler.SyncModels)
+	admin.POST("/pin", adminHandler.PinModel)
 	admin.POST("/refresh-quota/:provider/:id", adminHandler.RefreshQuota)
 	admin.DELETE("/accounts/:provider/:id", adminHandler.DeleteAccount)
 	admin.POST("/vertex/credentials", adminHandler.SetVertexCredentials)
@@ -164,8 +165,10 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 			}
 		}
 		if len(unpriced) > 0 {
-			fmt.Printf("note: no price for %v — their tokens are excluded from cost totals (set pricing.models in %s)\n",
-				unpriced, configPath)
+			// Prices are published rates baked into the binary, so this is not
+			// something the operator can configure away — it is a heads-up that
+			// those models' tokens are missing from the dashboard's cost figures.
+			fmt.Printf("note: no price for %v — their tokens are excluded from cost totals\n", unpriced)
 		}
 	}
 	// Loud, because the symptom is silent: the dashboard just refuses every login

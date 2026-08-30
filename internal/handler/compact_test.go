@@ -97,10 +97,11 @@ func TestResponsesCompactionTriggerReturnsExactlyOneCompactionItem(t *testing.T)
 		Enabled:   true,
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-sol"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-sol"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-sol", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -178,10 +179,11 @@ func TestResponsesCompactionEmptySummaryFailsBeforeSSE(t *testing.T) {
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-sol"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-sol"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-sol", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)

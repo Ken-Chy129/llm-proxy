@@ -98,9 +98,14 @@ kimi:
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "openai"
-  models:
-    - name: "kimi-k3"       # 客户端使用的模型名
-      model: "kimi-k3"      # Kimi 上游实际模型名
+```
+
+然后在 `models` 段把模型指给它：
+
+```yaml
+models:
+  - name: "kimi-k3"         # 客户端使用的模型名
+    providers: [kimi]
 ```
 
 如果 Key 来自 **Kimi Code 控制台**（Kimi 会员的 Coding Agent 权益），它与开放平台 Key 相互独立，请改用 Anthropic 兼容端点：
@@ -111,13 +116,15 @@ kimi:
   base_url: "https://api.kimi.com/coding"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "anthropic"
-  models:
-    - name: "kimi-k3"               # 客户端友好别名
-      model: "k3"                    # Kimi Coding API 官方模型 ID
-    - name: "kimi-for-coding"
-      model: "kimi-for-coding"
-    - name: "kimi-for-coding-highspeed"
-      model: "kimi-for-coding-highspeed"
+
+models:
+  - name: "kimi-k3"
+    providers:
+      - kimi: "k3"                   # 上游只认 k3 这个 ID
+  - name: "kimi-for-coding"
+    providers: [kimi]
+  - name: "kimi-for-coding-highspeed"
+    providers: [kimi]
 ```
 
 重启代理后，Claude Code 和 Codex CLI 都可以通过代理使用 `kimi-k3`。Kimi Coding API 对未知模型名可能仍返回成功，因此上游 ID 必须使用 `/v1/models` 返回的精确值；K3 的 ID 是 `k3`，不是 `kimi-k3`。
@@ -135,12 +142,12 @@ relay:
   enabled: true
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
-  models:
-    - name: "claude-opus-5"
-    - name: "claude-fable-5"
-    - name: "claude-sonnet-4-5-20250929"
-    - name: "claude-opus-4-5-20251101"
-    - name: "claude-haiku-4-5-20251001"
+
+models:
+  - name: "claude-opus-5"
+    providers: [claude_oauth, relay]   # 订阅额度用完时自动溢出到中转
+  - name: "claude-fable-5"
+    providers: [relay]
 ```
 
 Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions 和 Responses 请求由代理做协议转换。上述五个模型均已实际验证可调用。该上游的 `/v1/models` 列表并不完整，`claude-opus-5` 和 `claude-fable-5` 虽未列出，但直接调用可用。
@@ -160,8 +167,10 @@ anygen:
   enabled: true
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
-  models:                         # 仅在启动同步失败时使用
-    - "gpt-5.6-luna"
+
+models:
+  - name: "gpt-5.6-luna"
+    providers: [anygen]
 ```
 
 启动时代理会调用上游 `GET /models` 动态注册当前可见模型；该查询不触发模型调用、不扣积分。AnyGen Chat Completions 仍只支持非流式请求，`stream:true` 会被明确拒绝；Codex CLI 使用的 `/v1/responses` 会由代理等待完整结果后转换为标准 Responses SSE，支持文本和 function call 事件。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 Quota 页面中。
@@ -241,15 +250,18 @@ curl https://your-domain/v1/images/generations \
 
 ## 支持的模型
 
-| 后端 | 模型 | 认证方式 |
-|------|------|---------|
-| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP 凭证（应用默认凭证 / 仪表板上传） |
-| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | 浏览器 OAuth |
-| Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | 浏览器 OAuth |
-| Kimi Code | kimi-k3（上游 `k3`）, kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` 环境变量 |
-| AnyGen | 启动时从 `/models` 动态同步（如 gpt-5.6-luna、Gemini、Claude、DeepSeek） | `ANYGEN_LLM_KEY` 环境变量 |
+对外只有一份模型清单，由 `config.yaml` 的 `models` 段定义。同一个模型可以挂多个 provider，谁在服务由代理自己决定——调用方看到的永远是 `claude-opus-5`，不需要知道这次是订阅账号、Vertex 还是中转答的。
 
-> 模型列表可在仪表板的 **Config** 页在线编辑；Codex 和 AnyGen 会从上游同步可用模型，配置中的 AnyGen 列表仅作为同步失败时的回退。
+| Provider | 能服务的模型 | 认证方式 |
+|------|------|---------|
+| Claude OAuth | Claude 系列 | 浏览器 OAuth |
+| Codex OAuth | GPT 系列、gpt-image-2 | 浏览器 OAuth |
+| Vertex AI | Claude 系列 | GCP 凭证（应用默认凭证 / 仪表板上传） |
+| Kimi Code | Kimi 系列 | `MOONSHOT_API_KEY` 环境变量 |
+| Relay | Anthropic 兼容中转的 Claude 系列 | `ANTHROPIC_AUTH_TOKEN` 环境变量 |
+| AnyGen | 上游 `/models` 同步到的模型（GPT / Gemini / Claude / DeepSeek 等） | `ANYGEN_LLM_KEY` 环境变量 |
+
+> 模型和它们的 provider 顺序都可以在仪表板 **Config** 页在线编辑，保存即生效。
 
 ## 鉴权与 API Key
 
@@ -268,43 +280,60 @@ server:
   cert_file: "/path/to/cert.pem"       # 可选：启用 HTTPS
   key_file: "/path/to/key.pem"
 
-vertex:
-  project_id: "your-gcp-project-id"
-  region: "us-east5"
-  models:
-    - name: "claude-sonnet-4-6"        # 客户端请求的模型名
-      model: "claude-sonnet-4-6"       # Vertex AI 实际模型名
-
+# Provider 段只写"怎么连上去"，不再决定服务什么模型
 claude_oauth:
   enabled: true
   token_dir: "/data"                   # Token 和数据库存储路径（默认 ~/.llm-proxy；Docker 场景填 /data）
-  models:
-    - "claude-sonnet-4-6-oauth"
-    - "claude-opus-4-6-oauth"
-    - "claude-opus-4-8-oauth"
 
 codex:
   enabled: true
-  models:                              # 回退列表；登录后自动从后端拉取
-    - "gpt-5.5"
-    - "gpt-5.4"
+
+vertex:
+  enabled: true
+  project_id: "your-gcp-project-id"
+  region: "us-east5"
 
 kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"       # 这里只写环境变量名，不写 Key
   api_format: "openai"                   # Kimi Code Key 使用 anthropic
-  models:
-    - name: "kimi-k3"
-      model: "kimi-k3"
+
+relay:
+  enabled: true
+  base_url: "http://34.80.212.77/api"
+  auth_token_env: "ANTHROPIC_AUTH_TOKEN"
 
 anygen:
   enabled: true
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"          # 这里只写环境变量名，不写 sk-ag Key
-  models:                                 # 回退列表；启动时免费同步
-    - "gpt-5.6-luna"
+
+# 系列默认顺序。模型属于哪个系列由名字前缀推导，不用手写
+series:
+  claude: [claude_oauth, vertex, relay]
+  gpt: [codex, anygen]
+  gemini: [anygen]
+  kimi: [kimi]
+
+# 对外的模型清单。providers 就是失败转移链，从上往下试
+models:
+  - name: "claude-opus-5"              # 不写 providers 就继承 series.claude
+  - name: "claude-haiku-4-5"
+    providers:
+      - vertex: "claude-haiku-4-5-20251001"   # 少数上游只认带日期的 ID
+      - relay: "claude-haiku-4-5-20251001"
+  - name: "gpt-5.5"
+  - name: "kimi-k3"
+    providers:
+      - kimi: "k3"
 ```
+
+### 路由是怎么定的
+
+一个模型的 `providers` 列表既是优先级也是失败转移链：从上往下取第一个**已启用、有凭证、没被限流**的 provider 来服务，它挂了就自动落到下一个。所以 `claude-opus-5: [claude_oauth, relay]` 的含义是"先用订阅额度，用完了自动走中转"——中转是要花钱的，这一点在配置时就要想清楚。
+
+`providers` 里的 `{vertex: claude-haiku-4-5-20251001}` 是唯一保留的改名，它只是连接细节：客户端、计费和统计看到的始终是 `claude-haiku-4-5`。
 
 ## 管理仪表板
 
@@ -316,32 +345,13 @@ anygen:
 
 **Stats** — 时间趋势图（请求数 / Token / 花费 / 错误数可切换，自适应时区），下方按模型 / 密钥 / 后端 / 账号拆分。
 
-**Config → Models** — 一行一个模型，各后端使用同一形状。名字既是客户端调用的名字、也是发给上游的名字（执行器默认原样透传），只有需要**改名**时才填 `model:`——行内 `↦` 槽位平时是幽灵态，鼠标移过去或已填值时才显形。Vertex / Kimi / Relay 支持改名（Claude OAuth、Codex 和 AnyGen 的执行器不做名字解析）。Models 和 Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
+**Config → Models** — 以对外模型为主视图，按系列分组。折叠时一行就能看清一个模型：名字、provider 链、当前在服务的那个、以及单价。展开后可以上下调整 provider 顺序、加降级 provider、填上游改名（`↦` 槽位平时是幽灵态，鼠标移过去或已填值才显形）。每个 provider 行上的 **use** 是**临时切换**：把这个模型钉到指定 provider 30 分钟，只改运行时不写配置文件，超时自动回到配置的顺序——试一个 provider 好不好用不该留下永久痕迹。下面的 **Series Defaults** 是新增模型时的起始链，改它不会重写已有模型。Models / Series / Admin 各自一个保存按钮，互不影响；有未保存改动时按钮会亮起。
 
 **花费统计** — 每条请求在落库时按内置价格表（Anthropic / OpenAI / Moonshot 公开单价）算出金额并冻结，input、cache read、cache write、output 四个桶分别计价。注意这是**按量计费 API 的等价价格**：Claude Code / Codex 订阅账号并不按请求扣费，这个数字表示"同样的 token 走官方 API 要多少钱"。
 
-**改价** — 仪表板 **Config → Models** 每行右侧就是该模型的价格（输入 / 输出，每 100 万 token），点一下展开四个输入框（输入 / 输出 / 缓存读 / 缓存写），保存即写进 `config.yaml` 的 `pricing.models` 并立即生效——补上价格的那一刻，这个模型的历史请求也会一并补算。黄色的 `set price` 表示这个模型没有价格，它的 token 不计入任何花费统计。
+价格是模型的公开属性，不是部署时的选项，因此没有配置项也不能在仪表板上改：一个模型一个口径，不区分是哪个 provider 服务的。没有任何价格的模型记为**未知**而不是 $0（否则未定价的模型看起来像是免费的），启动日志和 `GET /api/pricing` 会列出这些模型；行尾显示为黄色的 `unpriced`。历史数据在首次启动时按当前价格表补算一次。
 
-也可以直接写配置文件（单位：美元 / 100 万 token）：
-
-```yaml
-pricing:
-  models:
-    - name: "kimi-for-coding"   # 订阅席位，按量成本为 0
-      input: 0
-      output: 0
-    - name: "my-private-model"
-      input: 1.5
-      output: 6.0
-      cache_read: 0.15
-      cache_write: 1.875
-```
-
-没有任何价格的模型记为**未知**而不是 $0（否则未定价的后端看起来像是免费的），启动日志和 `GET /api/pricing` 会列出这些模型。历史数据在首次启动时按当前价格表补算一次。
-
-别名（Vertex / Kimi 的 `name → model`）会回退到上游模型的价格：叫 `sonnet` 也能按 `claude-sonnet-4-6` 计价——记进数据库的是别名，不回退的话这部分花费就凭空消失了。
-
-其余页签：**Chat**（流式测试对话）、**Image**（图片生成）、**Logs**（请求日志分页）、**Keys**（API 密钥与每日限额）、**Config**（在线编辑模型列表、价格与管理员账号）。
+其余页签：**Chat**（流式测试对话）、**Image**（图片生成）、**Logs**（请求日志分页）、**Keys**（API 密钥与每日限额）、**Config**（在线编辑模型路由与管理员账号）。
 
 ### 账号管理
 

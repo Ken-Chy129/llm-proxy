@@ -11,9 +11,13 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
-// errNoAnthropicSecondary is returned when a fallback chain is asked to serve
-// the Anthropic Messages API but the secondary backend cannot speak it.
-var errNoAnthropicSecondary = errors.New("fallback secondary does not support Anthropic Messages API")
+// Returned when a chain is asked for a protocol none of its providers speak.
+// The router filters by protocol before building a chain, so these indicate a
+// routing bug rather than a configuration mistake.
+var (
+	errNoAnthropicProvider = errors.New("no provider in the chain supports the Anthropic Messages API")
+	errNoResponsesProvider = errors.New("no provider in the chain supports the Responses API")
+)
 
 // HTTPError carries the upstream HTTP status code alongside the error, so
 // handlers can record the real status (429/400/…) instead of a blanket 500.
@@ -76,6 +80,17 @@ func BackendFallbackFrom(ctx context.Context) []string {
 		return append([]string(nil), r.failedOver...)
 	}
 	return nil
+}
+
+// ServingBackend reports the provider that handled the request, or "" when the
+// context carries no recorder or nothing ran yet.
+func ServingBackend(ctx context.Context) string {
+	if r, ok := ctx.Value(ctxBackendKey{}).(*backendRecorder); ok {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.backend
+	}
+	return ""
 }
 
 func recordBackend(ctx context.Context, backend string) {
@@ -150,4 +165,22 @@ type ResponsesExecutor interface {
 type AnthropicExecutor interface {
 	ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error)
 	OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error)
+}
+
+// AsResponsesExecutor reports whether exec can serve the native Responses
+// protocol, and returns it if so.
+//
+// A plain type assertion is not enough: a Chain implements ResponsesExecutor
+// unconditionally in order to forward to whichever of its providers speaks it,
+// so asserting alone would claim native support for a chain of providers that
+// have none. Executors answer for themselves; a chain answers for its links.
+func AsResponsesExecutor(exec Executor) (ResponsesExecutor, bool) {
+	re, ok := exec.(ResponsesExecutor)
+	if !ok {
+		return nil, false
+	}
+	if c, isChain := exec.(*Chain); isChain && !c.SupportsResponses() {
+		return nil, false
+	}
+	return re, true
 }

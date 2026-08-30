@@ -26,6 +26,27 @@ func NewChatHandler(r *router.Router, db *stats.DB) *ChatHandler {
 	return &ChatHandler{router: r, statsDB: db}
 }
 
+// servingBackend reports which provider actually handled the request. It is the
+// head of the model's chain unless the request failed over, in which case the
+// recorder holds the provider that ended up serving — logging the head would
+// credit a subscription for traffic a paid relay absorbed.
+func (h *ChatHandler) servingBackend(model, recorded string) string {
+	if recorded != "" {
+		return recorded
+	}
+	return h.router.BackendName(model)
+}
+
+// mergeFailover combines per-account failover (recorded by the executor) with
+// per-provider failover (recorded by the chain), which are two different reasons
+// a request moved and are both worth seeing on the log line.
+func mergeFailover(accounts []string, ctx context.Context) []string {
+	if from := executor.BackendFallbackFrom(ctx); len(from) > 0 {
+		return append(accounts, from...)
+	}
+	return accounts
+}
+
 func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	var req types.ChatCompletionRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -57,6 +78,7 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	}
 
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx, getBackend := executor.WithBackendRecorder(ctx)
 	resp, err := exec.Execute(ctx, &req)
 	latency := time.Since(start)
 	account, failedOver := getAccount()
@@ -64,11 +86,11 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	logEntry := &stats.RequestLog{
 		Time:         time.Now(),
 		Model:        req.Model,
-		Backend:      h.router.BackendName(req.Model),
+		Backend:      h.servingBackend(req.Model, getBackend()),
 		Stream:       false,
 		APIKeyName:   apiKeyName(c),
 		Account:      account,
-		FailoverFrom: strings.Join(failedOver, ","),
+		FailoverFrom: strings.Join(mergeFailover(failedOver, ctx), ","),
 		// Until usage arrives, reasoning is unknown rather than zero — an errored
 		// request has no answer, and 0 would claim the model thought nothing.
 		ReasoningTokens: types.ReasoningUnknown,
@@ -105,6 +127,7 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 
 	c.Stream(func(w io.Writer) bool {
 		ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+		ctx, getBackend := executor.WithBackendRecorder(ctx)
 		usage, err := exec.ExecuteStream(ctx, req, w)
 		latency := time.Since(start)
 		account, failedOver := getAccount()
@@ -112,13 +135,13 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 		logEntry := &stats.RequestLog{
 			Time:            time.Now(),
 			Model:           req.Model,
-			Backend:         h.router.BackendName(req.Model),
+			Backend:         h.servingBackend(req.Model, getBackend()),
 			LatencyMs:       latency.Milliseconds(),
 			Stream:          true,
 			Status:          http.StatusOK,
 			APIKeyName:      apiKeyName(c),
 			Account:         account,
-			FailoverFrom:    strings.Join(failedOver, ","),
+			FailoverFrom:    strings.Join(mergeFailover(failedOver, ctx), ","),
 			ReasoningTokens: types.ReasoningUnknown,
 		}
 		if usage != nil {

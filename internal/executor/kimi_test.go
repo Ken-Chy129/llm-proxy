@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 
@@ -14,23 +13,22 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
-func TestDefaultKimiCodingModelsUseOfficialUpstreamIDs(t *testing.T) {
+// A provider serves nothing until routing tells it what to serve. Built-in
+// model lists are what made the same model appear under several names, so their
+// absence is the property worth guarding.
+func TestKimiServesNothingUntilRoutingAssignsModels(t *testing.T) {
 	exec := NewKimiExecutor(config.KimiConfig{APIFormat: "anthropic"})
-
-	wantMappings := map[string]string{
-		"kimi-k3":                   "k3",
-		"kimi-for-coding":           "kimi-for-coding",
-		"kimi-for-coding-highspeed": "kimi-for-coding-highspeed",
-	}
-	for alias, want := range wantMappings {
-		if got := exec.resolveModel(alias); got != want {
-			t.Errorf("resolveModel(%q) = %q, want %q", alias, got, want)
-		}
+	if got := exec.Models(); len(got) != 0 {
+		t.Fatalf("Models() = %v, want empty before routing is applied", got)
 	}
 
-	wantModels := []string{"kimi-k3", "kimi-for-coding", "kimi-for-coding-highspeed"}
-	if got := exec.Models(); !slices.Equal(got, wantModels) {
-		t.Fatalf("Models() = %v, want %v", got, wantModels)
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-k3", Model: "k3"}})
+	if got := exec.resolveModel("kimi-k3"); got != "k3" {
+		t.Errorf("resolveModel(kimi-k3) = %q, want k3", got)
+	}
+	// A model with no rename is sent upstream under its published name.
+	if got := exec.resolveModel("kimi-for-coding"); got != "kimi-for-coding" {
+		t.Errorf("resolveModel(kimi-for-coding) = %q, want the name unchanged", got)
 	}
 }
 
@@ -60,9 +58,9 @@ func TestKimiExecutorExecuteUsesConfiguredKeyAndModelMapping(t *testing.T) {
 		Enabled:   true,
 		BaseURL:   server.URL + "/v1",
 		APIKeyEnv: "TEST_MOONSHOT_API_KEY",
-		Models: []config.ModelConfig{
-			{Name: "kimi-code", Model: "kimi-k3"},
-		},
+	})
+	exec.SetModels([]config.ModelConfig{
+		{Name: "kimi-code", Model: "kimi-k3"},
 	})
 
 	content, _ := json.Marshal("hello")
@@ -108,8 +106,8 @@ func TestKimiExecutorTranslatesAnthropicMessagesToChatCompletions(t *testing.T) 
 		Enabled:   true,
 		BaseURL:   server.URL + "/v1",
 		APIKeyEnv: "TEST_MOONSHOT_API_KEY",
-		Models:    []config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}})
 
 	body := []byte(`{
 		"model":"kimi-k3",
@@ -167,8 +165,8 @@ func TestKimiExecutorTranslatesChatStreamToAnthropicSSE(t *testing.T) {
 		Enabled:   true,
 		BaseURL:   server.URL + "/v1",
 		APIKeyEnv: "TEST_MOONSHOT_API_KEY",
-		Models:    []config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}})
 
 	stream, status, err := exec.OpenAnthropicStream(context.Background(), []byte(`{"model":"kimi-k3","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"hi"}]}`), nil)
 	if err != nil {
@@ -212,8 +210,8 @@ func TestKimiExecutorTranslatesToolCallStreamToAnthropicSSE(t *testing.T) {
 		Enabled:   true,
 		BaseURL:   server.URL + "/v1",
 		APIKeyEnv: "TEST_MOONSHOT_API_KEY",
-		Models:    []config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-k3", Model: "kimi-k3"}})
 
 	stream, status, err := exec.OpenAnthropicStream(context.Background(), []byte(`{"model":"kimi-k3","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"read the README"}]}`), nil)
 	if err != nil {
@@ -268,8 +266,8 @@ func TestKimiExecutorUsesAnthropicCompatibleUpstream(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
 		APIFormat: "anthropic",
-		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}})
 	content, _ := json.Marshal("hello")
 	resp, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{
 		Model:    "kimi-code",
@@ -310,8 +308,8 @@ func TestKimiExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
 		APIFormat: "anthropic",
-		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}})
 	body := []byte(`{"model":"kimi-code","max_tokens":32,"context_management":{"edits":[]},"messages":[{"role":"user","content":"hello"}]}`)
 	responseBody, status, err := exec.ExecuteAnthropicRaw(context.Background(), body, http.Header{"anthropic-beta": []string{"test-beta"}})
 	if err != nil {
@@ -349,8 +347,8 @@ func TestKimiExecutorTranslatesAnthropicUpstreamStreamToChatSSE(t *testing.T) {
 		BaseURL:   server.URL,
 		APIKeyEnv: "TEST_KIMI_CODE_API_KEY",
 		APIFormat: "anthropic",
-		Models:    []config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}},
 	})
+	exec.SetModels([]config.ModelConfig{{Name: "kimi-code", Model: "kimi-k3"}})
 	content, _ := json.Marshal("hello")
 	var stream strings.Builder
 	usage, err := exec.ExecuteStream(context.Background(), &types.ChatCompletionRequest{

@@ -110,10 +110,7 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	}
 	script := string(app)
 	for _, want := range []string{
-		"id: 'anygen', label: 'AnyGen'",
-		"anygen: (d.anygen?.models || [])",
-		"anygen: { models: names('anygen') }",
-		"b.name === 'anygen'",
+		"anygen: 'AnyGen'",
 		"modelBackends.get(model) !== 'anygen'",
 		"function renderBackendModels(models)",
 		"backend-models-collapsible",
@@ -142,19 +139,33 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	}
 }
 
-func TestRoutingPriorityEditorIsAccessibleAndPersistsThroughConfigAPI(t *testing.T) {
+// The config page's subject is the published model and its ordered providers.
+// These assertions pin the contract it has with the admin API — the field names
+// the editor reads and writes — because a rename on either side fails silently
+// in a browser and nowhere else.
+func TestModelRoutingEditorIsWiredToTheConfigAPI(t *testing.T) {
 	index, err := staticFiles.ReadFile("static/index.html")
 	if err != nil {
 		t.Fatalf("read embedded index: %v", err)
 	}
 	html := string(index)
 	for _, want := range []string{
-		"id=\"cfg-routing-priority\"",
-		"id=\"save-routing\"",
-		"onclick=\"saveRouting(this)\"",
+		`id="cfg-models"`,
+		`id="cfg-series"`,
+		`id="save-models"`,
+		`id="save-series"`,
+		`onclick="saveSeries(this)"`,
+		`onclick="addModelFromInput()"`,
 	} {
 		if !strings.Contains(html, want) {
-			t.Errorf("routing priority markup missing %q", want)
+			t.Errorf("routing editor markup missing %q", want)
+		}
+	}
+	// The old backend-partitioned editor and its price inputs are gone; prices
+	// are published rates now, not a per-deployment setting.
+	for _, gone := range []string{`id="cfg-routing-priority"`, `id="save-routing"`} {
+		if strings.Contains(html, gone) {
+			t.Errorf("markup still carries the removed backend-priority editor: %q", gone)
 		}
 	}
 
@@ -164,14 +175,25 @@ func TestRoutingPriorityEditorIsAccessibleAndPersistsThroughConfigAPI(t *testing
 	}
 	script := string(app)
 	for _, want := range []string{
-		"d.routing?.backend_priority",
-		"function renderRoutingPriority()",
+		"function renderModelCard(",
+		"function renderChain(",
+		"function renderSeriesDefaults()",
+		"async function saveModels(btn)",
+		"async function saveSeries(btn)",
+		"async function pinModel(model, provider)",
+		"'/api/pin'",
+		"cfgProviders = d.providers || []",
 		"aria-label",
-		"async function saveRouting(btn)",
-		"routing: { backend_priority: cfgPriority }",
 	} {
 		if !strings.Contains(script, want) {
-			t.Errorf("routing priority behavior missing %q", want)
+			t.Errorf("routing editor behavior missing %q", want)
+		}
+	}
+	// Pricing is read-only now: an editor that writes prices back would be
+	// saving a table the server no longer accepts.
+	for _, gone := range []string{"priceOverrides", "backend_priority", "togglePriceEditor"} {
+		if strings.Contains(script, gone) {
+			t.Errorf("app.js still references removed machinery %q", gone)
 		}
 	}
 
@@ -179,7 +201,10 @@ func TestRoutingPriorityEditorIsAccessibleAndPersistsThroughConfigAPI(t *testing
 	if err != nil {
 		t.Fatalf("read embedded styles: %v", err)
 	}
-	if !strings.Contains(string(css), ".route-priority{") {
-		t.Error("routing priority list has no dedicated layout styles")
+	styles := string(css)
+	for _, want := range []string{".mdl-model{", ".mdl-chain{", ".mdl-pin{"} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("routing editor styles missing %q", want)
+		}
 	}
 }

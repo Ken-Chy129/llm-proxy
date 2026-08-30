@@ -251,17 +251,19 @@ func buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality strin
 	}
 }
 
+// findCodexExecutor asks for the Codex provider directly rather than resolving a
+// model: image generation is a Codex-specific capability with no equivalent on
+// the other providers, so there is nothing for a model's chain to fall over to.
 func (h *ImagesHandler) findCodexExecutor() (*executor.CodexExecutor, error) {
-	// Try known codex models
-	for _, model := range []string{"gpt-5.4-mini", "gpt-5.4", "gpt-5.5"} {
-		exec, err := h.router.Resolve(model)
-		if err == nil {
-			if ce, ok := exec.(*executor.CodexExecutor); ok {
-				return ce, nil
-			}
-		}
+	exec, ok := h.router.Provider("codex")
+	if !ok {
+		return nil, fmt.Errorf("no codex executor available for image generation")
 	}
-	return nil, fmt.Errorf("no codex executor available for image generation")
+	ce, ok := exec.(*executor.CodexExecutor)
+	if !ok {
+		return nil, fmt.Errorf("no codex executor available for image generation")
+	}
+	return ce, nil
 }
 
 type codexImageReq struct {
@@ -448,4 +450,3 @@ func (h *ImagesHandler) recordLog(model string, start time.Time, err error) {
 	}
 	h.statsDB.Record(entry)
 }
-

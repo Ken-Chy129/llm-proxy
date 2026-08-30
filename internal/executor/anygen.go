@@ -37,7 +37,8 @@ type AnyGenExecutor struct {
 	mu         sync.RWMutex
 	baseURL    string
 	apiKeyEnv  string
-	models     []string
+	catalog    []string // model ids the upstream reports it can serve
+	served     []string // the subset routing actually sends here
 	credits    AnyGenCredits
 	hasCredits bool
 	verifyURL  string
@@ -56,21 +57,37 @@ func NewAnyGenExecutor(cfg config.AnyGenConfig) *AnyGenExecutor {
 	return &AnyGenExecutor{
 		baseURL:    baseURL,
 		apiKeyEnv:  apiKeyEnv,
-		models:     append([]string(nil), cfg.Models...),
 		verifyURL:  defaultAnyGenVerifyURL,
 		httpClient: http.DefaultClient,
 	}
 }
 
+// Models reports what this provider serves, which is what routing assigned it.
 func (e *AnyGenExecutor) Models() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return append([]string(nil), e.models...)
+	return append([]string(nil), e.served...)
 }
 
-func (e *AnyGenExecutor) setModels(models []string) {
+// Catalog reports every model the upstream advertises, routed or not. The
+// dashboard offers these when adding a model, so a synced catalog is
+// discoverable without being served automatically.
+func (e *AnyGenExecutor) Catalog() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]string(nil), e.catalog...)
+}
+
+// SetServed records which models routing sends here.
+func (e *AnyGenExecutor) SetServed(models []string) {
 	e.mu.Lock()
-	e.models = append([]string(nil), models...)
+	e.served = append([]string(nil), models...)
+	e.mu.Unlock()
+}
+
+func (e *AnyGenExecutor) setCatalog(models []string) {
+	e.mu.Lock()
+	e.catalog = append([]string(nil), models...)
 	e.mu.Unlock()
 }
 
@@ -198,7 +215,7 @@ func (e *AnyGenExecutor) SyncModels(ctx context.Context) ([]string, error) {
 	if len(models) == 0 {
 		return nil, fmt.Errorf("anygen models response contained no model ids")
 	}
-	e.setModels(models)
+	e.setCatalog(models)
 	return append([]string(nil), models...), nil
 }
 

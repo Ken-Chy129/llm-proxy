@@ -62,8 +62,11 @@ func openai(in, cached, out float64) Price {
 // reference; OpenAI via developers.openai.com/api/docs/pricing; Moonshot via
 // kimi.com/help/kimi-api/api-pricing. These are first-party list rates —
 // Vertex and Bedrock bill Claude separately and can differ, and long-context
-// tiers (OpenAI >272K) and batch/flex discounts are not modelled. Override any
-// row from config.yaml rather than editing this table for a local deployment.
+// tiers (OpenAI >272K) and batch/flex discounts are not modelled.
+//
+// A model is priced by what it *is*, not by which provider served it: the same
+// claude-opus-5 costs the same whether it arrived over an OAuth subscription or
+// a metered relay, so one rate per model is the whole story.
 var builtin = map[string]Price{
 	// --- Anthropic ---
 	"claude-fable-5":    anthropic(10, 50),
@@ -126,9 +129,9 @@ const minPrefixLen = 6
 var dateSuffix = regexp.MustCompile(`[-@]\d{8}$`)
 
 // normalize maps whatever name the request carried onto a table key. Model names
-// reaching us are proxy aliases, not necessarily upstream IDs: config.yaml is
-// free to call a model "claude-opus-4-6-oauth", and Vertex/Bedrock prefix their
-// own IDs.
+// reaching us are the names this proxy publishes, which are already the model's
+// canonical name. Normalising still earns its keep for dated snapshots and the
+// fully-qualified ids that appear in logs from Vertex and Bedrock.
 func normalize(model string) string {
 	m := strings.ToLower(strings.TrimSpace(model))
 	// publishers/anthropic/models/claude-opus-4-6 → claude-opus-4-6
@@ -137,8 +140,6 @@ func normalize(model string) string {
 	}
 	m = strings.TrimPrefix(m, "anthropic.")
 	m = dateSuffix.ReplaceAllString(m, "")
-	// This proxy's own convention for "same model, OAuth backend".
-	m = strings.TrimSuffix(m, "-oauth")
 	return m
 }
 
@@ -146,26 +147,14 @@ func normalize(model string) string {
 type Table struct {
 	mu       sync.RWMutex
 	entries  map[string]Price
-	prefixes []string          // keys eligible for prefix matching, longest first
-	aliases  map[string]string // proxy alias → upstream model id
+	prefixes []string // keys eligible for prefix matching, longest first
 }
 
-// New builds a table from the built-in defaults plus overrides. An override with
-// a name already in the table replaces it wholesale; a new name extends it.
-// Setting every field to 0 is a legitimate override meaning "this model is free"
-// (a subscription seat, a self-hosted endpoint) — it prices at $0 rather than
-// reporting unknown.
-func New(overrides []Price) *Table {
-	t := &Table{entries: make(map[string]Price, len(builtin)+len(overrides))}
+// New builds the price table. Rates are a published property of each model, so
+// there is nothing to configure: the table is the same on every deployment.
+func New() *Table {
+	t := &Table{entries: make(map[string]Price, len(builtin))}
 	for name, p := range builtin {
-		p.Name = name
-		t.entries[name] = p
-	}
-	for _, p := range overrides {
-		name := normalize(p.Name)
-		if name == "" {
-			continue
-		}
 		p.Name = name
 		t.entries[name] = p
 	}
@@ -191,28 +180,6 @@ func (t *Table) reindex() {
 	})
 }
 
-// SetAliases registers the proxy's alias → upstream-model mapping (the Vertex,
-// Kimi and Relay `name: / model:` pairs). Without it, an alias that doesn't
-// look like its upstream — "sonnet" → "claude-sonnet-4-6" — is unpriced, and since the
-// alias is what gets recorded on the request, its cost would silently vanish
-// from every total. Call it again whenever the config changes.
-func (t *Table) SetAliases(aliases map[string]string) {
-	if t == nil {
-		return
-	}
-	m := make(map[string]string, len(aliases))
-	for alias, upstream := range aliases {
-		alias, upstream = normalize(alias), normalize(upstream)
-		if alias == "" || upstream == "" || alias == upstream {
-			continue
-		}
-		m[alias] = upstream
-	}
-	t.mu.Lock()
-	t.aliases = m
-	t.mu.Unlock()
-}
-
 // Lookup resolves a model name to its price. The second return distinguishes
 // "priced at zero" from "we have no idea what this costs" — every caller that
 // displays a figure needs to tell those apart.
@@ -226,16 +193,7 @@ func (t *Table) Lookup(model string) (Price, bool) {
 	}
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	if p, ok := t.lookupLocked(name); ok {
-		return p, true
-	}
-	// Only then fall back to what the alias points at. Direct hits win so an
-	// explicit override on the alias ("this one is a free seat") is never
-	// overruled by the upstream model's list price.
-	if upstream, ok := t.aliases[name]; ok {
-		return t.lookupLocked(upstream)
-	}
-	return Price{}, false
+	return t.lookupLocked(name)
 }
 
 // lookupLocked must be called with t.mu held (read is enough).

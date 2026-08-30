@@ -12,18 +12,15 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 )
 
-func TestRelayExecutorDefaultsToVerifiedClaudeModels(t *testing.T) {
+func TestRelayServesNothingUntilRoutingAssignsModels(t *testing.T) {
 	exec := NewRelayExecutor(config.RelayConfig{})
-
-	want := []string{
-		"claude-opus-5",
-		"claude-fable-5",
-		"claude-sonnet-4-5-20250929",
-		"claude-opus-4-5-20251101",
-		"claude-haiku-4-5-20251001",
+	if got := exec.Models(); len(got) != 0 {
+		t.Fatalf("Models() = %v, want empty before routing is applied", got)
 	}
-	if got := exec.Models(); !slices.Equal(got, want) {
-		t.Fatalf("Models() = %v, want %v", got, want)
+
+	exec.SetModels([]config.ModelConfig{{Name: "claude-opus-5"}})
+	if got := exec.Models(); !slices.Equal(got, []string{"claude-opus-5"}) {
+		t.Fatalf("Models() = %v, want [claude-opus-5]", got)
 	}
 }
 
@@ -50,11 +47,11 @@ func TestRelayExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
 		Enabled:      true,
 		BaseURL:      server.URL,
 		AuthTokenEnv: "TEST_RELAY_AUTH_TOKEN",
-		Models: []config.ModelConfig{{
-			Name:  "relay-sonnet",
-			Model: "claude-sonnet-4-5-20250929",
-		}},
 	})
+	exec.SetModels([]config.ModelConfig{{
+		Name:  "relay-sonnet",
+		Model: "claude-sonnet-4-5-20250929",
+	}})
 	body := []byte(`{"model":"relay-sonnet","max_tokens":32,"context_management":{"edits":[]},"messages":[{"role":"user","content":"hello"}]}`)
 	responseBody, status, err := exec.ExecuteAnthropicRaw(context.Background(), body, http.Header{
 		"anthropic-version": []string{"2023-06-01"},

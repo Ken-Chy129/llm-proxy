@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
@@ -54,15 +55,51 @@ type codexReasoning struct {
 }
 
 type CodexExecutor struct {
-	oauth  *auth.CodexOAuth
-	models []string
+	oauth    *auth.CodexOAuth
+	modelsMu sync.RWMutex
+	models   []string
+	catalog  []string
 }
 
 func NewCodexExecutor(oauth *auth.CodexOAuth, models []string) *CodexExecutor {
 	return &CodexExecutor{oauth: oauth, models: models}
 }
 
-func (e *CodexExecutor) Models() []string { return e.models }
+func (e *CodexExecutor) Models() []string {
+	e.modelsMu.RLock()
+	defer e.modelsMu.RUnlock()
+	return append([]string(nil), e.models...)
+}
+
+// SetModels records which models routing sends here.
+func (e *CodexExecutor) SetModels(models []string) {
+	e.modelsMu.Lock()
+	e.models = append([]string(nil), models...)
+	e.modelsMu.Unlock()
+}
+
+// Catalog reports the model slugs the account's plan exposes, routed or not, so
+// the dashboard can offer them when adding a model.
+func (e *CodexExecutor) Catalog() []string {
+	e.modelsMu.RLock()
+	defer e.modelsMu.RUnlock()
+	return append([]string(nil), e.catalog...)
+}
+
+func (e *CodexExecutor) SetCatalog(models []string) {
+	e.modelsMu.Lock()
+	e.catalog = append([]string(nil), models...)
+	e.modelsMu.Unlock()
+}
+
+// Configured reports whether any account is signed in. See the note on the
+// Claude executor: accounts arrive at runtime, so this is a live check.
+func (e *CodexExecutor) Configured() bool {
+	if e.oauth == nil {
+		return false
+	}
+	return len(e.oauth.Store().AllForProvider("codex")) > 0
+}
 
 func (e *CodexExecutor) toCodexRequest(req *types.ChatCompletionRequest) *codexRequest {
 	cr := &codexRequest{

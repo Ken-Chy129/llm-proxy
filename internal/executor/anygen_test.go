@@ -80,8 +80,14 @@ func TestAnyGenExecutorFetchModelsUsesOpenAIModelsEndpoint(t *testing.T) {
 		t.Fatalf("SyncModels() error: %v", err)
 	}
 	want := []string{"gpt-5.6-luna", "claude-sonnet-4-6"}
-	if !slices.Equal(models, want) || !slices.Equal(exec.Models(), want) {
-		t.Fatalf("models = %v, executor models = %v, want %v", models, exec.Models(), want)
+	// A synced catalog is what the upstream *offers*; it is not served until a
+	// model routes here, which is what keeps a 30-model catalog from silently
+	// claiming names the operator never published.
+	if !slices.Equal(models, want) || !slices.Equal(exec.Catalog(), want) {
+		t.Fatalf("models = %v, catalog = %v, want %v", models, exec.Catalog(), want)
+	}
+	if got := exec.Models(); len(got) != 0 {
+		t.Fatalf("Models() = %v, want empty until routing assigns models", got)
 	}
 }
 

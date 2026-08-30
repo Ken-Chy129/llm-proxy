@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -12,7 +11,6 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
-	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/gin-gonic/gin"
@@ -37,6 +35,19 @@ type AdminHandler struct {
 
 func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor) *AdminHandler {
 	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, relayExec: relayExec, anygenExec: anygenExec}
+}
+
+// applyRouting re-runs the shared routing installer after a config edit, so a
+// dashboard save and a fresh start produce exactly the same live state.
+func (h *AdminHandler) applyRouting() {
+	router.Apply(h.router, h.cfg, &router.Providers{
+		Claude: h.claudeExec,
+		Codex:  h.codexExec,
+		Vertex: h.vertexExec,
+		Kimi:   h.kimiExec,
+		Relay:  h.relayExec,
+		AnyGen: h.anygenExec,
+	})
 }
 
 // formatLocalTime renders a timestamp as HH:MM, prefixing the date (MM-DD) when
@@ -67,7 +78,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"status":            vertexStatus,
 				"disabled":          vertexDisabled,
 				"info":              h.vertexExec.ProjectID() + " / " + h.vertexExec.Region() + " · " + source,
-				"models":            h.vertexExec.Models(),
+				"models":            h.router.ModelsByBackend("vertex"),
 				"credential_source": source,
 			})
 		} else {
@@ -75,7 +86,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"name":   "vertex",
 				"status": "not_authenticated",
 				"info":   "No GCP credentials — upload a service account key",
-				"models": h.vertexExec.Models(),
+				"models": h.router.ModelsByBackend("vertex"),
 			})
 		}
 	}
@@ -97,7 +108,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"status":   status,
 			"disabled": disabled,
 			"info":     info,
-			"models":   h.kimiExec.Models(),
+			"models":   h.router.ModelsByBackend("kimi"),
 		})
 	}
 
@@ -118,7 +129,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"status":   status,
 			"disabled": disabled,
 			"info":     info,
-			"models":   h.relayExec.Models(),
+			"models":   h.router.ModelsByBackend("relay"),
 		})
 	}
 
@@ -152,7 +163,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"status":   status,
 			"disabled": disabled,
 			"info":     info,
-			"models":   h.anygenExec.Models(),
+			"models":   h.router.ModelsByBackend("anygen"),
 			"endpoint": h.anygenExec.BaseURL(),
 		}
 		if creditsQuota != nil {
@@ -165,16 +176,19 @@ func (h *AdminHandler) Status(c *gin.Context) {
 	allAccounts := h.tokenStore.All()
 	for _, p := range []struct {
 		name    string
+		account string
 		enabled bool
-		models  []string
 	}{
-		{"claude", h.cfg.ClaudeOAuth.Enabled, h.cfg.ClaudeOAuth.Models},
-		{"codex", h.cfg.Codex.Enabled, h.cfg.Codex.Models},
+		// The account store keys Claude accounts under "claude" while routing
+		// names the provider "claude_oauth"; the two are deliberately separate,
+		// since renaming the stored key would orphan every saved token.
+		{"claude_oauth", "claude", h.cfg.ClaudeOAuth.Enabled},
+		{"codex", "codex", h.cfg.Codex.Enabled},
 	} {
 		if !p.enabled {
 			continue
 		}
-		accounts := allAccounts[p.name]
+		accounts := allAccounts[p.account]
 		status := "not_authenticated"
 		activeCount := 0
 		var accountList []gin.H
@@ -193,7 +207,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 					expireInfo = exp.Format("15:04")
 				}
 			}
-			accDisabled := h.tokenStore.IsAccountDisabled(p.name, t.ID)
+			accDisabled := h.tokenStore.IsAccountDisabled(p.account, t.ID)
 			if accDisabled {
 				accStatus = "disabled"
 			}
@@ -216,10 +230,10 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			now := time.Now()
 			var until time.Time
 			estimated := false
-			if u, est, active := h.tokenStore.RateLimitInfo(p.name, t.ID); active {
+			if u, est, active := h.tokenStore.RateLimitInfo(p.account, t.ID); active {
 				until, estimated = u, est
 			}
-			if q := auth.QuotaCache.Get(p.name + ":" + t.ID); q != nil && q.HasRealData {
+			if q := auth.QuotaCache.Get(p.account + ":" + t.ID); q != nil && q.HasRealData {
 				for _, w := range []*auth.RateWindow{q.Primary, q.Secondary} {
 					if w.Exhausted(now) && w.ResetUnix > 0 {
 						if r := time.Unix(w.ResetUnix, 0); r.After(until) {
@@ -245,28 +259,27 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			status = "expired"
 		}
 		info := fmt.Sprintf("%d/%d active", activeCount, len(accounts))
-		// Use dynamic models from router instead of config
-		dynamicModels := h.router.ModelsByBackend(p.name)
-		if len(dynamicModels) == 0 {
-			dynamicModels = p.models
-		}
 		disabled := h.tokenStore.IsBackendDisabled(p.name)
 		if disabled {
 			status = "disabled"
 		}
 		entry := gin.H{
-			"name":     p.name,
+			"name": p.name,
+			// The account store keys Claude under "claude" while routing names the
+			// provider "claude_oauth". Every account-scoped call (add, pause,
+			// remove, quota) has to use this key, not the routing name.
+			"account":  p.account,
 			"status":   status,
 			"info":     info,
-			"models":   dynamicModels,
+			"models":   h.router.ModelsByBackend(p.name),
 			"accounts": accountList,
 			"disabled": disabled,
 		}
 		// Per-account quotas
-		if p.name == "claude" || p.name == "codex" {
+		if p.account == "claude" || p.account == "codex" {
 			var quotas []*auth.QuotaInfo
 			for _, a := range accounts {
-				if q := auth.QuotaCache.Get(p.name + ":" + a.ID); q != nil {
+				if q := auth.QuotaCache.Get(p.account + ":" + a.ID); q != nil {
 					quotas = append(quotas, q)
 				}
 			}
@@ -279,9 +292,19 @@ func (h *AdminHandler) Status(c *gin.Context) {
 
 	totalReqs, totalTokens, totalCost, _ := h.statsDB.TotalStats()
 
+	// One entry per published model with the provider currently serving it
+	// (empty when nothing in its chain can). A model now appears in several
+	// backends' lists — it is the chain that names them — so anything that needs
+	// "the models this proxy serves" has to read this, not the union of those.
+	models := make([]gin.H, 0)
+	for _, m := range h.router.AllModels() {
+		models = append(models, gin.H{"name": m, "provider": h.router.BackendName(m)})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"backends":       backends,
 		"all_models":     h.router.AllModels(),
+		"models":         models,
 		"total_requests": totalReqs,
 		"total_tokens":   totalTokens,
 		"total_cost_usd": totalCost,
@@ -382,10 +405,10 @@ func (h *AdminHandler) Stats(c *gin.Context) {
 	})
 }
 
-// Pricing returns the effective per-model price table, plus the served models
-// that have no price at all. The second list is the actionable half: an
-// unpriced model is silently missing from every cost total on the dashboard,
-// and the fix is a `pricing.models` entry in config.yaml.
+// Pricing returns the per-model price table, plus the served models that have
+// no price at all. Rates are published properties of each model rather than
+// settings, so the table is read-only; the second list exists because an
+// unpriced model is otherwise silently missing from every cost total.
 func (h *AdminHandler) Pricing(c *gin.Context) {
 	table := h.statsDB.Pricing()
 	unpriced := []string{}
@@ -410,46 +433,105 @@ func (h *AdminHandler) Config(c *gin.Context) {
 			// copyable from here, and this route already sits behind SessionAuth.
 			"tray_token": h.cfg.TrayToken(),
 		},
-		"vertex": gin.H{
-			"project_id": h.cfg.Vertex.ProjectID,
-			"region":     h.cfg.Vertex.Region,
-			"models":     h.cfg.Vertex.Models,
-		},
-		"claude_oauth": gin.H{
-			"enabled": h.cfg.ClaudeOAuth.Enabled,
-			"models":  h.cfg.ClaudeOAuth.Models,
-		},
-		"codex": gin.H{
-			"enabled": h.cfg.Codex.Enabled,
-			"models":  h.cfg.Codex.Models,
-		},
-		"kimi": gin.H{
-			"enabled":     h.cfg.Kimi.Enabled,
-			"base_url":    h.cfg.Kimi.BaseURL,
-			"api_key_env": h.cfg.Kimi.APIKeyEnv,
-			"api_format":  h.cfg.Kimi.APIFormat,
-			"models":      h.cfg.Kimi.Models,
-		},
-		"relay": gin.H{
-			"enabled":        h.cfg.Relay.Enabled,
-			"base_url":       h.cfg.Relay.BaseURL,
-			"auth_token_env": h.cfg.Relay.AuthTokenEnv,
-			"models":         h.cfg.Relay.Models,
-		},
-		"anygen": gin.H{
-			"enabled":     h.cfg.AnyGen.Enabled,
-			"base_url":    h.cfg.AnyGen.BaseURL,
-			"api_key_env": h.cfg.AnyGen.APIKeyEnv,
-			"models":      h.cfg.AnyGen.Models,
-		},
-		"routing": gin.H{
-			"backend_priority": h.cfg.BackendPriority(),
-		},
-		// Only the overrides, not the effective table — the Models editor needs to
-		// tell "you changed this" from "this is the built-in rate", and /api/pricing
-		// serves the effective figures.
-		"pricing": gin.H{"models": h.cfg.Pricing.Models},
+		// The routing table is the model editor's whole subject: one row per
+		// published model, each with its ordered providers.
+		"models":    h.modelRows(),
+		"series":    h.cfg.SeriesDefaults(),
+		"providers": h.providerSummaries(),
 	})
+}
+
+// modelRows renders the routing table for the dashboard, annotating each model
+// with what routing would do with it right now: which provider is serving, and
+// whether a temporary pin is in force.
+func (h *AdminHandler) modelRows() []gin.H {
+	routes := h.cfg.Routes()
+	out := make([]gin.H, 0, len(routes))
+	for _, route := range routes {
+		providers := make([]gin.H, 0, len(route.Providers))
+		for _, ref := range route.Providers {
+			providers = append(providers, gin.H{
+				"provider":  ref.Provider,
+				"upstream":  ref.Upstream,
+				"available": h.providerAvailable(ref.Provider),
+			})
+		}
+		row := gin.H{
+			"name":      route.Name,
+			"series":    config.SeriesOf(route.Name),
+			"providers": providers,
+			// Empty when every provider in the chain is unavailable, which is
+			// exactly when the model is not being served at all.
+			"serving": h.router.BackendName(route.Name),
+		}
+		if provider, until, ok := h.router.PinnedProvider(route.Name); ok {
+			row["pinned"] = gin.H{
+				"provider":    provider,
+				"until":       until.Unix(),
+				"until_local": formatLocalTime(until),
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// providerSummaries describes each provider for the model editor: whether it can
+// take traffic, and which models it could serve that are not routed to it yet.
+func (h *AdminHandler) providerSummaries() []gin.H {
+	out := make([]gin.H, 0, len(config.KnownProviders))
+	for _, name := range config.KnownProviders {
+		entry := gin.H{
+			"name":      name,
+			"enabled":   h.cfg.ProviderEnabled(name),
+			"available": h.providerAvailable(name),
+			"paused":    h.tokenStore.IsBackendDisabled(name),
+		}
+		if catalog := h.providerCatalog(name); len(catalog) > 0 {
+			entry["catalog"] = catalog
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// providerCatalog lists the models a provider discovered upstream. Only the
+// synced providers have one; the rest serve whatever they are told to.
+func (h *AdminHandler) providerCatalog(name string) []string {
+	switch name {
+	case "anygen":
+		if h.anygenExec != nil {
+			return h.anygenExec.Catalog()
+		}
+	case "codex":
+		if h.codexExec != nil {
+			return h.codexExec.Catalog()
+		}
+	}
+	return nil
+}
+
+// providerAvailable reports whether a provider could serve a request right now:
+// enabled in config, not paused, and holding whatever credentials it needs.
+func (h *AdminHandler) providerAvailable(name string) bool {
+	if !h.cfg.ProviderEnabled(name) || h.tokenStore.IsBackendDisabled(name) {
+		return false
+	}
+	switch name {
+	case "claude_oauth":
+		return h.claudeExec != nil && len(h.tokenStore.AllForProvider("claude")) > 0
+	case "codex":
+		return h.codexExec != nil && len(h.tokenStore.AllForProvider("codex")) > 0
+	case "vertex":
+		return h.vertexExec != nil && h.vertexExec.Configured()
+	case "kimi":
+		return h.kimiExec != nil && h.kimiExec.Configured()
+	case "relay":
+		return h.relayExec != nil && h.relayExec.Configured()
+	case "anygen":
+		return h.anygenExec != nil && h.anygenExec.Configured()
+	}
+	return false
 }
 
 // cleanModelList trims, drops empty entries, and rejects duplicates.
@@ -470,105 +552,18 @@ func cleanModelList(in []string) ([]string, error) {
 	return out, nil
 }
 
-// cleanPriceOverrides validates the price rows the Models editor sends back.
-// A row with every field at zero is kept, not dropped — "this model is free" is
-// a real statement, and the only way to say it (an absent row means *unpriced*).
-func cleanPriceOverrides(in []pricing.Price) ([]pricing.Price, error) {
-	out := make([]pricing.Price, 0, len(in))
-	seen := make(map[string]bool, len(in))
-	for _, p := range in {
-		p.Name = strings.TrimSpace(p.Name)
-		if p.Name == "" {
-			continue
-		}
-		if seen[p.Name] {
-			return nil, fmt.Errorf("pricing: duplicate model %s", p.Name)
-		}
-		seen[p.Name] = true
-		for field, v := range map[string]float64{
-			"input": p.Input, "output": p.Output, "cache_read": p.CacheRead, "cache_write": p.CacheWrite,
-		} {
-			if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
-				return nil, fmt.Errorf("pricing: %s %s must be a non-negative number", p.Name, field)
-			}
-		}
-		out = append(out, p)
-	}
-	return out, nil
-}
-
-// applyPricing rebuilds the live price table from the current config. Rebuilding
-// also backfills, so a model that was unpriced until now gets its accumulated
-// history valued the moment a price is saved.
-func (h *AdminHandler) applyPricing() {
-	t := pricing.New(h.cfg.Pricing.Models)
-	t.SetAliases(h.cfg.ModelAliases())
-	h.statsDB.SetPricing(t)
-}
-
-func cleanModelMappings(in []config.ModelConfig, provider string) ([]config.ModelConfig, error) {
-	out := make([]config.ModelConfig, 0, len(in))
-	seen := make(map[string]bool, len(in))
-	for _, item := range in {
-		name := strings.TrimSpace(item.Name)
-		model := strings.TrimSpace(item.Model)
-		if name == "" {
-			// A row with only an upstream names nothing and can serve nothing.
-			if model != "" {
-				return nil, fmt.Errorf("%s models: a row needs a model name", provider)
-			}
-			continue
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("%s models: duplicate model %s", provider, name)
-		}
-		seen[name] = true
-		// model may be empty: that is the common case, "call upstream by the same
-		// name". Storing the name twice would be noise in config.yaml, and an
-		// identity mapping is indistinguishable from a rename in the editor.
-		if model == name {
-			model = ""
-		}
-		out = append(out, config.ModelConfig{Name: name, Model: model})
-	}
-	return out, nil
-}
-
-// UpdateConfig edits the net-new config surface (model lists + server settings)
-// not already controllable from the BACKENDS tab. Model-list edits apply live by
-// re-registering the executors with the router; server settings are persisted to
-// the config file, with port requiring a restart to take effect (admin
-// credentials apply live because loginHandler reads cfg on every request).
+// UpdateConfig edits the routing table and server settings. Routing edits apply
+// live by re-running the same function startup uses; server settings are
+// persisted to the config file, with port requiring a restart to take effect
+// (admin credentials apply live because loginHandler reads cfg on every
+// request).
 func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	// Every section is a pointer, so an absent one means "leave it alone". The
-	// dashboard saves Models and Admin independently — with value structs, saving
-	// the admin password would send `claude_oauth: {}` and silently wipe the
-	// model lists.
+	// dashboard saves Models and Admin independently — with value structs,
+	// saving the admin password would send an empty model table and wipe routing.
 	var req struct {
-		ClaudeOAuth *struct {
-			Models []string `json:"models"`
-		} `json:"claude_oauth"`
-		Codex *struct {
-			Models []string `json:"models"`
-		} `json:"codex"`
-		Vertex *struct {
-			Models []config.ModelConfig `json:"models"`
-		} `json:"vertex"`
-		Kimi *struct {
-			Models []config.ModelConfig `json:"models"`
-		} `json:"kimi"`
-		Relay *struct {
-			Models []config.ModelConfig `json:"models"`
-		} `json:"relay"`
-		AnyGen *struct {
-			Models []string `json:"models"`
-		} `json:"anygen"`
-		Routing *struct {
-			BackendPriority []string `json:"backend_priority"`
-		} `json:"routing"`
-		Pricing *struct {
-			Models []pricing.Price `json:"models"`
-		} `json:"pricing"`
+		Models *[]config.ModelRoute `json:"models"`
+		Series *config.SeriesConfig `json:"series"`
 		Server *struct {
 			Port          int    `json:"port"`
 			AdminUser     string `json:"admin_user"`
@@ -586,62 +581,18 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 	}
 
 	// --- validate everything before touching anything ---
-	var err error
-	claudeModels := h.cfg.ClaudeOAuth.Models
-	if req.ClaudeOAuth != nil {
-		if claudeModels, err = cleanModelList(req.ClaudeOAuth.Models); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "claude models: " + err.Error()})
-			return
-		}
+	series := h.cfg.SeriesDefaults()
+	if req.Series != nil {
+		series = *req.Series
 	}
-	codexModels := h.cfg.Codex.Models
-	if req.Codex != nil {
-		if codexModels, err = cleanModelList(req.Codex.Models); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "codex models: " + err.Error()})
-			return
-		}
-	}
-	vertexModels := h.cfg.Vertex.Models
-	if req.Vertex != nil {
-		if vertexModels, err = cleanModelMappings(req.Vertex.Models, "vertex"); err != nil {
+	routes := h.cfg.Routes()
+	if req.Models != nil {
+		normalized, err := config.NormalizeRoutes(*req.Models, series)
+		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
-	}
-	kimiModels := h.cfg.Kimi.Models
-	if req.Kimi != nil {
-		if kimiModels, err = cleanModelMappings(req.Kimi.Models, "kimi"); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	relayModels := h.cfg.Relay.Models
-	if req.Relay != nil {
-		if relayModels, err = cleanModelMappings(req.Relay.Models, "relay"); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	anygenModels := h.cfg.AnyGen.Models
-	if req.AnyGen != nil {
-		if anygenModels, err = cleanModelList(req.AnyGen.Models); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "anygen models: " + err.Error()})
-			return
-		}
-	}
-	priceOverrides := h.cfg.Pricing.Models
-	if req.Pricing != nil {
-		if priceOverrides, err = cleanPriceOverrides(req.Pricing.Models); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-	}
-	backendPriority := h.cfg.BackendPriority()
-	if req.Routing != nil {
-		if backendPriority, err = config.NormalizeBackendPriority(req.Routing.BackendPriority); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "routing backend_priority: " + err.Error()})
-			return
-		}
+		routes = normalized
 	}
 	// Port is optional: 0 means "leave unchanged". When provided it must be valid.
 	if req.Server != nil && req.Server.Port != 0 && (req.Server.Port < 1 || req.Server.Port > 65535) {
@@ -655,36 +606,6 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		restart = append(restart, "port")
 	}
 
-	// --- apply live ---
-	if req.ClaudeOAuth != nil && h.claudeExec != nil && h.cfg.ClaudeOAuth.Enabled {
-		h.claudeExec.SetModels(claudeModels)
-		h.router.UnregisterBackend("claude")
-		h.router.Register(h.claudeExec, "claude")
-	}
-	if req.Vertex != nil && h.vertexExec != nil {
-		h.vertexExec.SetModels(vertexModels)
-		if h.vertexExec.Configured() {
-			h.router.UnregisterBackend("vertex")
-			h.router.Register(h.vertexExec, "vertex")
-		}
-	}
-	if req.Kimi != nil && h.kimiExec != nil && h.cfg.Kimi.Enabled {
-		h.kimiExec.SetModels(kimiModels)
-		h.router.UnregisterBackend("kimi")
-		if h.kimiExec.Configured() {
-			h.router.Register(h.kimiExec, "kimi")
-		}
-	}
-	if req.Relay != nil && h.relayExec != nil && h.cfg.Relay.Enabled {
-		h.relayExec.SetModels(relayModels)
-		h.router.UnregisterBackend("relay")
-		if h.relayExec.Configured() {
-			h.router.Register(h.relayExec, "relay")
-		}
-	}
-	if req.Routing != nil {
-		h.router.SetBackendPriority(backendPriority)
-	}
 	if req.Server != nil {
 		h.cfg.SetAdminCreds(req.Server.AdminUser, req.Server.AdminPassword)
 		if req.Server.TrayToken != nil {
@@ -695,21 +616,19 @@ func (h *AdminHandler) UpdateConfig(c *gin.Context) {
 		}
 	}
 
-	// --- update in-memory cfg, then persist ---
-	h.cfg.ClaudeOAuth.Models = claudeModels
-	h.cfg.Codex.Models = codexModels
-	h.cfg.Vertex.Models = vertexModels
-	h.cfg.Kimi.Models = kimiModels
-	h.cfg.Relay.Models = relayModels
-	h.cfg.AnyGen.Models = anygenModels
-	if req.Routing != nil {
-		// Already validated above; this setter owns the config lock needed by
-		// concurrent GET /api/config and atomic config saves.
-		_ = h.cfg.SetBackendPriority(backendPriority)
+	// --- update in-memory cfg, apply live, then persist ---
+	if req.Series != nil {
+		h.cfg.SetSeries(series)
 	}
-	// After the model lists, so the alias map it reads is the new one.
-	h.cfg.Pricing.Models = priceOverrides
-	h.applyPricing()
+	if req.Models != nil || req.Series != nil {
+		// Already validated; the setter owns the config lock that concurrent
+		// GET /api/config and atomic config saves need.
+		if err := h.cfg.SetRoutes(routes); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		h.applyRouting()
+	}
 
 	if err := config.Save(h.configPath, h.cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save config: " + err.Error()})
@@ -744,11 +663,12 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 		if err != nil {
 			results["anygen"] = gin.H{"error": err.Error()}
 		} else {
-			h.router.UnregisterBackend("anygen")
-			h.router.Register(h.anygenExec, "anygen")
 			results["anygen"] = gin.H{"models": models, "count": len(models)}
 		}
 	}
+	// A sync changes what each provider *could* serve; routing decides what it
+	// does serve, so re-apply it rather than registering anything directly.
+	h.applyRouting()
 
 	c.JSON(http.StatusOK, results)
 }
@@ -828,8 +748,7 @@ func (h *AdminHandler) SetVertexCredentials(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "save credentials: " + err.Error()})
 		return
 	}
-	h.router.UnregisterBackend("vertex")
-	h.router.Register(h.vertexExec, "vertex")
+	h.applyRouting()
 	c.JSON(http.StatusOK, gin.H{
 		"ok":         true,
 		"project_id": h.vertexExec.ProjectID(),
@@ -850,9 +769,7 @@ func (h *AdminHandler) DeleteVertexCredentials(c *gin.Context) {
 		return
 	}
 	stillConfigured := h.vertexExec.ClearCredentials()
-	if !stillConfigured {
-		h.router.UnregisterBackend("vertex")
-	}
+	h.applyRouting()
 	c.JSON(http.StatusOK, gin.H{"ok": true, "configured": stillConfigured})
 }
 
@@ -875,6 +792,46 @@ func (h *AdminHandler) ToggleBackend(c *gin.Context) {
 		h.tokenStore.DisableBackend(backend)
 		c.JSON(http.StatusOK, gin.H{"ok": true, "backend": backend, "disabled": true})
 	}
+}
+
+// PinModel temporarily forces one model onto one provider.
+//
+// The pin lives in memory and expires, which is the point: trying a provider
+// out should not rewrite config.yaml, and an experiment someone forgets about
+// must not survive a restart. Editing the model's chain is how a lasting change
+// is made.
+func (h *AdminHandler) PinModel(c *gin.Context) {
+	var req struct {
+		Model      string `json:"model"`
+		Provider   string `json:"provider"`
+		TTLMinutes int    `json:"ttl_minutes"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	// An empty provider clears the pin, which is what the "revert" control sends.
+	if strings.TrimSpace(req.Provider) == "" {
+		_ = h.router.Pin(req.Model, "", 0)
+		c.JSON(http.StatusOK, gin.H{"ok": true, "pinned": false})
+		return
+	}
+	ttl := time.Duration(req.TTLMinutes) * time.Minute
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	if err := h.router.Pin(req.Model, req.Provider, ttl); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	_, until, _ := h.router.PinnedProvider(req.Model)
+	c.JSON(http.StatusOK, gin.H{
+		"ok":          true,
+		"pinned":      true,
+		"provider":    req.Provider,
+		"until":       until.Unix(),
+		"until_local": formatLocalTime(until),
+	})
 }
 
 func (h *AdminHandler) ListKeys(c *gin.Context) {

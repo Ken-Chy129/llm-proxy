@@ -24,7 +24,7 @@ func TestResolveModelTreatsEmptyUpstreamAsPassthrough(t *testing.T) {
 	}
 
 	kimi := &KimiExecutor{models: models}
-	vertex := &VertexExecutor{cfg: config.VertexConfig{Models: models}}
+	vertex := &VertexExecutor{models: models}
 	for _, c := range cases {
 		if got := kimi.resolveModel(c.in); got != c.want {
 			t.Errorf("kimi.resolveModel(%q) = %q, want %q", c.in, got, c.want)

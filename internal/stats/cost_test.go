@@ -12,7 +12,7 @@ import (
 // testPrices is a deliberately round table so expected costs are readable:
 // $1 in / $10 out / $0.10 read / $2 write per 1M tokens.
 func testPrices() *pricing.Table {
-	return pricing.New([]pricing.Price{
+	return pricing.NewForTest([]pricing.Price{
 		{Name: "priced-model", Input: 1, Output: 10, CacheRead: 0.1, CacheWrite: 2},
 	})
 }

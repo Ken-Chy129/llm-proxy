@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Ken-Chy129/llm-proxy/internal/pricing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -18,8 +17,12 @@ type Config struct {
 	Kimi        KimiConfig        `yaml:"kimi"`
 	Relay       RelayConfig       `yaml:"relay"`
 	AnyGen      AnyGenConfig      `yaml:"anygen"`
-	Routing     RoutingConfig     `yaml:"routing"`
-	Pricing     PricingConfig     `yaml:"pricing"`
+	// Series holds the default provider order per model family, and Models the
+	// per-model overrides. Together they replace the old per-provider model
+	// lists: a model is named once, and the providers that can serve it are an
+	// ordered chain rather than a global priority table.
+	Series SeriesConfig `yaml:"series"`
+	Models []ModelRoute `yaml:"models"`
 
 	// mu guards only the ServerConfig fields the dashboard can rewrite while the
 	// server is serving: Port, AdminUser, AdminPassword, TrayToken. Everything
@@ -61,138 +64,324 @@ type ServerConfig struct {
 }
 
 type VertexConfig struct {
-	ProjectID string        `yaml:"project_id"`
-	Region    string        `yaml:"region"`
-	Models    []ModelConfig `yaml:"models"`
+	ProjectID string `yaml:"project_id"`
+	Region    string `yaml:"region"`
+	Enabled   bool   `yaml:"enabled"`
 }
 
-// ModelConfig is one served model. Model is the upstream id to call; empty
-// means "same as Name", which is the common case — writing the name twice is
-// noise, and omitempty keeps it out of the file the dashboard rewrites.
+// ModelConfig is one model as a provider must be told about it: the published
+// name, plus the id to use on the wire when the upstream insists on its own.
+// Empty Model means "same as Name", which is the common case.
+//
+// It is no longer parsed from the config file — provider model lists are
+// derived from the routing table — but it remains how a provider is configured
+// at runtime.
 type ModelConfig struct {
-	Name  string `yaml:"name"`
-	Model string `yaml:"model,omitempty"`
+	Name  string
+	Model string
 }
 
 type ClaudeOAuthConfig struct {
-	Enabled  bool     `yaml:"enabled"`
-	Models   []string `yaml:"models"`
-	TokenDir string   `yaml:"token_dir"`
+	Enabled  bool   `yaml:"enabled"`
+	TokenDir string `yaml:"token_dir"`
 }
 
 type CodexConfig struct {
-	Enabled bool     `yaml:"enabled"`
-	Models  []string `yaml:"models"`
+	Enabled bool `yaml:"enabled"`
 }
 
 // KimiConfig intentionally stores only the name of an environment variable,
 // never the API key itself. This keeps config.yaml and dashboard saves free of
 // upstream credentials.
 type KimiConfig struct {
-	Enabled   bool          `yaml:"enabled"`
-	BaseURL   string        `yaml:"base_url"`
-	APIKeyEnv string        `yaml:"api_key_env"`
-	APIFormat string        `yaml:"api_format"`
-	Models    []ModelConfig `yaml:"models"`
+	Enabled   bool   `yaml:"enabled"`
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+	APIFormat string `yaml:"api_format"`
 }
 
 // RelayConfig describes an Anthropic-compatible upstream authenticated with a
 // static token read from the environment. Keeping only the environment variable
 // name here prevents relay credentials from being persisted by dashboard saves.
 type RelayConfig struct {
-	Enabled      bool          `yaml:"enabled"`
-	BaseURL      string        `yaml:"base_url"`
-	AuthTokenEnv string        `yaml:"auth_token_env"`
-	Models       []ModelConfig `yaml:"models"`
+	Enabled      bool   `yaml:"enabled"`
+	BaseURL      string `yaml:"base_url"`
+	AuthTokenEnv string `yaml:"auth_token_env"`
 }
 
-// AnyGenConfig keeps the sk-ag credential outside config.yaml. Models are a
-// startup fallback only: a configured backend replaces them with the zero-cost
-// model list returned by AnyGen's OpenAI-compatible /models endpoint.
+// AnyGenConfig keeps the sk-ag credential outside config.yaml. Its catalog is
+// discovered at runtime from the OpenAI-compatible /models endpoint.
 type AnyGenConfig struct {
-	Enabled   bool     `yaml:"enabled"`
-	BaseURL   string   `yaml:"base_url"`
-	APIKeyEnv string   `yaml:"api_key_env"`
-	Models    []string `yaml:"models"`
+	Enabled   bool   `yaml:"enabled"`
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
 }
 
-type RoutingConfig struct {
-	// BackendPriority resolves models exposed by multiple backends. Earlier
-	// entries win; disabled and protocol-incompatible entries are skipped.
-	BackendPriority []string `yaml:"backend_priority"`
+// KnownProviders is every provider this proxy can route to. A provider is a
+// place a request can be sent; what it is allowed to serve is decided entirely
+// by the model routes below.
+var KnownProviders = []string{"claude_oauth", "codex", "vertex", "kimi", "relay", "anygen"}
+
+var knownProviders = func() map[string]bool {
+	m := make(map[string]bool, len(KnownProviders))
+	for _, p := range KnownProviders {
+		m[p] = true
+	}
+	return m
+}()
+
+// ProviderRef is one link in a model's provider chain: where to send the
+// request, and — only when the upstream insists on a different id than the name
+// we publish — what to call the model on the wire.
+//
+// Upstream is a connection detail, not an identity: it never reaches clients,
+// pricing, or stats, all of which see the published model name.
+type ProviderRef struct {
+	Provider string `yaml:"provider" json:"provider"`
+	Upstream string `yaml:"upstream,omitempty" json:"upstream,omitempty"`
 }
 
-var DefaultBackendPriority = []string{
-	"claude",
-	"codex",
-	"vertex",
-	"kimi",
-	"anygen",
-	"relay",
+// UnmarshalYAML accepts both forms a chain entry can take:
+//
+//	providers: [claude_oauth, relay]        # no rename
+//	providers: [{vertex: claude-haiku-4-5-20251001}]
+//
+// The bare-string form is the common case and the map form is only reached for
+// a genuine rename, which keeps the rename visually rare in the file — it is a
+// quirk of one upstream, not a property of the model.
+func (p *ProviderRef) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		var name string
+		if err := value.Decode(&name); err != nil {
+			return err
+		}
+		p.Provider, p.Upstream = strings.TrimSpace(name), ""
+		return nil
+	case yaml.MappingNode:
+		// Long form ({provider: vertex, upstream: x}) and the shorthand
+		// ({vertex: x}) are told apart by the presence of a "provider" key.
+		var long struct {
+			Provider string `yaml:"provider"`
+			Upstream string `yaml:"upstream"`
+		}
+		if err := value.Decode(&long); err == nil && strings.TrimSpace(long.Provider) != "" {
+			p.Provider = strings.TrimSpace(long.Provider)
+			p.Upstream = strings.TrimSpace(long.Upstream)
+			return nil
+		}
+		var short map[string]string
+		if err := value.Decode(&short); err != nil {
+			return err
+		}
+		if len(short) != 1 {
+			return fmt.Errorf("a provider entry must name exactly one provider, got %d keys", len(short))
+		}
+		for name, upstream := range short {
+			p.Provider = strings.TrimSpace(name)
+			p.Upstream = strings.TrimSpace(upstream)
+		}
+		return nil
+	default:
+		return fmt.Errorf("a provider entry must be a name or a single-key mapping")
+	}
 }
 
-var knownBackends = map[string]bool{
-	"claude": true,
-	"codex":  true,
-	"vertex": true,
-	"kimi":   true,
-	"anygen": true,
-	"relay":  true,
+// MarshalYAML writes the shortest form that round-trips, so a config saved from
+// the dashboard stays as readable as a hand-written one.
+func (p ProviderRef) MarshalYAML() (any, error) {
+	if p.Upstream == "" {
+		return p.Provider, nil
+	}
+	return map[string]string{p.Provider: p.Upstream}, nil
 }
 
-// NormalizeBackendPriority validates an external priority list and appends
-// omitted known backends in the stable default order. Partial configuration is
-// therefore safe and forward-compatible with the existing config files.
-func NormalizeBackendPriority(in []string) ([]string, error) {
-	out := make([]string, 0, len(DefaultBackendPriority))
-	seen := make(map[string]bool, len(DefaultBackendPriority))
-	for _, backend := range in {
-		backend = strings.TrimSpace(backend)
-		if backend == "" {
+// ModelRoute is one model as clients see it: a published name and the ordered
+// providers that can serve it. Earlier providers are tried first, and the chain
+// doubles as the failover order — a provider that is disabled, unconfigured, or
+// out of quota hands the request to the next one.
+type ModelRoute struct {
+	Name      string        `yaml:"name" json:"name"`
+	Providers []ProviderRef `yaml:"providers,omitempty" json:"providers,omitempty"`
+}
+
+// SeriesConfig maps a model family to the provider order its models get when
+// they do not name one themselves.
+type SeriesConfig map[string][]ProviderRef
+
+// SeriesOf classifies a model name into a family. The prefixes are deliberately
+// coarse: a series only supplies a default ordering, and anything it gets wrong
+// is fixed by naming providers on the model itself.
+func SeriesOf(model string) string {
+	m := strings.ToLower(strings.TrimSpace(model))
+	switch {
+	case strings.HasPrefix(m, "claude-"):
+		return "claude"
+	case strings.HasPrefix(m, "gpt-"), strings.HasPrefix(m, "o1"), strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"):
+		return "gpt"
+	case strings.HasPrefix(m, "gemini-"):
+		return "gemini"
+	case strings.HasPrefix(m, "kimi-"):
+		return "kimi"
+	case strings.HasPrefix(m, "deepseek-"):
+		return "deepseek"
+	default:
+		return "other"
+	}
+}
+
+// cleanChain validates one provider chain. Duplicates are rejected rather than
+// deduplicated: a chain listing the same provider twice means the author
+// believed the second entry would do something, and silently dropping it would
+// hide the mistake.
+//
+// published is the model name the chain belongs to, or "" for a series default.
+// It is only used to recognise a non-rename: the dashboard prefills the upstream
+// box with the model name, so most saves arrive with upstream == name.
+func cleanChain(in []ProviderRef, context, published string) ([]ProviderRef, error) {
+	out := make([]ProviderRef, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, ref := range in {
+		name := strings.TrimSpace(ref.Provider)
+		if name == "" {
 			continue
 		}
-		if !knownBackends[backend] {
-			return nil, fmt.Errorf("unknown backend %q", backend)
+		if !knownProviders[name] {
+			return nil, fmt.Errorf("%s: unknown provider %q", context, name)
 		}
-		if seen[backend] {
-			return nil, fmt.Errorf("duplicate backend %q", backend)
+		if seen[name] {
+			return nil, fmt.Errorf("%s: duplicate provider %q", context, name)
 		}
-		seen[backend] = true
-		out = append(out, backend)
-	}
-	for _, backend := range DefaultBackendPriority {
-		if !seen[backend] {
-			out = append(out, backend)
+		seen[name] = true
+		upstream := strings.TrimSpace(ref.Upstream)
+		// An upstream equal to the published name is the default; storing it
+		// would just be the name written twice.
+		if upstream == published {
+			upstream = ""
 		}
+		out = append(out, ProviderRef{Provider: name, Upstream: upstream})
 	}
 	return out, nil
 }
 
-// PricingConfig overrides or extends the built-in per-model price table used to
-// cost requests. Prices are USD per 1M tokens.
-//
-// Two reasons this exists: published rates change and a rebuild is a silly way
-// to track them, and a model this proxy serves may not be in the built-in table
-// at all (a private endpoint, a subscription seat, a renamed alias). A model
-// with no price anywhere is recorded as *unknown* cost rather than $0 — write
-// an all-zeros entry here to say "this one really is free".
-type PricingConfig struct {
-	Models []pricing.Price `yaml:"models"`
+// NormalizeRoutes validates the model table and fills each model's chain from
+// its series default when it declares none.
+func NormalizeRoutes(models []ModelRoute, series SeriesConfig) ([]ModelRoute, error) {
+	defaults := make(SeriesConfig, len(series))
+	for name, chain := range series {
+		cleaned, err := cleanChain(chain, "series "+name, "")
+		if err != nil {
+			return nil, err
+		}
+		defaults[strings.TrimSpace(name)] = cleaned
+	}
+
+	out := make([]ModelRoute, 0, len(models))
+	seen := make(map[string]bool, len(models))
+	for _, route := range models {
+		name := strings.TrimSpace(route.Name)
+		if name == "" {
+			return nil, fmt.Errorf("models: a route needs a model name")
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("models: duplicate model %q", name)
+		}
+		seen[name] = true
+		chain, err := cleanChain(route.Providers, "model "+name, name)
+		if err != nil {
+			return nil, err
+		}
+		if len(chain) == 0 {
+			// Copied, not referenced: a later edit to one model's chain from the
+			// dashboard must not mutate every other model in the same series.
+			chain = append([]ProviderRef(nil), defaults[SeriesOf(name)]...)
+		}
+		if len(chain) == 0 {
+			return nil, fmt.Errorf("model %q has no providers and its series (%s) has no default", name, SeriesOf(name))
+		}
+		out = append(out, ModelRoute{Name: name, Providers: chain})
+	}
+	return out, nil
 }
 
-// ModelAliases returns the alias → upstream-model mapping for every backend that
-// has one (Vertex, Kimi and Relay; OAuth backends pass names through unchanged).
-// Pricing uses it so a freely-named alias still resolves to its model's price.
-func (c *Config) ModelAliases() map[string]string {
-	out := make(map[string]string, len(c.Vertex.Models)+len(c.Kimi.Models)+len(c.Relay.Models))
-	for _, list := range [][]ModelConfig{c.Vertex.Models, c.Kimi.Models, c.Relay.Models} {
-		for _, m := range list {
-			if m.Name != "" && m.Model != "" {
-				out[m.Name] = m.Model
-			}
+// Routes returns a copy of the current model table.
+func (c *Config) Routes() []ModelRoute {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return cloneRoutes(c.Models)
+}
+
+func cloneRoutes(in []ModelRoute) []ModelRoute {
+	out := make([]ModelRoute, len(in))
+	for i, route := range in {
+		out[i] = ModelRoute{
+			Name:      route.Name,
+			Providers: append([]ProviderRef(nil), route.Providers...),
 		}
 	}
 	return out
+}
+
+// SetRoutes replaces the model table after validating it.
+func (c *Config) SetRoutes(models []ModelRoute) error {
+	c.mu.RLock()
+	series := c.Series
+	c.mu.RUnlock()
+	normalized, err := NormalizeRoutes(models, series)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.Models = normalized
+	c.mu.Unlock()
+	return nil
+}
+
+// SeriesDefaults returns a copy of the per-series provider defaults.
+func (c *Config) SeriesDefaults() SeriesConfig {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make(SeriesConfig, len(c.Series))
+	for name, chain := range c.Series {
+		out[name] = append([]ProviderRef(nil), chain...)
+	}
+	return out
+}
+
+// SetSeries replaces the per-series defaults. Existing models keep the chain
+// they already resolved to: a series default only applies to a model that
+// declares no providers of its own, and NormalizeRoutes has already filled
+// those in.
+func (c *Config) SetSeries(series SeriesConfig) {
+	out := make(SeriesConfig, len(series))
+	for name, chain := range series {
+		out[name] = append([]ProviderRef(nil), chain...)
+	}
+	c.mu.Lock()
+	c.Series = out
+	c.mu.Unlock()
+}
+
+// ProviderEnabled reports whether a provider is switched on in the config file.
+// This is static configuration; the runtime pause switch lives in the token
+// store and is checked separately by the router.
+func (c *Config) ProviderEnabled(provider string) bool {
+	switch provider {
+	case "claude_oauth":
+		return c.ClaudeOAuth.Enabled
+	case "codex":
+		return c.Codex.Enabled
+	case "vertex":
+		return c.Vertex.Enabled
+	case "kimi":
+		return c.Kimi.Enabled
+	case "relay":
+		return c.Relay.Enabled
+	case "anygen":
+		return c.AnyGen.Enabled
+	default:
+		return false
+	}
 }
 
 // Environment fallbacks for the dashboard credentials. Containerised deploys
@@ -263,23 +452,6 @@ func (c *Config) SetPort(port int) {
 	c.Server.Port = port
 }
 
-func (c *Config) BackendPriority() []string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return append([]string(nil), c.Routing.BackendPriority...)
-}
-
-func (c *Config) SetBackendPriority(priority []string) error {
-	normalized, err := NormalizeBackendPriority(priority)
-	if err != nil {
-		return err
-	}
-	c.mu.Lock()
-	c.Routing.BackendPriority = normalized
-	c.mu.Unlock()
-	return nil
-}
-
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -292,11 +464,11 @@ func Load(path string) (*Config, error) {
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = 8080
 	}
-	priority, err := NormalizeBackendPriority(cfg.Routing.BackendPriority)
+	routes, err := NormalizeRoutes(cfg.Models, cfg.Series)
 	if err != nil {
-		return nil, fmt.Errorf("routing.backend_priority: %w", err)
+		return nil, err
 	}
-	cfg.Routing.BackendPriority = priority
+	cfg.Models = routes
 	// The config file wins when both are present — it is the more explicit of the
 	// two, and silently preferring an inherited env var would make a checked-in
 	// value lie about what the server is actually using.

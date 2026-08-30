@@ -26,26 +26,6 @@ const (
 	defaultRelayTokenEnv = "ANTHROPIC_AUTH_TOKEN"
 )
 
-var defaultKimiOpenAIModels = []config.ModelConfig{
-	{Name: "kimi-k3", Model: "kimi-k3"},
-	{Name: "kimi-k2.7-code-highspeed", Model: "kimi-k2.7-code-highspeed"},
-	{Name: "kimi-k2.6", Model: "kimi-k2.6"},
-}
-
-var defaultKimiCodingModels = []config.ModelConfig{
-	{Name: "kimi-k3", Model: "k3"},
-	{Name: "kimi-for-coding", Model: "kimi-for-coding"},
-	{Name: "kimi-for-coding-highspeed", Model: "kimi-for-coding-highspeed"},
-}
-
-var defaultRelayModels = []config.ModelConfig{
-	{Name: "claude-opus-5"},
-	{Name: "claude-fable-5"},
-	{Name: "claude-sonnet-4-5-20250929"},
-	{Name: "claude-opus-4-5-20251101"},
-	{Name: "claude-haiku-4-5-20251001"},
-}
-
 // KimiExecutor connects the proxy's internal Chat Completions contract to the
 // OpenAI-compatible Kimi API. It also implements AnthropicExecutor so Claude
 // Code can use the same models through /v1/messages.
@@ -72,20 +52,11 @@ func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
 	if apiFormat != "anthropic" {
 		apiFormat = "openai"
 	}
-	models := cfg.Models
-	if len(models) == 0 {
-		defaults := defaultKimiOpenAIModels
-		if apiFormat == "anthropic" {
-			defaults = defaultKimiCodingModels
-		}
-		models = append([]config.ModelConfig(nil), defaults...)
-	}
 	return &KimiExecutor{
 		backend:    "kimi",
 		baseURL:    baseURL,
 		apiKeyEnv:  apiKeyEnv,
 		apiFormat:  apiFormat,
-		models:     models,
 		httpClient: http.DefaultClient,
 	}
 }
@@ -102,16 +73,11 @@ func NewRelayExecutor(cfg config.RelayConfig) *KimiExecutor {
 	if authTokenEnv == "" {
 		authTokenEnv = defaultRelayTokenEnv
 	}
-	models := cfg.Models
-	if len(models) == 0 {
-		models = append([]config.ModelConfig(nil), defaultRelayModels...)
-	}
 	return &KimiExecutor{
 		backend:    "relay",
 		baseURL:    baseURL,
 		apiKeyEnv:  authTokenEnv,
 		apiFormat:  "anthropic",
-		models:     models,
 		httpClient: http.DefaultClient,
 	}
 }

@@ -25,7 +25,6 @@ func main() {
 	}
 
 	r := router.New()
-	r.SetBackendPriority(cfg.BackendPriority())
 	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir, cfg.Server.AccountStrategy)
 	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())
@@ -37,11 +36,11 @@ func main() {
 	defer statsDB.Close()
 	// Costing has to be installed before anything is served: it prices each
 	// request as it is recorded, and backfills whatever history is unpriced.
-	priceTable := pricing.New(cfg.Pricing.Models)
-	priceTable.SetAliases(cfg.ModelAliases())
-	statsDB.SetPricing(priceTable)
+	statsDB.SetPricing(pricing.New())
 
-	// Vertex: configured via config file (ADC) or dashboard-uploaded credentials
+	// Every provider is constructed, whether or not it is enabled: the dashboard
+	// can turn one on and add credentials at runtime, and a provider that exists
+	// but is unregistered is simply skipped by every routing decision.
 	vertexExec := executor.NewVertexExecutor(cfg.Vertex)
 	if saved := auth.LoadGCPCredential(tokenStore.Dir()); saved != nil {
 		if err := vertexExec.ApplyCredentials(context.Background(), saved.ProjectID, saved.Region, saved.Credentials, false); err != nil {
@@ -50,47 +49,40 @@ func main() {
 			log.Printf("loaded uploaded gcp credentials (project=%s)", vertexExec.ProjectID())
 		}
 	}
-	if vertexExec.Configured() {
-		r.Register(vertexExec, "vertex")
-		log.Printf("registered vertex executor: %v (project=%s, source=%s)",
-			vertexExec.Models(), vertexExec.ProjectID(), vertexExec.CredentialSource())
-	}
 
-	// Claude OAuth: static models (Claude doesn't expose a model list API)
 	var claudeOAuth *auth.ClaudeOAuth
 	var claudeExec *executor.ClaudeOAuthExecutor
 	if cfg.ClaudeOAuth.Enabled {
 		claudeOAuth = auth.NewClaudeOAuth(tokenStore)
 		claudeOAuth.ServerPort = cfg.Server.Port
-		models := cfg.ClaudeOAuth.Models
-		if len(models) == 0 {
-			models = []string{"claude-sonnet-4-6", "claude-opus-4-6"}
-		}
-		claudeExec = executor.NewClaudeOAuthExecutor(claudeOAuth, models)
-		r.Register(claudeExec, "claude")
-		log.Printf("registered claude oauth executor: %v", models)
+		claudeExec = executor.NewClaudeOAuthExecutor(claudeOAuth, nil)
 		if len(tokenStore.AllForProvider("claude")) > 0 {
 			log.Printf("fetching claude quotas for %d accounts...", len(tokenStore.AllForProvider("claude")))
 			claudeOAuth.FetchAllQuotas(context.Background())
 		}
 	}
 
-	// Codex OAuth: try to dynamically fetch models, fall back to config
 	var codexOAuth *auth.CodexOAuth
 	var codexExec *executor.CodexExecutor
 	if cfg.Codex.Enabled {
 		codexOAuth = auth.NewCodexOAuth(tokenStore)
 		codexOAuth.ServerPort = cfg.Server.Port
-		// Start with config models
-		models := cfg.Codex.Models
-		codexExec = executor.NewCodexExecutor(codexOAuth, models)
-		r.Register(codexExec, "codex")
-
-		// Refresh all tokens at startup, then fetch models
+		codexExec = executor.NewCodexExecutor(codexOAuth, nil)
 		if len(tokenStore.AllForProvider("codex")) > 0 {
 			codexOAuth.RefreshAllTokens(context.Background())
-			syncCodexModels(codexOAuth, codexExec, r)
-			// Fetch quota for all accounts (warmup + /codex/usage)
+			// The plan's model list is discoverable, so it is offered in the
+			// dashboard when adding a model. What gets *served* still comes from
+			// the routing table.
+			if models, _, err := codexOAuth.FetchModels(context.Background()); err != nil {
+				log.Printf("failed to fetch codex models: %v", err)
+			} else {
+				slugs := make([]string, len(models))
+				for i, m := range models {
+					slugs[i] = m.Slug
+				}
+				codexExec.SetCatalog(slugs)
+				log.Printf("synced %d codex models", len(slugs))
+			}
 			log.Printf("fetching codex quotas for %d accounts...", len(tokenStore.AllForProvider("codex")))
 			codexOAuth.FetchAllQuotas(context.Background())
 		}
@@ -101,55 +93,40 @@ func main() {
 	// translated by the handler; Anthropic Messages requests from Claude Code
 	// are translated by KimiExecutor.
 	kimiExec := executor.NewKimiExecutor(cfg.Kimi)
-	if cfg.Kimi.Enabled {
-		if kimiExec.Configured() {
-			r.Register(kimiExec, "kimi")
-			log.Printf("registered kimi executor: %v (base=%s, format=%s, key_env=%s)", kimiExec.Models(), kimiExec.BaseURL(), kimiExec.APIFormat(), kimiExec.APIKeyEnv())
-		} else {
-			log.Printf("kimi enabled but %s is not set; backend not registered", kimiExec.APIKeyEnv())
-		}
-	}
 
 	// Anthropic-compatible relay: native Messages passthrough for Claude Code,
 	// with Chat Completions/Responses translated by the shared API-key executor.
 	relayExec := executor.NewRelayExecutor(cfg.Relay)
 
 	// AnyGen API: app-scoped OpenAI-compatible Chat Completions + Models with
-	// one sk-ag key. The model list is free to query and replaces the config
-	// fallback whenever startup sync succeeds. It may initially claim overlapping
-	// model IDs; the explicitly configured Relay below reclaims its own models so
-	// Claude Code never lands on AnyGen's non-Anthropic executor by accident.
+	// one sk-ag key. Its catalog is free to query, so it is refreshed at startup.
 	anygenExec := executor.NewAnyGenExecutor(cfg.AnyGen)
-	if cfg.AnyGen.Enabled {
-		if !anygenExec.Configured() {
-			log.Printf("anygen enabled but %s is not set; backend not registered", anygenExec.APIKeyEnv())
+	if cfg.AnyGen.Enabled && anygenExec.Configured() {
+		if models, err := anygenExec.SyncModels(context.Background()); err != nil {
+			log.Printf("failed to fetch anygen models: %v", err)
 		} else {
-			if models, err := anygenExec.SyncModels(context.Background()); err != nil {
-				log.Printf("failed to fetch anygen models, using config fallback: %v", err)
-			} else {
-				log.Printf("synced %d anygen models", len(models))
-			}
-			if credits, err := anygenExec.RefreshCredits(context.Background()); err != nil {
-				log.Printf("failed to query anygen credits: %v", err)
-			} else {
-				log.Printf("verified anygen key (user=%s, credits=%s)", credits.UserID, credits.Credits)
-			}
-			if len(anygenExec.Models()) > 0 {
-				r.Register(anygenExec, "anygen")
-				log.Printf("registered anygen executor: %v (base=%s, key_env=%s)", anygenExec.Models(), anygenExec.BaseURL(), anygenExec.APIKeyEnv())
-			} else {
-				log.Printf("anygen has no synced or fallback models; backend not registered")
-			}
+			log.Printf("synced %d anygen models", len(models))
+		}
+		if credits, err := anygenExec.RefreshCredits(context.Background()); err != nil {
+			log.Printf("failed to query anygen credits: %v", err)
+		} else {
+			log.Printf("verified anygen key (user=%s, credits=%s)", credits.UserID, credits.Credits)
 		}
 	}
 
-	if cfg.Relay.Enabled {
-		if registerRelay(r, relayExec, claudeExec, true) {
-			log.Printf("registered relay executor: %v (base=%s, key_env=%s)", relayExec.Models(), relayExec.BaseURL(), relayExec.APIKeyEnv())
-		} else {
-			log.Printf("relay enabled but %s is not set; backend not registered", relayExec.APIKeyEnv())
-		}
+	providers := &router.Providers{
+		Claude: claudeExec,
+		Codex:  codexExec,
+		Vertex: vertexExec,
+		Kimi:   kimiExec,
+		Relay:  relayExec,
+		AnyGen: anygenExec,
 	}
+	// One call installs both halves of routing: which providers exist, and which
+	// models each may serve. Every later edit goes through the same function, so
+	// the running state cannot drift from the config.
+	router.Apply(r, cfg, providers)
+	router.LogRoutes(r)
 
 	keyStore := auth.NewKeyStore(tokenStore.Dir())
 
@@ -188,54 +165,4 @@ func main() {
 	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
-}
-
-// registerRelay is deliberately called after dynamically synced API backends.
-// Relay is explicit operator configuration and supports Anthropic Messages, so
-// its models must win collisions with broad model catalogs such as AnyGen.
-//
-// Claude OAuth is the exception: where both can serve a model, the relay is
-// metered overflow behind the subscription rather than a replacement for it, so
-// the model is registered as a fallback chain (OAuth first, relay on 429). The
-// chain keeps the "claude" backend label because that is what serves the request
-// until the subscription is exhausted.
-func registerRelay(r *router.Router, relayExec *executor.KimiExecutor, claudeExec *executor.ClaudeOAuthExecutor, enabled bool) bool {
-	if !enabled || relayExec == nil || !relayExec.Configured() {
-		return false
-	}
-	oauthModels := make(map[string]bool)
-	if claudeExec != nil {
-		for _, m := range claudeExec.Models() {
-			oauthModels[m] = true
-		}
-	}
-	for _, model := range relayExec.Models() {
-		if oauthModels[model] {
-			chain := executor.NewFallbackExecutor(claudeExec, relayExec, []string{model})
-			r.RegisterModel(model, chain, "claude")
-			log.Printf("model %s: claude oauth with relay overflow on 429", model)
-			continue
-		}
-		r.RegisterModel(model, relayExec, "relay")
-	}
-	return true
-}
-
-func syncCodexModels(oauth *auth.CodexOAuth, exec *executor.CodexExecutor, r *router.Router) {
-	models, _, err := oauth.FetchModels(context.Background())
-	if err != nil {
-		log.Printf("failed to fetch codex models: %v", err)
-		return
-	}
-	r.UnregisterBackend("codex")
-	for _, m := range models {
-		r.RegisterModel(m.Slug, exec, "codex")
-	}
-	slugs := make([]string, len(models))
-	for i, m := range models {
-		slugs[i] = m.Slug
-	}
-	log.Printf("synced %d codex models: %v", len(models), slugs)
-
-	// Quota is fetched separately via FetchAllQuotas
 }

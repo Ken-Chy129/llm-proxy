@@ -16,32 +16,21 @@ server:
   # cert_file: "/path/to/cert.pem"   # enable HTTPS
   # key_file: "/path/to/key.pem"
 
+# --- Providers -------------------------------------------------------------
+# A provider section is connection detail only: where to send a request and how
+# to authenticate. What each one serves is decided further down, in `models`.
+
 vertex:
+  enabled: false
   project_id: "your-gcp-project-id"
   region: "us-east5"
-  models:
-    # `model:` is only needed when the name clients call differs from the id the
-    # upstream knows. Omit it and the name is sent through as-is.
-    - name: "claude-sonnet-4-6"
-    - name: "claude-opus-4-6"
-    - name: "claude-haiku-4-5"
-      model: "claude-haiku-4-5-20251001"   # upstream wants the dated snapshot
 
 claude_oauth:
   enabled: true
   # token_dir: "/data"  # for Docker; defaults to ~/.llm-proxy
-  models:
-    - "claude-sonnet-4-6-oauth"
-    - "claude-opus-4-6-oauth"
-    - "claude-opus-4-8-oauth"
 
 codex:
   enabled: true
-  models:
-    - "gpt-5.5"
-    - "gpt-5.4"
-    - "gpt-5.4-mini"
-    - "gpt-5.3-codex"
 
 # Kimi Code key is read from the environment variable below. Never put the
 # actual key in this file or commit it to Git. For a Kimi API Platform key,
@@ -51,69 +40,59 @@ kimi:
   base_url: "https://api.kimi.com/coding"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "anthropic"
-  models:
-    - name: "kimi-k3"
-      model: "k3"                          # upstream only knows "k3"
-    - name: "kimi-for-coding"
-    - name: "kimi-for-coding-highspeed"
 
 # Generic Anthropic-compatible relay. The token is read from the environment;
-# never paste it into this file or the dashboard. The models below were verified
-# against the default relay endpoint on 2026-08-18.
+# never paste it into this file or the dashboard.
 relay:
   enabled: false
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
-  models:
-    - name: "claude-opus-5"
-    - name: "claude-fable-5"
-    - name: "claude-sonnet-4-5-20250929"
-    - name: "claude-opus-4-5-20251101"
-    - name: "claude-haiku-4-5-20251001"
 
 # AnyGen uses one app-scoped sk-ag key for Chat Completions and Models. The key
-# must grant exactly those two actions with whole_app=false. The live model list
-# is fetched for free at startup; models below are used only if that sync fails.
-# Chat Completions is non-streaming only. /v1/responses waits for the completed
-# result and adapts it to typed Responses SSE for clients such as Codex CLI.
-# Credits come from the platform-native /v1/openapi/key/verify endpoint, outside
-# this app base URL.
+# must grant exactly those two actions with whole_app=false. Chat Completions is
+# non-streaming only. /v1/responses waits for the completed result and adapts it
+# to typed Responses SSE for clients such as Codex CLI. Credits come from the
+# platform-native /v1/openapi/key/verify endpoint, outside this app base URL.
 anygen:
   enabled: false
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
-  models:
-    - "gpt-5.6-luna"
 
-# Stable collision resolution when several backends advertise the same model.
-# Model syncs update only that backend's candidates and never change this order.
-# Native Anthropic requests also skip backends that do not support /v1/messages.
-routing:
-  backend_priority:
-    - "claude"
-    - "codex"
-    - "vertex"
-    - "kimi"
-    - "anygen"
-    - "relay"
+# --- Series defaults -------------------------------------------------------
+# The provider order a model gets when it names none of its own. A model's
+# series comes from its name prefix (claude-*, gpt-*, gemini-*, kimi-*,
+# deepseek-*), so there is nothing to declare per model.
+series:
+  claude: [claude_oauth, vertex, relay]
+  gpt: [codex, anygen]
+  gemini: [anygen]
+  kimi: [kimi]
+  deepseek: [anygen]
 
-# Cost accounting. Every request is priced at write time from a built-in table
-# of published list rates (Anthropic / OpenAI / Moonshot) and shown on the
-# dashboard. Note this is what the tokens *would* cost on the pay-per-token API:
-# Claude Code and Codex subscription traffic is not billed per request.
+# --- Published models ------------------------------------------------------
+# This is the catalogue clients see. Each entry is a name they can ask for and
+# the providers that can answer it, in the order they are tried: the first one
+# that is enabled, configured and not rate-limited serves the request, and the
+# rest are its failover chain. Clients never see provider names — no `-oauth` or
+# `-vertex` suffixes, one name per model regardless of who ends up serving it.
 #
-# This section is optional, and the dashboard writes it for you (Config →
-# Models → click a model's price). Use it to correct a rate that has changed, or
-# to price a model the built-in table has never heard of. Values are USD per 1M
-# tokens; a model with no price anywhere is reported as unknown rather than $0,
-# so write an all-zeros entry to declare one genuinely free.
-# pricing:
-#   models:
-#     - name: "kimi-for-coding"   # subscription seat: no per-token cost
-#       input: 0
-#       output: 0
-#     - name: "my-private-model"
-#       input: 1.5
-#       output: 6.0
-#       cache_read: 0.15
-#       cache_write: 1.875
+# Omit `providers` to inherit the series default above, which is the common case.
+models:
+  - name: "claude-opus-5"
+  - name: "claude-sonnet-4-6"
+  - name: "claude-haiku-4-5"
+    providers:
+      # `{provider: id}` is the one rename left: some upstreams only know a model
+      # by a dated snapshot id. It is a connection detail, invisible to clients.
+      - vertex: "claude-haiku-4-5-20251001"
+      - relay: "claude-haiku-4-5-20251001"
+  - name: "gpt-5.5"
+  - name: "kimi-k3"
+    providers:
+      - kimi: "k3"
+
+# Cost accounting needs no configuration. Every request is priced at write time
+# from a built-in table of published list rates (Anthropic / OpenAI / Moonshot).
+# That figure is what the tokens *would* cost on the pay-per-token API: Claude
+# Code and Codex subscription traffic is not billed per request. A model the
+# table has never heard of is reported as unknown rather than $0.

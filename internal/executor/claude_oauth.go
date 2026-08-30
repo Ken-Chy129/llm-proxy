@@ -48,6 +48,17 @@ func (e *ClaudeOAuthExecutor) SetModels(models []string) {
 	e.modelsMu.Unlock()
 }
 
+// Configured reports whether any account is signed in. Checked on every routing
+// decision rather than once at startup: accounts are added from the dashboard
+// while the proxy runs, and a chain that lists an account-less provider first
+// would otherwise burn a request finding that out.
+func (e *ClaudeOAuthExecutor) Configured() bool {
+	if e.oauth == nil {
+		return false
+	}
+	return len(e.oauth.Store().AllForProvider("claude")) > 0
+}
+
 // maxClaudeReactiveCooldown bounds how long a single upstream 429 sidelines a
 // Claude account. Anthropic's `anthropic-ratelimit-unified-reset` hint on a
 // subscription 429 points to the weekly window boundary even when the cap that

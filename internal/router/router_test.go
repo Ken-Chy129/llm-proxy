@@ -2,12 +2,15 @@ package router
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
@@ -31,17 +34,30 @@ func (s *stubAnthropicExecutor) OpenAnthropicStream(context.Context, []byte, htt
 	return io.NopCloser(strings.NewReader("")), http.StatusOK, nil
 }
 
-// pausedBackends reports the named backends as disabled.
-type pausedBackends map[string]bool
+// unreadyExecutor stands in for a provider that is registered but cannot serve
+// yet — an OAuth backend with no account signed in, or a missing API key.
+type unreadyExecutor struct{ stubAnthropicExecutor }
 
-func (p pausedBackends) IsBackendDisabled(backend string) bool { return p[backend] }
+func (unreadyExecutor) Configured() bool { return false }
 
+// pausedProviders reports the named providers as disabled.
+type pausedProviders map[string]bool
+
+func (p pausedProviders) IsBackendDisabled(provider string) bool { return p[provider] }
+
+// newTestRouter wires three providers and routes two models across them, which
+// is the shape every interesting routing question takes: a model with a chain,
+// and a model with a single provider.
 func newTestRouter(paused ...string) *Router {
 	r := New()
-	r.Register(&stubExecutor{models: []string{"opus", "sonnet"}}, "claude")
-	r.Register(&stubExecutor{models: []string{"gpt-5.5", "gpt-5.4"}}, "codex")
-	r.Register(&stubExecutor{models: []string{"vertex-opus"}}, "vertex")
-	p := pausedBackends{}
+	r.SetProvider("claude_oauth", &stubAnthropicExecutor{})
+	r.SetProvider("relay", &stubAnthropicExecutor{})
+	r.SetProvider("anygen", &stubExecutor{})
+	r.SetRoutes([]Route{
+		{Model: "claude-opus-5", Providers: []string{"claude_oauth", "relay"}},
+		{Model: "gpt-5.4", Providers: []string{"anygen"}},
+	})
+	p := pausedProviders{}
 	for _, b := range paused {
 		p[b] = true
 	}
@@ -49,213 +65,278 @@ func newTestRouter(paused ...string) *Router {
 	return r
 }
 
-// TestUsableModelsExcludesPausedBackends is the regression guard: /v1/models used
-// to advertise a paused backend's models, which Resolve then rejected — clients
-// built pickers out of entries that always failed.
-func TestUsableModelsExcludesPausedBackends(t *testing.T) {
-	r := newTestRouter("vertex", "codex")
-
-	want := []string{"opus", "sonnet"}
-	if got := r.UsableModels(); !reflect.DeepEqual(got, want) {
-		t.Errorf("UsableModels() = %v, want %v", got, want)
+func chainProviders(t *testing.T, exec executor.Executor) []string {
+	t.Helper()
+	c, ok := exec.(*executor.Chain)
+	if !ok {
+		t.Fatalf("Resolve returned %T, want a chain", exec)
 	}
-
-	// Every model UsableModels advertises must actually resolve, and every model
-	// it withholds must not. That is the invariant the bug broke.
-	for _, m := range r.UsableModels() {
-		if _, err := r.Resolve(m); err != nil {
-			t.Errorf("Resolve(%q) = %v, but UsableModels advertised it", m, err)
-		}
-	}
-	for _, m := range []string{"gpt-5.5", "gpt-5.4", "vertex-opus"} {
-		if _, err := r.Resolve(m); err == nil {
-			t.Errorf("Resolve(%q) succeeded, but its backend is paused", m)
-		}
-	}
+	return c.Providers()
 }
 
-// AllModels keeps listing everything: the dashboard draws a paused backend's
-// model chips from the registry and must still see them.
-func TestAllModelsKeepsPausedBackends(t *testing.T) {
-	r := newTestRouter("vertex", "codex")
-	want := []string{"gpt-5.4", "gpt-5.5", "opus", "sonnet", "vertex-opus"}
-	if got := r.AllModels(); !reflect.DeepEqual(got, want) {
-		t.Errorf("AllModels() = %v, want %v", got, want)
-	}
-}
-
-// Every model list must be deterministic and sorted. Map iteration is
-// randomised, so an unsorted list reorders itself between identical calls: that
-// is what made /v1/models churn, and what made the dashboard's model chips
-// visibly shuffle every time the tab regained focus and re-fetched /api/status.
-func TestModelListsAreSortedAndStable(t *testing.T) {
+// The chain is the routing policy: every usable provider, in configured order.
+func TestResolveReturnsTheWholeChainInOrder(t *testing.T) {
 	r := newTestRouter()
-	lists := map[string]func() []string{
-		"UsableModels":            r.UsableModels,
-		"AllModels":               r.AllModels,
-		"ModelsByBackend(claude)": func() []string { return r.ModelsByBackend("claude") },
-		"ModelsByBackend(codex)":  func() []string { return r.ModelsByBackend("codex") },
-	}
-	for name, fn := range lists {
-		first := fn()
-		if len(first) == 0 {
-			t.Fatalf("%s returned nothing; fixture is wrong", name)
-		}
-		// 30 calls is comfortably enough for Go's randomised map iteration to
-		// produce a different order at least once if nothing sorts it.
-		for i := 0; i < 30; i++ {
-			if got := fn(); !reflect.DeepEqual(got, first) {
-				t.Fatalf("%s returned %v then %v — not deterministic", name, first, got)
-			}
-		}
-		if !sortedAscending(first) {
-			t.Errorf("%s = %v, want ascending order", name, first)
-		}
-	}
-}
-
-// A not-found error should point at models that would actually work.
-func TestResolveNotFoundListsOnlyUsableModels(t *testing.T) {
-	r := newTestRouter("codex")
-	_, err := r.Resolve("no-such-model")
-	if err == nil {
-		t.Fatal("expected an error for an unknown model")
-	}
-	if strings.Contains(err.Error(), "gpt-5.5") {
-		t.Errorf("error names a paused backend's model as available: %v", err)
-	}
-	if !strings.Contains(err.Error(), "opus") {
-		t.Errorf("error omits a usable model: %v", err)
-	}
-}
-
-// With no checker wired up nothing is paused, so both lists agree.
-func TestNoCheckerTreatsEverythingAsUsable(t *testing.T) {
-	r := New()
-	r.Register(&stubExecutor{models: []string{"a", "b"}}, "claude")
-	if got, want := r.UsableModels(), r.AllModels(); !reflect.DeepEqual(got, want) {
-		t.Errorf("UsableModels() = %v, AllModels() = %v; want equal when no checker is set", got, want)
-	}
-}
-
-func TestUnregisterBackendRemovesItsModels(t *testing.T) {
-	r := newTestRouter()
-	r.UnregisterBackend("codex")
-	for _, m := range r.AllModels() {
-		if strings.HasPrefix(m, "gpt-") {
-			t.Errorf("AllModels() still contains %q after UnregisterBackend", m)
-		}
-	}
-}
-
-func TestBackendPriorityDoesNotDependOnRegistrationOrder(t *testing.T) {
-	r := New()
-	r.SetBackendPriority([]string{"claude", "anygen", "relay"})
-
-	claude := &stubExecutor{models: []string{"claude-fable-5"}}
-	relay := &stubExecutor{models: []string{"claude-fable-5"}}
-	anygen := &stubExecutor{models: []string{"claude-fable-5"}}
-
-	// This is the production failure sequence: OAuth and relay are installed at
-	// startup, then a later AnyGen model sync registers the same model again.
-	r.Register(claude, "claude")
-	r.Register(relay, "relay")
-	r.Register(anygen, "anygen")
-
-	got, err := r.Resolve("claude-fable-5")
+	exec, err := r.Resolve("claude-opus-5")
 	if err != nil {
 		t.Fatalf("Resolve() error: %v", err)
 	}
-	if got != claude {
-		t.Fatalf("Resolve() = %p, want OAuth executor %p", got, claude)
-	}
-	if backend := r.BackendName("claude-fable-5"); backend != "claude" {
-		t.Fatalf("BackendName() = %q, want claude", backend)
+	want := []string{"claude_oauth", "relay"}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, want) {
+		t.Errorf("chain = %v, want %v", got, want)
 	}
 }
 
-func TestBackendPriorityCanChangeLive(t *testing.T) {
-	r := New()
-	claude := &stubExecutor{models: []string{"shared"}}
-	anygen := &stubExecutor{models: []string{"shared"}}
-	r.Register(claude, "claude")
-	r.Register(anygen, "anygen")
-
-	r.SetBackendPriority([]string{"claude", "anygen"})
-	if got, _ := r.Resolve("shared"); got != claude {
-		t.Fatal("shared model did not initially resolve to claude")
-	}
-
-	r.SetBackendPriority([]string{"anygen", "claude"})
-	if got, _ := r.Resolve("shared"); got != anygen {
-		t.Fatal("shared model did not switch to anygen after priority update")
-	}
-}
-
-func TestResolveSkipsDisabledHigherPriorityBackend(t *testing.T) {
-	r := New()
-	claude := &stubExecutor{models: []string{"shared"}}
-	relay := &stubExecutor{models: []string{"shared"}}
-	r.Register(claude, "claude")
-	r.Register(relay, "relay")
-	r.SetBackendPriority([]string{"claude", "relay"})
-	r.SetChecker(pausedBackends{"claude": true})
-
-	got, err := r.Resolve("shared")
+// A paused provider drops out of the chain rather than failing the model: that
+// is the whole point of having a chain.
+func TestPausedProviderIsSkipped(t *testing.T) {
+	r := newTestRouter("claude_oauth")
+	exec, err := r.Resolve("claude-opus-5")
 	if err != nil {
 		t.Fatalf("Resolve() error: %v", err)
 	}
-	if got != relay {
-		t.Fatalf("Resolve() = %p, want enabled relay %p", got, relay)
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"relay"}) {
+		t.Errorf("chain = %v, want [relay]", got)
 	}
-	if backend := r.BackendName("shared"); backend != "relay" {
-		t.Fatalf("BackendName() = %q, want relay", backend)
-	}
-}
-
-func TestModelsByBackendIncludesCandidatesThatDidNotWin(t *testing.T) {
-	r := New()
-	r.SetBackendPriority([]string{"claude", "anygen", "relay"})
-	r.Register(&stubExecutor{models: []string{"shared"}}, "claude")
-	r.Register(&stubExecutor{models: []string{"shared"}}, "anygen")
-	r.Register(&stubExecutor{models: []string{"shared"}}, "relay")
-
-	for _, backend := range []string{"claude", "anygen", "relay"} {
-		if got := r.ModelsByBackend(backend); !reflect.DeepEqual(got, []string{"shared"}) {
-			t.Errorf("ModelsByBackend(%q) = %v, want [shared]", backend, got)
-		}
+	if got := r.BackendName("claude-opus-5"); got != "relay" {
+		t.Errorf("BackendName() = %q, want relay", got)
 	}
 }
 
-func TestResolveAnthropicSkipsHigherPriorityIncompatibleBackend(t *testing.T) {
-	r := New()
-	anygen := &stubExecutor{models: []string{"shared"}}
-	relay := &stubAnthropicExecutor{stubExecutor{models: []string{"shared"}}}
-	r.Register(anygen, "anygen")
-	r.Register(relay, "relay")
-	r.SetBackendPriority([]string{"anygen", "relay"})
-
-	// Generic chat routing follows the configured order.
-	if got, _ := r.Resolve("shared"); got != anygen {
-		t.Fatal("generic Resolve() did not select higher-priority anygen")
+func TestModelWithEveryProviderPausedFails(t *testing.T) {
+	r := newTestRouter("claude_oauth", "relay")
+	if _, err := r.Resolve("claude-opus-5"); err == nil {
+		t.Fatal("Resolve() succeeded with every provider paused")
 	}
+}
 
-	// Anthropic Messages routing skips AnyGen because it cannot speak that
-	// protocol, then uses the next compatible backend.
-	got, backend, err := r.ResolveAnthropic("shared")
+// Regression guard: /v1/models used to advertise a paused provider's models,
+// which Resolve then rejected — clients built pickers out of entries that
+// always failed.
+func TestUsableModelsExcludesFullyPausedModels(t *testing.T) {
+	r := newTestRouter("anygen")
+	if got := r.UsableModels(); !reflect.DeepEqual(got, []string{"claude-opus-5"}) {
+		t.Errorf("UsableModels() = %v, want [claude-opus-5]", got)
+	}
+	// AllModels still lists it: the dashboard has to show what is configured,
+	// paused or not.
+	if got := r.AllModels(); len(got) != 2 {
+		t.Errorf("AllModels() = %v, want both models", got)
+	}
+}
+
+// A provider that cannot speak the Messages protocol is skipped for /v1/messages
+// but still serves the model on the OpenAI-shaped endpoints.
+func TestResolveAnthropicSkipsIncompatibleProviders(t *testing.T) {
+	r := New()
+	r.SetProvider("anygen", &stubExecutor{})
+	r.SetProvider("relay", &stubAnthropicExecutor{})
+	r.SetRoutes([]Route{{Model: "claude-opus-5", Providers: []string{"anygen", "relay"}}})
+
+	_, serving, err := r.ResolveAnthropic("claude-opus-5")
 	if err != nil {
 		t.Fatalf("ResolveAnthropic() error: %v", err)
 	}
-	if got != relay || backend != "relay" {
-		t.Fatalf("ResolveAnthropic() = (%T, %q), want relay", got, backend)
+	if serving != "relay" {
+		t.Errorf("serving = %q, want relay", serving)
 	}
 }
 
-func sortedAscending(s []string) bool {
-	for i := 1; i < len(s); i++ {
-		if s[i-1] > s[i] {
-			return false
+func TestResolveAnthropicReportsUnsupportedModel(t *testing.T) {
+	r := New()
+	r.SetProvider("anygen", &stubExecutor{})
+	r.SetRoutes([]Route{{Model: "gpt-5.4", Providers: []string{"anygen"}}})
+
+	if _, _, err := r.ResolveAnthropic("gpt-5.4"); !errors.Is(err, ErrAnthropicUnsupported) {
+		t.Fatalf("error = %v, want ErrAnthropicUnsupported", err)
+	}
+}
+
+func TestUnknownModelIsNotFound(t *testing.T) {
+	r := newTestRouter()
+	if _, err := r.Resolve("mystery"); err == nil {
+		t.Fatal("Resolve() succeeded for an unrouted model")
+	}
+}
+
+// An unregistered provider (no credentials, disabled in config) is invisible to
+// routing, exactly like a paused one.
+func TestUnregisteredProviderIsSkipped(t *testing.T) {
+	r := newTestRouter()
+	r.SetProvider("claude_oauth", nil)
+	exec, err := r.Resolve("claude-opus-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"relay"}) {
+		t.Errorf("chain = %v, want [relay]", got)
+	}
+}
+
+// Credentials arrive while the proxy runs (an account is added from the
+// dashboard, a key is set), so readiness is asked per request rather than at
+// registration. A provider that cannot serve yet is skipped instead of being
+// handed a request that is certain to fail.
+func TestUnreadyProviderIsSkipped(t *testing.T) {
+	r := newTestRouter()
+	r.SetProvider("claude_oauth", &unreadyExecutor{})
+	exec, err := r.Resolve("claude-opus-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"relay"}) {
+		t.Errorf("chain = %v, want [relay]", got)
+	}
+	// The dashboard reads the same decision, so an unready provider must not be
+	// reported as the one serving the model.
+	if got := r.BackendName("claude-opus-5"); got != "relay" {
+		t.Errorf("BackendName() = %q, want relay", got)
+	}
+}
+
+func TestModelWithOnlyUnreadyProvidersFails(t *testing.T) {
+	r := New()
+	r.SetProvider("claude_oauth", &unreadyExecutor{})
+	r.SetRoutes([]Route{{Model: "claude-opus-5", Providers: []string{"claude_oauth"}}})
+	_, err := r.Resolve("claude-opus-5")
+	if err == nil {
+		t.Fatal("Resolve() succeeded with no ready provider")
+	}
+	if !strings.Contains(err.Error(), "configured") {
+		t.Errorf("error = %q, want it to say no provider is configured", err)
+	}
+	if got := r.UsableModels(); len(got) != 0 {
+		t.Errorf("UsableModels() = %v, want none advertised", got)
+	}
+}
+
+// A pin must mean the same thing as serving. Pinning to a provider that cannot
+// take the request would resolve straight back to the chain, so the dashboard
+// would show a pin that nothing honours.
+func TestPinRejectsProviderThatCannotServe(t *testing.T) {
+	r := newTestRouter("relay")
+	if err := r.Pin("claude-opus-5", "relay", time.Minute); err == nil {
+		t.Fatal("Pin() accepted a paused provider")
+	}
+
+	r = newTestRouter()
+	r.SetProvider("relay", &unreadyExecutor{})
+	if err := r.Pin("claude-opus-5", "relay", time.Minute); err == nil {
+		t.Fatal("Pin() accepted a provider with no credentials")
+	}
+	if _, _, pinned := r.PinnedProvider("claude-opus-5"); pinned {
+		t.Error("a rejected pin was still recorded")
+	}
+}
+
+// A pin taken while a provider was healthy must stop being reported once that
+// provider is paused: requests fall through to the chain at that point, and the
+// dashboard's "serving" column has to agree with them.
+func TestBackendNameIgnoresAPinThatCannotServe(t *testing.T) {
+	r := newTestRouter()
+	if err := r.Pin("claude-opus-5", "relay", time.Minute); err != nil {
+		t.Fatalf("Pin() error: %v", err)
+	}
+	if got := r.BackendName("claude-opus-5"); got != "relay" {
+		t.Fatalf("BackendName() = %q, want the pinned relay", got)
+	}
+
+	r.SetChecker(pausedProviders{"relay": true})
+	if got := r.BackendName("claude-opus-5"); got != "claude_oauth" {
+		t.Errorf("BackendName() = %q, want the chain head once the pinned provider is paused", got)
+	}
+}
+
+func TestPinForcesOneProvider(t *testing.T) {
+	r := newTestRouter()
+	if err := r.Pin("claude-opus-5", "relay", time.Minute); err != nil {
+		t.Fatalf("Pin() error: %v", err)
+	}
+	exec, err := r.Resolve("claude-opus-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"relay"}) {
+		t.Errorf("pinned chain = %v, want [relay]", got)
+	}
+}
+
+func TestExpiredPinFallsBackToTheChain(t *testing.T) {
+	r := newTestRouter()
+	if err := r.Pin("claude-opus-5", "relay", time.Nanosecond); err != nil {
+		t.Fatalf("Pin() error: %v", err)
+	}
+	time.Sleep(time.Millisecond)
+	exec, err := r.Resolve("claude-opus-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"claude_oauth", "relay"}) {
+		t.Errorf("chain after expiry = %v, want the configured order", got)
+	}
+}
+
+// A pin is an experiment, not a kill switch: if the pinned provider goes away,
+// the model keeps serving from its chain instead of going dark.
+func TestPinOnPausedProviderFallsBackToTheChain(t *testing.T) {
+	r := newTestRouter()
+	if err := r.Pin("claude-opus-5", "relay", time.Minute); err != nil {
+		t.Fatalf("Pin() error: %v", err)
+	}
+	r.SetChecker(pausedProviders{"relay": true})
+
+	exec, err := r.Resolve("claude-opus-5")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"claude_oauth"}) {
+		t.Errorf("chain = %v, want [claude_oauth]", got)
+	}
+}
+
+func TestPinRejectsAProviderOutsideTheChain(t *testing.T) {
+	r := newTestRouter()
+	if err := r.Pin("claude-opus-5", "anygen", time.Minute); err == nil {
+		t.Fatal("Pin() accepted a provider that does not serve the model")
+	}
+}
+
+// The @provider suffix sends one request to a named provider without touching
+// configuration.
+func TestModelAtProviderSelectsOneProvider(t *testing.T) {
+	r := newTestRouter()
+	exec, err := r.Resolve("claude-opus-5@relay")
+	if err != nil {
+		t.Fatalf("Resolve() error: %v", err)
+	}
+	if got := chainProviders(t, exec); !reflect.DeepEqual(got, []string{"relay"}) {
+		t.Errorf("chain = %v, want [relay]", got)
+	}
+}
+
+func TestModelAtUnknownProviderFails(t *testing.T) {
+	r := newTestRouter()
+	if _, err := r.Resolve("claude-opus-5@vertex"); err == nil {
+		t.Fatal("Resolve() accepted a provider outside the model's chain")
+	}
+}
+
+func TestSplitModelProvider(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"claude-opus-5":       {"claude-opus-5", ""},
+		"claude-opus-5@relay": {"claude-opus-5", "relay"},
+		"@relay":              {"@relay", ""}, // no model name: not a provider suffix
+	} {
+		model, provider := SplitModelProvider(in)
+		if model != want[0] || provider != want[1] {
+			t.Errorf("SplitModelProvider(%q) = (%q, %q), want %v", in, model, provider, want)
 		}
 	}
-	return true
+}
+
+func TestModelsByBackendListsPausedModelsToo(t *testing.T) {
+	r := newTestRouter("relay")
+	if got := r.ModelsByBackend("relay"); !reflect.DeepEqual(got, []string{"claude-opus-5"}) {
+		t.Errorf("ModelsByBackend() = %v, want [claude-opus-5]", got)
+	}
 }

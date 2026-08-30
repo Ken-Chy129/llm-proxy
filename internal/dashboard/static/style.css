@@ -368,64 +368,92 @@ rect.cal-future{fill:transparent;}
 .cfg-live{color:var(--accent);background:var(--accent-soft);}
 .cfg-restart{color:var(--text-2);background:var(--bg-3);}
 
-/* ---------- Backend routing priority ---------- */
-.route-priority{display:flex;flex-direction:column;border:1px solid var(--border);background:var(--bg-0);}
-.route-priority-row{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;min-height:48px;padding:7px 10px;border-bottom:1px solid var(--border);}
-.route-priority-row:last-child{border-bottom:0;}
-.route-rank{font-family:var(--mono);font-size:11px;color:var(--accent-dim);letter-spacing:1px;}
-.route-identity{display:flex;align-items:baseline;gap:9px;min-width:0;}
-.route-name{font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-0);}
-.route-id{font-family:var(--mono);font-size:10px;color:var(--text-2);background:none;}
-.route-controls{display:flex;gap:5px;}
-.route-move{width:30px;height:28px;border:1px solid var(--border-hover);border-radius:2px;background:transparent;color:var(--text-1);font-family:var(--mono);cursor:pointer;transition:all .14s;}
-.route-move:hover:not(:disabled),.route-move:focus-visible{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none;}
-.route-move:disabled{opacity:.25;cursor:default;}
-
-/* ---------- Models editor ----------
-   One grid per row across all four backends, so the whole served surface reads
-   as a single list instead of four differently-shaped widgets. The price column
-   is fixed-width: it is the only column you scan vertically. */
+/* ---------- Routing editor ----------
+   The page is a list of published models, each holding an ordered list of
+   providers. Collapsed, a model is one line: name, chain, who is serving, price.
+   Expanded, the chain becomes editable rows. Nesting is shown with a rail rather
+   than indentation alone, so the chain reads as belonging to the model above it
+   even when several cards are open at once. */
 .mdl-legend{font-family:var(--mono)!important;font-size:10px!important;letter-spacing:0!important;text-transform:none!important;color:var(--text-2)!important;font-weight:400!important;}
 .mdl-legend::before{content:''!important;}
-.mdl-groups{display:flex;flex-direction:column;gap:20px;}
-.mdl-group-head{display:flex;align-items:center;gap:9px;margin-bottom:8px;}
-.mdl-group-name{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-1);}
-/* Pushes the add button to the right edge and lets the hint truncate first. */
-.mdl-group-hint{flex:1;min-width:0;font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.mdl-series{display:flex;flex-direction:column;gap:20px;}
+.mdl-series-group{display:flex;flex-direction:column;gap:2px;}
+.mdl-series-head{display:flex;align-items:center;gap:8px;margin-bottom:6px;}
+.mdl-series-name{font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-1);}
+.mdl-series-count{font-family:var(--mono);font-size:10px;color:var(--text-2);background:var(--bg-3);border-radius:2px;padding:1px 6px;}
+.mdl-empty{font-size:11px;color:var(--text-2);font-style:italic;padding:6px 2px;}
 .mdl-add{flex:0 0 auto;font-family:var(--display);font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--accent);background:none;border:1px solid var(--border-hover);border-radius:2px;padding:4px 10px;cursor:pointer;transition:all .14s;}
 .mdl-add:hover{border-color:var(--accent);background:var(--accent-soft);}
-.mdl-empty{font-size:11px;color:var(--text-2);font-style:italic;padding:6px 2px;}
-.mdl-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,240px) 128px 24px;align-items:center;gap:8px;padding:3px 0;}
-.mdl-row input{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:6px 10px;font-size:12.5px;font-family:var(--mono);}
-.mdl-row input:focus{outline:none;border-color:var(--accent);}
-.mdl-row input::placeholder{color:var(--text-2);}
-.mdl-row-plain .mdl-name{grid-column:1/span 2;}
-/* The rename slot is a ghost until it holds something or you reach for it: on a
-   normal row there is nothing to rename, and an always-lit empty field reads as
-   a required one. Reserving its width regardless keeps the price column aligned
-   down the whole panel. */
-.mdl-map{display:flex;align-items:center;gap:6px;min-width:0;opacity:.22;transition:opacity .14s;}
-.mdl-row:hover .mdl-map,.mdl-map:focus-within,.mdl-map.has-map{opacity:1;}
-.mdl-map-mark{flex:0 0 auto;color:var(--accent-dim);font-family:var(--mono);font-size:12px;cursor:help;}
-.mdl-map:not(.has-map) .mdl-upstream{border-color:transparent;background:transparent;}
-.mdl-map:not(.has-map):focus-within .mdl-upstream{border-color:var(--accent);background:var(--bg-0);}
-/* Right-aligned + tabular so the dollar figures line up down the column. */
-.mdl-price{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:12px;text-align:right;color:var(--text-1);background:none;border:1px solid transparent;border-radius:2px;padding:5px 8px;cursor:pointer;transition:all .14s;}
-.mdl-price:hover{border-color:var(--border-hover);color:var(--text-0);}
-.mdl-price.is-custom{color:var(--accent);}
-.mdl-price.is-custom::after{content:' •';}
-.mdl-price.is-none{color:var(--yellow);background:var(--yellow-bg);}
+
+.mdl-model{border:1px solid var(--border);background:var(--bg-0);border-radius:2px;}
+.mdl-model + .mdl-model{margin-top:4px;}
+/* Name gets the flexible column; everything right of it is a fixed readout, so
+   the serving badge and price stay in the same place down the whole list. */
+.mdl-model-head{display:grid;grid-template-columns:22px minmax(120px,1.1fr) minmax(0,1.6fr) auto auto 24px;align-items:center;gap:8px;padding:5px 8px;}
+.mdl-toggle{background:none;border:none;color:var(--text-2);font-size:11px;cursor:pointer;padding:2px 4px;line-height:1;transition:color .12s;}
+.mdl-toggle:hover{color:var(--accent);}
+.mdl-name{width:100%;background:transparent;border:1px solid transparent;color:var(--text-0);border-radius:2px;padding:5px 8px;font-size:12.5px;font-family:var(--mono);}
+.mdl-name:hover{border-color:var(--border);}
+.mdl-name:focus{outline:none;border-color:var(--accent);background:var(--bg-1);}
+/* The collapsed chain preview. Hidden rather than removed when the card opens:
+   the same information is right below it in editable form. */
+.mdl-summary{display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;font-family:var(--mono);font-size:11px;}
+.mdl-summary.is-hidden{visibility:hidden;}
+.mdl-summary-p{color:var(--text-2);white-space:nowrap;}
+.mdl-summary-p.is-serving{color:var(--text-0);}
+.mdl-summary-p.is-down{text-decoration:line-through;opacity:.55;}
+.mdl-summary-sep{color:var(--text-2);opacity:.5;}
+.mdl-serving{font-family:var(--mono);font-size:10.5px;color:var(--accent);background:var(--accent-soft);border-radius:2px;padding:2px 7px;white-space:nowrap;}
+.mdl-serving.is-down{color:var(--yellow);background:var(--yellow-bg);}
+/* Read-only: list prices are a published property of the model, not a setting. */
+.mdl-price{font-family:var(--mono);font-variant-numeric:tabular-nums;font-size:11px;text-align:right;color:var(--text-2);white-space:nowrap;min-width:74px;}
+.mdl-price.is-none{color:var(--yellow);}
 .mdl-del{background:none;border:none;color:var(--text-2);font-size:11px;cursor:pointer;padding:4px;line-height:1;transition:color .12s;}
 .mdl-del:hover{color:var(--red);}
-.mdl-edit{background:var(--bg-0);border:1px solid var(--border-hover);border-radius:2px;padding:11px 12px;margin:2px 0 6px;display:flex;flex-direction:column;gap:10px;}
-.mdl-edit-fields{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
-.mdl-edit-field{display:flex;flex-direction:column;gap:4px;}
-.mdl-edit-field span{font-family:var(--display);font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-2);}
-.mdl-edit-field input{width:100%;background:var(--bg-1);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:6px 9px;font-size:12.5px;font-family:var(--mono);}
-.mdl-edit-field input:focus{outline:none;border-color:var(--accent);}
-.mdl-edit-actions{display:flex;align-items:center;gap:10px;}
-.mdl-edit-hint{flex:1;font-size:10.5px;color:var(--text-2);}
-.mdl-edit-apply{border-color:var(--accent-dim)!important;color:var(--accent)!important;}
+
+/* A pin is temporary state, so it is loud (accent border) and carries its own
+   countdown and release control — a forgotten override is the failure mode. */
+.mdl-pin{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);font-size:10.5px;color:var(--accent);border:1px solid var(--accent-dim);background:var(--accent-soft);border-radius:2px;padding:1px 4px 1px 6px;white-space:nowrap;}
+.mdl-pin-mark{font-size:9px;}
+.mdl-pin-left{color:var(--text-1);}
+.mdl-pin-clear{background:none;border:none;color:var(--text-2);font-size:10px;cursor:pointer;padding:0 2px;line-height:1;}
+.mdl-pin-clear:hover{color:var(--red);}
+
+.mdl-chain{display:flex;flex-direction:column;border-top:1px solid var(--border);background:var(--bg-1);padding:6px 8px 8px 26px;position:relative;}
+/* The rail is what ties the chain to its model when several cards are open. */
+.mdl-chain::before{content:'';position:absolute;left:14px;top:8px;bottom:10px;width:1px;background:var(--border-hover);}
+.mdl-link{display:grid;grid-template-columns:16px 10px minmax(90px,auto) minmax(0,1fr) auto;align-items:center;gap:8px;padding:3px 0;}
+.mdl-rank{font-family:var(--mono);font-size:10px;color:var(--text-2);}
+.mdl-link-name{font-family:var(--mono);font-size:12px;color:var(--text-1);}
+.mdl-link-name.is-serving{color:var(--text-0);}
+.mdl-link-name.is-pinned{color:var(--accent);}
+.mdl-link-controls{display:flex;align-items:center;gap:4px;}
+.mdl-use{font-family:var(--display);font-size:9px;font-weight:600;letter-spacing:.8px;text-transform:uppercase;color:var(--text-2);background:none;border:1px solid var(--border);border-radius:2px;padding:3px 7px;cursor:pointer;transition:all .14s;}
+.mdl-use:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);}
+.mdl-use.is-pinned{color:var(--accent);border-color:var(--accent-dim);}
+.mdl-link-add{display:flex;align-items:center;gap:6px;padding:5px 0 0;}
+.mdl-provider-select{background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);border-radius:2px;padding:4px 8px;font-size:11.5px;font-family:var(--mono);}
+.mdl-provider-select:focus{outline:none;border-color:var(--accent);}
+.mdl-newbar{display:flex;align-items:center;gap:8px;}
+.mdl-newinput{flex:1;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:7px 10px;font-size:12.5px;font-family:var(--mono);}
+.mdl-newinput:focus{outline:none;border-color:var(--accent);}
+.mdl-newinput::placeholder{color:var(--text-2);}
+
+/* The rename slot is a ghost until it holds something or you reach for it: it
+   is a quirk of one upstream, not a property of the model, and an always-lit
+   empty field reads as a required one. */
+.mdl-map{display:flex;align-items:center;gap:6px;min-width:0;opacity:.22;transition:opacity .14s;}
+.mdl-link:hover .mdl-map,.mdl-map:focus-within,.mdl-map.has-map{opacity:1;}
+.mdl-map-mark{flex:0 0 auto;color:var(--accent-dim);font-family:var(--mono);font-size:12px;cursor:help;}
+.mdl-upstream{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:4px 8px;font-size:11.5px;font-family:var(--mono);}
+.mdl-upstream:focus{outline:none;border-color:var(--accent);}
+.mdl-upstream::placeholder{color:var(--text-2);}
+.mdl-map:not(.has-map) .mdl-upstream{border-color:transparent;background:transparent;}
+.mdl-map:not(.has-map):focus-within .mdl-upstream{border-color:var(--accent);background:var(--bg-0);}
+
+.route-move{width:26px;height:24px;border:1px solid var(--border);border-radius:2px;background:transparent;color:var(--text-1);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .14s;}
+.route-move:hover:not(:disabled),.route-move:focus-visible{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none;}
+.route-move:disabled{opacity:.25;cursor:default;}
 
 /* Save lives in each panel's header, next to what it saves. One page-level
    button could not say which half of the page it was about to write. */

@@ -95,9 +95,14 @@ kimi:
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "openai"
-  models:
-    - name: "kimi-k3"
-      model: "kimi-k3"
+```
+
+Then publish the model against it:
+
+```yaml
+models:
+  - name: "kimi-k3"
+    providers: [kimi]
 ```
 
 Keys created in the **Kimi Code console** are separate from API Platform keys. Use the Kimi Code Anthropic-compatible endpoint instead:
@@ -108,13 +113,15 @@ kimi:
   base_url: "https://api.kimi.com/coding"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "anthropic"
-  models:
-    - name: "kimi-k3"
-      model: "k3"
-    - name: "kimi-for-coding"
-      model: "kimi-for-coding"
-    - name: "kimi-for-coding-highspeed"
-      model: "kimi-for-coding-highspeed"
+
+models:
+  - name: "kimi-k3"
+    providers:
+      - kimi: "k3"                 # upstream only knows this id
+  - name: "kimi-for-coding"
+    providers: [kimi]
+  - name: "kimi-for-coding-highspeed"
+    providers: [kimi]
 ```
 
 Kimi Coding may accept an unknown model string without rejecting the request, so the upstream IDs must exactly match `/v1/models`. K3's upstream ID is `k3`, not `kimi-k3`.
@@ -132,12 +139,12 @@ relay:
   enabled: true
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
-  models:
-    - name: "claude-opus-5"
-    - name: "claude-fable-5"
-    - name: "claude-sonnet-4-5-20250929"
-    - name: "claude-opus-4-5-20251101"
-    - name: "claude-haiku-4-5-20251001"
+
+models:
+  - name: "claude-opus-5"
+    providers: [claude_oauth, relay]   # overflow to the relay when the subscription is out
+  - name: "claude-fable-5"
+    providers: [relay]
 ```
 
 Claude Code `/v1/messages` traffic is passed through natively; OpenAI Chat Completions and Responses traffic is translated by the proxy. All five models above were verified end-to-end. This relay's `/v1/models` response is incomplete: `claude-opus-5` and `claude-fable-5` work when called directly even though they are not advertised.
@@ -157,8 +164,10 @@ anygen:
   enabled: true
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
-  models:                         # used only when startup sync fails
-    - "gpt-5.6-luna"
+
+models:
+  - name: "gpt-5.6-luna"
+    providers: [anygen]
 ```
 
 At startup the proxy calls upstream `GET /models` and registers the visible models dynamically. The model-list request invokes no model and consumes no credits. AnyGen Chat Completions is non-streaming only; `stream:true` is rejected explicitly. Credits are fetched from the platform-native `GET https://www.anygen.io/v1/openapi/key/verify` endpoint, outside the app's `/api/v1` base URL, and shown on the AnyGen Backend card.
@@ -222,15 +231,18 @@ curl https://your-domain/v1/images/generations \
 
 ## Supported Models
 
-| Backend | Models | Auth |
-|---------|--------|------|
-| Vertex AI | claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5 | GCP credentials (ADC / dashboard upload) |
-| Claude OAuth | claude-sonnet-4-6-oauth, claude-opus-4-6-oauth, claude-opus-4-8-oauth | Browser OAuth |
-| Codex OAuth | gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-image-2 | Browser OAuth |
-| Kimi Code | kimi-k3 (upstream `k3`), kimi-for-coding, kimi-for-coding-highspeed | `MOONSHOT_API_KEY` environment variable |
-| AnyGen | Synced dynamically from `/models` at startup (for example GPT, Gemini, Claude, and DeepSeek models) | `ANYGEN_LLM_KEY` environment variable |
+There is one published catalogue, defined by the `models` section of `config.yaml`. A model can name several providers, and the proxy decides which one answers — callers always see `claude-opus-5` and never need to know whether the subscription, Vertex, or a relay served it.
 
-> Model lists are editable from the dashboard's **Config** tab; Codex and AnyGen sync available models from upstream. The configured AnyGen list is only a fallback for failed startup sync.
+| Provider | Serves | Auth |
+|---------|--------|------|
+| Claude OAuth | Claude models | Browser OAuth |
+| Codex OAuth | GPT models, gpt-image-2 | Browser OAuth |
+| Vertex AI | Claude models | GCP credentials (ADC / dashboard upload) |
+| Kimi Code | Kimi models | `MOONSHOT_API_KEY` environment variable |
+| Relay | Claude models via an Anthropic-compatible upstream | `ANTHROPIC_AUTH_TOKEN` environment variable |
+| AnyGen | Whatever its `/models` endpoint advertises (GPT, Gemini, Claude, DeepSeek, …) | `ANYGEN_LLM_KEY` environment variable |
+
+> Models and their provider order are editable from the dashboard's **Config** tab and take effect on save.
 
 ## Auth & API Keys
 
@@ -251,43 +263,60 @@ server:
   cert_file: "/path/to/cert.pem"       # Optional: enable HTTPS
   key_file: "/path/to/key.pem"
 
-vertex:
-  project_id: "your-gcp-project-id"
-  region: "us-east5"
-  models:
-    - name: "claude-sonnet-4-6"       # Name exposed to clients
-      model: "claude-sonnet-4-6"      # Actual Vertex AI model ID
-
+# A provider section is connection detail only — it no longer decides what it serves
 claude_oauth:
   enabled: true
   token_dir: "/data"                   # Token & DB storage (defaults to ~/.llm-proxy; use /data for Docker)
-  models:
-    - "claude-sonnet-4-6-oauth"
-    - "claude-opus-4-6-oauth"
-    - "claude-opus-4-8-oauth"
 
 codex:
   enabled: true
-  models:                              # Fallback list; auto-fetched after login
-    - "gpt-5.5"
-    - "gpt-5.4"
+
+vertex:
+  enabled: true
+  project_id: "your-gcp-project-id"
+  region: "us-east5"
 
 kimi:
   enabled: true
   base_url: "https://api.moonshot.cn/v1"
   api_key_env: "MOONSHOT_API_KEY"
   api_format: "openai"
-  models:
-    - name: "kimi-k3"
-      model: "kimi-k3"
+
+relay:
+  enabled: true
+  base_url: "http://34.80.212.77/api"
+  auth_token_env: "ANTHROPIC_AUTH_TOKEN"
 
 anygen:
   enabled: true
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
-  models:                              # Fallback list; synced for free at startup
-    - "gpt-5.6-luna"
+
+# Default order per series. A model's series comes from its name prefix.
+series:
+  claude: [claude_oauth, vertex, relay]
+  gpt: [codex, anygen]
+  gemini: [anygen]
+  kimi: [kimi]
+
+# The published catalogue. `providers` is the failover chain, tried top to bottom.
+models:
+  - name: "claude-opus-5"              # No providers → inherits series.claude
+  - name: "claude-haiku-4-5"
+    providers:
+      - vertex: "claude-haiku-4-5-20251001"   # Some upstreams only know dated ids
+      - relay: "claude-haiku-4-5-20251001"
+  - name: "gpt-5.5"
+  - name: "kimi-k3"
+    providers:
+      - kimi: "k3"
 ```
+
+### How routing is decided
+
+A model's `providers` list is both its priority order and its failover chain: the first provider that is **enabled, credentialed, and not rate-limited** serves the request, and the next one takes over when it can't. So `claude-opus-5: [claude_oauth, relay]` means "use the subscription, and when it runs out, pay the relay" — worth deciding deliberately, because the spend is automatic.
+
+The `{vertex: claude-haiku-4-5-20251001}` form is the one rename that remains, and it is purely a connection detail: clients, pricing, and stats all see `claude-haiku-4-5`.
 
 ## Dashboard
 
@@ -299,32 +328,13 @@ Visit `http://your-domain:9090/` and login with admin credentials.
 
 **Stats** — Time-series trend (toggle requests / tokens / cost / errors, timezone-aware), with a breakdown by model / key / backend / account below.
 
-**Config → Models** — one row per model, the same shape for every backend. The name is both what clients call and what gets sent upstream (the executors pass it through unchanged), so `model:` is only needed to *rename* one — the inline `↦` slot stays ghosted until you hover it or it holds a value. Vertex, Kimi, and Relay resolve names; Claude OAuth, Codex, and AnyGen do not. Models and Admin save independently, and an unsaved edit lights its panel's Save button.
+**Config → Models** — the published model is the subject, grouped by series. Collapsed, a model is one line: name, provider chain, who is serving it, and its rate. Expanded, you can reorder the chain, append a fallback, and set an upstream rename (the `↦` slot stays ghosted until you hover it or it holds a value). The **use** button on a provider row is a *temporary* switch: it pins the model to that provider for 30 minutes at runtime only, never touching `config.yaml`, and expires back to the configured order — trying a provider out should not leave a permanent trace. **Series Defaults** below is the starting chain for newly added models; editing it does not rewrite models that already have one. Models, Series and Admin save independently, and an unsaved edit lights its panel's Save button.
 
 **Cost accounting** — every request is priced as it is recorded, from a built-in table of published list rates (Anthropic / OpenAI / Moonshot), with input, cache read, cache write and output billed separately. The figure is *list API price*: Claude Code and Codex subscription traffic is not billed per request, so it answers "what would these tokens have cost on the pay-per-token API".
 
-**Editing prices** — the dashboard's **Config → Models** page shows each model's rate (input / output per 1M tokens) beside it; click the figure to expand the four buckets (input / output / cache read / cache write). Saving writes `pricing.models` to `config.yaml` and takes effect immediately — and the moment a price appears, that model's accumulated history is priced too. An amber `set price` means the model has no rate, so its tokens are missing from every cost total.
+Rates are a published property of each model rather than a deployment setting, so there is nothing to configure and nothing to edit on the dashboard: one model, one rate, regardless of which provider served it. A model with no price anywhere is reported as *unknown* rather than $0 — otherwise it would look free — and shows an amber `unpriced` on its row. The startup log and `GET /api/pricing` list them. Existing history is priced once, on the first start after upgrading.
 
-You can also edit the file directly (USD per 1M tokens):
-
-```yaml
-pricing:
-  models:
-    - name: "kimi-for-coding"   # subscription seat: no per-token cost
-      input: 0
-      output: 0
-    - name: "my-private-model"
-      input: 1.5
-      output: 6.0
-      cache_read: 0.15
-      cache_write: 1.875
-```
-
-A model with no price anywhere is reported as *unknown* rather than $0 — otherwise an unpriced backend looks free. The startup log and `GET /api/pricing` list them. Existing history is priced once, on the first start after upgrading.
-
-Aliases (the Vertex / Kimi `name → model` pairs) fall back to their upstream model's price, so an alias called `sonnet` still bills at `claude-sonnet-4-6` rates — the alias is what gets recorded on the request, so without the fallback its cost would vanish from the totals.
-
-Other tabs: **Chat** (streaming test chat), **Image** (image generation), **Logs** (paginated request logs), **Keys** (API keys & daily limits), **Config** (edit model lists and admin credentials live).
+Other tabs: **Chat** (streaming test chat), **Image** (image generation), **Logs** (paginated request logs), **Keys** (API keys & daily limits), **Config** (edit model routing and admin credentials live).
 
 ### Account Management
 

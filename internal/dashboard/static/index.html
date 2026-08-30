@@ -252,25 +252,31 @@
   <div id="tab-config" class="hidden">
     <div class="panel">
       <div class="panel-header">
-        <span>Routing Priority</span>
-        <span class="mdl-legend">first compatible backend wins</span>
-        <button class="cfg-save" id="save-routing" onclick="saveRouting(this)">Save</button>
+        <span>Models</span>
+        <!-- What a row means, stated once: the list under a model is its failover
+             order, and clients never see any of those provider names. -->
+        <span class="mdl-legend">published name · providers tried in order</span>
+        <button class="cfg-save" id="save-models" onclick="saveModels(this)">Save</button>
       </div>
       <div class="cfg-body">
-        <p class="cfg-hint">Used when multiple backends advertise the same model. Disabled or protocol-incompatible backends are skipped automatically; model syncs never reorder this list.</p>
-        <div id="cfg-routing-priority" class="route-priority" role="list" aria-label="Backend routing priority"></div>
+        <p class="cfg-hint">Each model is published under the name on the left. The providers below it are tried top to bottom — one that is disabled, unconfigured or out of quota hands the request to the next. Callers only ever see the model name.</p>
+        <div id="cfg-models" class="mdl-series"></div>
+        <div class="mdl-newbar">
+          <input id="cfg-new-model" class="mdl-newinput" placeholder="add a model, e.g. claude-opus-5" spellcheck="false" autocomplete="off">
+          <button type="button" class="mdl-add" onclick="addModelFromInput()">+ add</button>
+        </div>
       </div>
     </div>
 
     <div class="panel" style="margin-top:18px">
       <div class="panel-header">
-        <span>Models</span>
-        <!-- The price column's unit belongs in the header, not repeated on 20 rows -->
-        <span class="mdl-legend">price · USD per 1M tokens · in / out</span>
-        <button class="cfg-save" id="save-models" onclick="saveModels(this)">Save</button>
+        <span>Series Defaults</span>
+        <span class="mdl-legend">applied to newly added models</span>
+        <button class="cfg-save" id="save-series" onclick="saveSeries(this)">Save</button>
       </div>
       <div class="cfg-body">
-        <div id="cfg-models" class="mdl-groups"></div>
+        <p class="cfg-hint">A new model with no providers of its own starts from the chain of its series, which is derived from the model name. Editing a default here does not rewrite models that already have a chain.</p>
+        <div id="cfg-series" class="mdl-series"></div>
       </div>
     </div>
 

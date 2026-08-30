@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
@@ -49,10 +48,11 @@ func TestAnthropicLogsRelayWhenOAuthOverflows(t *testing.T) {
 
 	oauth := &fakeBackend{status: http.StatusTooManyRequests, body: "{}"}
 	relay := &fakeBackend{status: http.StatusOK, body: "{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}"}
-	chain := executor.NewFallbackExecutor(oauth, relay, []string{"claude-opus-5"})
 
 	r := router.New()
-	r.RegisterModel("claude-opus-5", chain, "claude")
+	r.SetProvider("claude_oauth", oauth)
+	r.SetProvider("relay", relay)
+	r.SetRoutes([]router.Route{{Model: "claude-opus-5", Providers: []string{"claude_oauth", "relay"}}})
 	h := NewAnthropicHandler(r, db)
 
 	gin.SetMode(gin.TestMode)

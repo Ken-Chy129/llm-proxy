@@ -29,6 +29,15 @@ func NewResponsesHandler(r *router.Router, db *stats.DB) *ResponsesHandler {
 	return &ResponsesHandler{router: r, statsDB: db}
 }
 
+// servingBackend reports which provider handled the request: the one the chain
+// recorded, falling back to the head of the model's chain when nothing ran.
+func (h *ResponsesHandler) servingBackend(c *gin.Context, model string) string {
+	if served := executor.ServingBackend(c.Request.Context()); served != "" {
+		return served
+	}
+	return h.router.BackendName(model)
+}
+
 type responsesRequest struct {
 	Model        string            `json:"model"`
 	Instructions string            `json:"instructions,omitempty"`
@@ -90,8 +99,13 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	}
 
 	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx, _ = executor.WithBackendRecorder(ctx)
+	// Put the derived context back on the request so recordLog, which is called
+	// from a dozen places with only the gin context, can read which provider
+	// ended up serving.
+	c.Request = c.Request.WithContext(ctx)
 
-	if re, ok := exec.(executor.ResponsesExecutor); ok {
+	if re, ok := executor.AsResponsesExecutor(exec); ok {
 		stream, openErr := re.OpenResponsesStream(ctx, body)
 		if openErr != nil {
 			log.Printf("responses open error: %v", openErr)
@@ -910,13 +924,13 @@ func (h *ResponsesHandler) recordLog(c *gin.Context, model string, start time.Ti
 	entry := &stats.RequestLog{
 		Time:            time.Now(),
 		Model:           model,
-		Backend:         h.router.BackendName(model),
+		Backend:         h.servingBackend(c, model),
 		LatencyMs:       time.Since(start).Milliseconds(),
 		Stream:          true,
 		Status:          http.StatusOK,
 		APIKeyName:      apiKeyName(c),
 		Account:         account,
-		FailoverFrom:    strings.Join(failedOver, ","),
+		FailoverFrom:    strings.Join(mergeFailover(failedOver, c.Request.Context()), ","),
 		ReasoningTokens: types.ReasoningUnknown,
 	}
 	if usage != nil {

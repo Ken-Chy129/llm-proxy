@@ -182,10 +182,11 @@ func TestResponsesRejectsFunctionCallWithoutOutputBeforeAnyGen(t *testing.T) {
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-sol"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-sol"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-sol", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -236,10 +237,11 @@ func TestResponsesAdaptsNonStreamingAnyGenTextToSSE(t *testing.T) {
 		Enabled:   true,
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-luna"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-luna"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-luna", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -304,10 +306,11 @@ func TestResponsesAdaptsNonStreamingAnyGenToolCallToSSE(t *testing.T) {
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-luna"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-luna"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-luna", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -360,10 +363,11 @@ func TestResponsesNonStreamingAdapterReturnsUpstreamErrorBeforeSSE(t *testing.T)
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
 		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
-		Models:    []string{"gpt-5.6-luna"},
 	})
+	anygenExec.SetServed([]string{"gpt-5.6-luna"})
 	r := router.New()
-	r.Register(anygenExec, "anygen")
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-luna", Providers: []string{"anygen"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
@@ -389,7 +393,8 @@ func TestResponsesNonStreamingAdapterReturnsUpstreamErrorBeforeSSE(t *testing.T)
 
 func TestResponsesNonStreamingAdapterRejectsEmptyResponseBeforeSSE(t *testing.T) {
 	r := router.New()
-	r.Register(emptyNonStreamingExecutor{}, "empty")
+	r.SetProvider("empty", emptyNonStreamingExecutor{})
+	r.SetRoutes([]router.Route{{Model: "empty-response-model", Providers: []string{"empty"}}})
 	h := NewResponsesHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)

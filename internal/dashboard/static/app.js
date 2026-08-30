@@ -275,15 +275,11 @@ async function loadStatus() {
   const r = await apiFetch('/api/status');
   if (r.status === 401) { window.location.href = '/login'; return; }
   const d = await r.json();
+  // Which provider a model is actually served by comes from the server's own
+  // routing decision, not from guessing at overlapping backend lists: a model
+  // names several providers now, and only the first usable one answers.
   modelBackends = new Map();
-  (d.backends || []).forEach(b => {
-    if (b.status !== 'active' || b.disabled) return;
-    (b.models || []).forEach(model => {
-      // The server registers AnyGen after the existing backends, so an enabled
-      // AnyGen model owns an overlapping ID and must also determine stream mode.
-      if (b.name === 'anygen' || !modelBackends.has(model)) modelBackends.set(model, b.name);
-    });
-  });
+  (d.models || []).forEach(m => { if (m.provider) modelBackends.set(m.name, m.provider); });
   document.getElementById('total-requests').textContent = (d.total_requests || 0).toLocaleString();
   // All-time tokens run to nine digits now that cache is counted, and the exact
   // figure is never what this readout is for — it answers "what order of
@@ -310,7 +306,11 @@ async function loadStatus() {
     const bc = b.disabled ? 'badge-inactive' : b.status === 'active' ? 'badge-active' : b.status === 'expired' ? 'badge-expired' : 'badge-inactive';
     const bl = b.disabled ? 'Paused' : b.status === 'active' ? 'Active' : b.status === 'expired' ? 'Expired' : 'Offline';
     const dc = b.disabled ? 'dot-gray' : b.status === 'active' ? 'dot-green' : b.status === 'expired' ? 'dot-yellow' : 'dot-gray';
-    const isOAuth = b.name === 'claude' || b.name === 'codex';
+    const isOAuth = !!b.account;
+    // Accounts and tokens are stored under their own key ("claude"), which is
+    // not the routing name ("claude_oauth"). Every account-scoped URL below must
+    // use b.account, or it addresses a provider that has no stored tokens.
+    const acctKey = b.account || b.name;
     let accts = '';
     if (b.accounts && b.accounts.length) {
       accts = b.accounts.map(a => {
@@ -325,20 +325,20 @@ async function loadStatus() {
         } else {
           title = a.token_expired ? 'Active — access token refreshes on next use' : (a.expires ? 'Active — access token valid until ' + a.expires : 'Active');
         }
-        const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" title="${a.disabled ? 'Resume' : 'Pause'}" onclick="toggleAccount('${b.name}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
+        const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" title="${a.disabled ? 'Resume' : 'Pause'}" onclick="toggleAccount('${acctKey}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
         const rlBadge = a.rate_limited
           ? `<span class="exp" style="color:var(--red)" title="${a.rate_limited_estimated ? 'Rate-limited upstream — no reset time provided, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until}">limited${a.rate_limited_estimated ? '' : ' · until ' + a.rate_limited_until}</span>`
           : '';
         return `<div class="account-row" style="${a.disabled ? 'opacity:0.4' : ''}"><span class="dot ${dotClass}" style="${dotStyle}" title="${title}"></span><span class="email">${a.email}</span>`
           + rlBadge
           + toggleAccBtn
-          + `<button class="btn-delete" title="Remove" onclick="removeAccount('${b.name}','${a.id}')">&times;</button></div>`;
+          + `<button class="btn-delete" title="Remove" onclick="removeAccount('${acctKey}','${a.id}')">&times;</button></div>`;
       }).join('');
     }
     const isVertex = b.name === 'vertex';
     let addBtn = '';
     if (isOAuth) {
-      addBtn = `<button class="btn-add" onclick="openAddAccount('${b.name}')"><span>+</span> Add Account</button>`;
+      addBtn = `<button class="btn-add" onclick="openAddAccount('${acctKey}')"><span>+</span> Add Account</button>`;
     } else if (isVertex) {
       addBtn = `<button class="btn-add" onclick="openVertexModal()"><span>+</span> ${b.status === 'active' ? 'Update' : 'Add'} Credentials</button>`;
       if (b.credential_source === 'uploaded') {
@@ -350,14 +350,14 @@ async function loadStatus() {
     const toggleBtn = `<button class="btn-add" style="${b.disabled ? 'color:var(--green);border-color:var(--green)' : 'color:var(--yellow);border-color:var(--yellow)'}" onclick="toggleBackend('${b.name}')">${b.disabled ? 'Enable' : 'Pause'}</button>`;
     // No card dimming for paused backends — the top-right badge (Paused/Active/
     // Expired/Offline) and the header dot already convey state.
-    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name" style="text-transform:capitalize">${escapeHTML(b.name)}</span><span class="backend-badge ${bc}">${bl}</span></div>`
+    return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name">${escapeHTML(providerLabel(b.name))}</span><span class="backend-badge ${bc}">${bl}</span></div>`
       + `<div class="backend-info"${b.endpoint ? ` title="${escapeHTML(b.endpoint)}"` : ''}>${escapeHTML(b.info || '')}</div>`
       + renderBackendModels(b.models)
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   };
   // OAuth/credential backends (account-rotated) vs API-key backends group into
   // two labelled sections; the API group hides itself when nothing lives there.
-  const OAUTH_BACKENDS = ['claude', 'codex', 'vertex'];
+  const OAUTH_BACKENDS = ['claude_oauth', 'codex', 'vertex'];
   const oauthList = d.backends.filter(b => OAUTH_BACKENDS.includes(b.name));
   const apiList = d.backends.filter(b => !OAUTH_BACKENDS.includes(b.name));
   syncKeyedHTML(oauthEl, oauthList.map(b => ({key: b.name, html: backendCard(b)})));
@@ -367,7 +367,8 @@ async function loadStatus() {
   // Render per-account quota cards
   let allQuotas = [];
   d.backends.forEach(b => {
-    if (b.quotas) allQuotas = allQuotas.concat(b.quotas.map(q => ({...q, provider: b.name})));
+    // Quota lives per account, so these cards address the account store key.
+    if (b.quotas) allQuotas = allQuotas.concat(b.quotas.map(q => ({...q, provider: b.account || b.name})));
   });
   const qGrid = document.getElementById('quota-grid');
   const qEmpty = document.getElementById('quota-empty');
@@ -394,24 +395,34 @@ async function loadStatus() {
       }
       const refreshBtn = `<button class="btn-delete" style="font-size:11px;color:var(--accent)" onclick="refreshQuota('${q.provider}','${q.account_id}')">&#8635;</button>`;
       const fetchedAt = q.fetched_at ? `<span style="font-size:10px;color:var(--text-2);margin-left:auto">cached ${q.fetched_at}</span>` : '';
-      const providerLabel = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
+      const label = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
       return {
         key: JSON.stringify([q.provider || '', q.account_id || '']),
-        html: `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${providerLabel}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`,
+        html: `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`,
       };
     });
     syncKeyedHTML(qGrid, quotaCards);
   }
 
+  // Grouped by the provider currently serving each model rather than by backend
+  // catalogue: a model belongs to one chain, and listing it once per provider in
+  // that chain would offer the same name three times.
   const sel = document.getElementById('chat-model');
   const prevModel = sel.value;
-  const statusIcon = s => s === 'active' ? '✓' : s === 'expired' ? '!' : '✗';
-  const modelOptions = d.backends.map(b => {
-    const lbl = b.name.charAt(0).toUpperCase() + b.name.slice(1) + ' (' + statusIcon(b.status) + ')';
-    return `<optgroup label="${lbl}">${(b.models || []).map(m =>
-      `<option value="${m}"${b.status !== 'active' ? ' disabled' : ''}>${m}</option>`
-    ).join('')}</optgroup>`;
-  }).join('');
+  const byProvider = new Map();
+  (d.models || []).forEach(m => {
+    const key = m.provider || '';
+    if (!byProvider.has(key)) byProvider.set(key, []);
+    byProvider.get(key).push(m.name);
+  });
+  const modelOptions = [...byProvider.entries()]
+    .sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1) || (a[0] < b[0] ? -1 : 1))
+    .map(([provider, models]) => {
+      const lbl = provider ? providerLabel(provider) + ' (✓)' : 'Unserved (✗)';
+      return `<optgroup label="${escapeHTML(lbl)}">${models.map(m =>
+        `<option value="${escapeHTML(m)}"${provider ? '' : ' disabled'}>${escapeHTML(m)}</option>`
+      ).join('')}</optgroup>`;
+    }).join('');
   if (syncHTML(sel, modelOptions)) {
     const prev = prevModel && sel.querySelector(`option[value="${prevModel}"]:not([disabled])`);
     if (prev) prev.selected = true;
@@ -1033,112 +1044,100 @@ function el(tag, cls, text) {
   return node;
 }
 
-// --- Models editor ---------------------------------------------------------
-// One row per model:
+// --- Routing editor --------------------------------------------------------
+// The editor's subject is the model a client asks for, not the backend that
+// happens to answer. One card per published model:
 //
-//   [ model name ]              ↦          [ $3 / $15 ]   [✕]
+//   ▸ claude-opus-5        claude_oauth › relay      ● claude_oauth      $5/$25
 //
-// The name is both what clients call and what we call upstream — the executors
-// pass it through unchanged unless told otherwise, and that is the case for
-// nearly every row. Renaming is therefore an *attribute* of a model, like its
-// price, not a second column that sits half-empty forever: the ↦ slot is a ghost
-// until you hover it or it holds a value. Vertex, Kimi and Relay resolve names at
-// all, so the other backends have no slot rather than an inert one.
+// Expanded, the card lists that model's providers in the order they are tried.
+// The order *is* the failover chain: the first provider that is enabled,
+// configured and not rate-limited serves the request, and anything below it is
+// what happens when that one can't. Callers never see these names — the model
+// name is the whole contract, which is why there is no per-backend suffix to
+// rename any more.
 //
-// The original backends used to have two different editors — chips for the OAuth
-// ones (which cannot be edited, only deleted and retyped) and full-width
-// two-input rows for the mapped ones (three lines of vertical space per model).
-// They are the same thing: a name the client calls, optionally pointing at a
-// different upstream name. Rendering them the same way makes the whole set
-// scannable, and puts the price of each model where you decide whether to serve
-// it.
-//
-// OAuth backends pass the name through unchanged, so their upstream cell is a
-// muted "same" rather than an input — the column still lines up.
-const MODEL_GROUPS = [
-  {
-    id: 'claude', label: 'Claude OAuth', live: true, mapped: false,
-    hint: 'served under your Claude subscription',
-  },
-  {
-    id: 'vertex', label: 'Vertex', live: true, mapped: true,
-    hint: 'served by Vertex AI · ↦ to call upstream by another name',
-  },
-  {
-    id: 'kimi', label: 'Kimi', live: true, mapped: true,
-    hint: 'the API key stays in its env var · ↦ to call upstream by another name',
-  },
-  {
-    id: 'relay', label: 'Relay', live: true, mapped: true,
-    hint: 'Anthropic-compatible upstream · auth token stays in its env var',
-  },
-  {
-    id: 'anygen', label: 'AnyGen', live: false, mapped: false,
-    hint: 'fallback list only — AnyGen re-syncs the free /models endpoint at startup',
-  },
-  {
-    id: 'codex', label: 'Codex', live: false, mapped: false,
-    hint: 'fallback list only — Codex re-syncs from the API at startup',
-  },
-];
+// Everything about a provider that isn't its identity (which env var holds its
+// key, whether its credentials are valid) belongs to the Backends tab; this page
+// only decides who gets asked, and in what order.
+const PROVIDER_LABELS = {
+  claude_oauth: 'Claude OAuth',
+  codex: 'Codex',
+  vertex: 'Vertex',
+  kimi: 'Kimi',
+  relay: 'Relay',
+  anygen: 'AnyGen',
+};
 
-// cfgModels[group] = [{name, model}] — model is unused for unmapped groups.
-let cfgModels = { claude: [], vertex: [], kimi: [], relay: [], anygen: [], codex: [] };
-let cfgPriority = [];
-// Effective price table from /api/pricing, plus the local override edits. Both
-// are keyed by normalised model name; overrides also keep the name as typed, so
-// saving round-trips it verbatim into config.yaml.
+// Mirrors config.SeriesOf. A series only supplies the starting chain for a newly
+// added model, so a coarse prefix match is enough — anything it gets wrong is
+// fixed by editing that one model.
+const SERIES_LABELS = {
+  claude: 'Claude',
+  gpt: 'GPT',
+  gemini: 'Gemini',
+  kimi: 'Kimi',
+  deepseek: 'DeepSeek',
+  other: 'Other',
+};
+const SERIES_ORDER = ['claude', 'gpt', 'gemini', 'kimi', 'deepseek', 'other'];
+
+// Long enough to see whether the other provider actually behaves better, short
+// enough that a forgotten experiment expires on its own.
+const PIN_TTL_MINUTES = 30;
+
+// cfgModels is the editable routing table: [{name, providers:[{provider, upstream}]}].
+// cfgLive is what the server is doing with it right now (serving provider, pins)
+// and is never edited here — keeping the two apart is what lets a pin refresh
+// the page's live state without discarding unsaved edits.
+let cfgModels = [];
+let cfgSeries = {};
+let cfgProviders = [];
+let cfgLive = new Map();
+let cfgExpanded = new Set();
+let pinTicker = null;
+// Effective price table from /api/pricing. Read-only: rates are a published
+// property of each model, not a deployment setting.
 let priceTable = new Map();
 let pricePrefixes = [];
-let priceOverrides = new Map();
-
-// normalizeModel and lookupPrice mirror internal/pricing (normalize + exact,
-// then longest-prefix). Duplicated deliberately: the table itself comes from the
-// server, and doing the resolution client-side is what lets a price appear for a
-// model you are still typing, before it has ever been saved or served.
 const PRICE_MIN_PREFIX = 6;
 
+function seriesOf(model) {
+  const m = String(model || '').trim().toLowerCase();
+  if (m.startsWith('claude-')) return 'claude';
+  if (m.startsWith('gpt-') || m.startsWith('o1') || m.startsWith('o3') || m.startsWith('o4')) return 'gpt';
+  if (m.startsWith('gemini-')) return 'gemini';
+  if (m.startsWith('kimi-')) return 'kimi';
+  if (m.startsWith('deepseek-')) return 'deepseek';
+  return 'other';
+}
+
+function providerLabel(name) {
+  return PROVIDER_LABELS[name] || name;
+}
+
+function providerMeta(name) {
+  return cfgProviders.find(p => p.name === name) || { name, enabled: false, available: false };
+}
+
+// normalizeModel and lookupPrice mirror internal/pricing (normalize + exact,
+// then longest-prefix), so a model shows its price while you are still typing
+// the name, before it has been saved or ever served.
 function normalizeModel(m) {
   let s = String(m || '').trim().toLowerCase();
   const slash = s.lastIndexOf('/');
   if (slash >= 0) s = s.slice(slash + 1);
   if (s.startsWith('anthropic.')) s = s.slice('anthropic.'.length);
-  s = s.replace(/[-@]\d{8}$/, '');
-  if (s.endsWith('-oauth')) s = s.slice(0, -'-oauth'.length);
-  return s;
+  return s.replace(/[-@]\d{8}$/, '');
 }
 
 function lookupPrice(name) {
-  if (!name) return null;
-  if (priceTable.has(name)) return priceTable.get(name);
-  for (const k of pricePrefixes) if (name.startsWith(k)) return priceTable.get(k);
+  const n = normalizeModel(name);
+  if (!n) return null;
+  if (priceTable.has(n)) return priceTable.get(n);
+  for (const k of pricePrefixes) if (n.startsWith(k)) return priceTable.get(k);
   return null;
 }
-
-// resolvePrice answers the questions the price cell has to distinguish: is there
-// a price, is it one you set, and — since a name can match by prefix or through
-// its alias target — which table entry it actually came from.
-function resolvePrice(alias, upstream) {
-  const a = normalizeModel(alias);
-  const custom = priceOverrides.get(a);
-  if (custom) return { price: custom, source: 'custom', from: a };
-  const mine = e => priceOverrides.has(e.name) ? 'custom' : 'builtin';
-  let hit = lookupPrice(a);
-  if (hit) return { price: hit, source: mine(hit), from: hit.name };
-  const u = normalizeModel(upstream);
-  if (u && u !== a) {
-    hit = lookupPrice(u);
-    if (hit) return { price: hit, source: mine(hit), from: hit.name, viaAlias: true };
-  }
-  return null;
-}
-
-const PRICE_FIELDS = [
-  ['input', 'Input'],
-  ['output', 'Output'],
-  ['cache_read', 'Cache read'],
-  ['cache_write', 'Cache write'],
-];
 
 function priceLabel(v) {
   if (v === null || v === undefined) return '—';
@@ -1149,252 +1148,348 @@ function priceLabel(v) {
 
 function renderModels() {
   const host = document.getElementById('cfg-models');
-  host.innerHTML = '';
-  MODEL_GROUPS.forEach(g => host.appendChild(renderModelGroup(g)));
-}
-
-function renderRoutingPriority() {
-  const host = document.getElementById('cfg-routing-priority');
   if (!host) return;
   host.innerHTML = '';
-  const labels = new Map(MODEL_GROUPS.map(g => [g.id, g.label]));
-  cfgPriority.forEach((backend, i) => {
-    const row = el('div', 'route-priority-row');
-    row.setAttribute('role', 'listitem');
 
-    const rank = el('span', 'route-rank', String(i + 1).padStart(2, '0'));
-    row.appendChild(rank);
-
-    const identity = el('div', 'route-identity');
-    identity.appendChild(el('span', 'route-name', labels.get(backend) || backend));
-    identity.appendChild(el('code', 'route-id', backend));
-    row.appendChild(identity);
-
-    const controls = el('div', 'route-controls');
-    const up = el('button', 'route-move', '↑');
-    up.type = 'button';
-    up.disabled = i === 0;
-    up.setAttribute('aria-label', `Move ${labels.get(backend) || backend} higher`);
-    up.onclick = () => moveRoutingBackend(i, -1);
-    controls.appendChild(up);
-
-    const down = el('button', 'route-move', '↓');
-    down.type = 'button';
-    down.disabled = i === cfgPriority.length - 1;
-    down.setAttribute('aria-label', `Move ${labels.get(backend) || backend} lower`);
-    down.onclick = () => moveRoutingBackend(i, 1);
-    controls.appendChild(down);
-    row.appendChild(controls);
-    host.appendChild(row);
+  // Group by series so the list reads as families rather than 20 flat rows. A
+  // series with nothing in it is not drawn: it would be a header for an empty
+  // set, and models arrive here by being added, not by picking a series.
+  const groups = new Map();
+  cfgModels.forEach(m => {
+    const s = seriesOf(m.name);
+    if (!groups.has(s)) groups.set(s, []);
+    groups.get(s).push(m);
   });
-}
+  const order = [...SERIES_ORDER, ...[...groups.keys()].filter(s => !SERIES_ORDER.includes(s))];
 
-function moveRoutingBackend(index, delta) {
-  const target = index + delta;
-  if (target < 0 || target >= cfgPriority.length) return;
-  [cfgPriority[index], cfgPriority[target]] = [cfgPriority[target], cfgPriority[index]];
-  renderRoutingPriority();
-  setPanelDirty('routing', true);
-}
-
-function renderModelGroup(g) {
-  const list = cfgModels[g.id] || [];
-  const wrap = el('div', 'mdl-group');
-
-  const head = el('div', 'mdl-group-head');
-  head.appendChild(el('span', 'mdl-group-name', g.label));
-  const badge = el('span', 'cfg-badge ' + (g.live ? 'cfg-live' : 'cfg-restart'),
-    g.live ? '● live' : '⟳ restart');
-  badge.title = g.live
-    ? 'applied immediately on save'
-    : 'takes effect on the next restart';
-  head.appendChild(badge);
-  head.appendChild(el('span', 'mdl-group-hint', g.hint));
-  const add = el('button', 'mdl-add', '+ add');
-  add.type = 'button';
-  add.onclick = () => {
-    list.push({ name: '', model: '' });
-    setPanelDirty('models', true);
-    renderModels();
-    focusModelRow(g.id, list.length - 1);
-  };
-  head.appendChild(add);
-  wrap.appendChild(head);
-
-  if (!list.length) {
-    wrap.appendChild(el('div', 'mdl-empty', 'No models — this backend serves nothing.'));
-    return wrap;
+  if (!cfgModels.length) {
+    host.appendChild(el('div', 'mdl-empty', 'No models published — nothing this proxy serves.'));
+    return;
   }
-  list.forEach((m, i) => wrap.appendChild(renderModelRow(g, m, i, list)));
-  return wrap;
+  order.forEach(series => {
+    const list = groups.get(series);
+    if (!list || !list.length) return;
+    const group = el('div', 'mdl-series-group');
+    const head = el('div', 'mdl-series-head');
+    head.appendChild(el('span', 'mdl-series-name', SERIES_LABELS[series] || series));
+    head.appendChild(el('span', 'mdl-series-count', String(list.length)));
+    group.appendChild(head);
+    list.forEach(m => group.appendChild(renderModelCard(m)));
+    host.appendChild(group);
+  });
+  syncPinTicker();
 }
 
-function renderModelRow(g, m, i, list) {
-  const row = el('div', 'mdl-row' + (g.mapped ? '' : ' mdl-row-plain'));
-  row.dataset.group = g.id;
-  row.dataset.index = String(i);
+function renderModelCard(m) {
+  const card = el('div', 'mdl-model');
+  const live = cfgLive.get(m.name) || {};
+  const open = cfgExpanded.has(m.name);
+
+  const head = el('div', 'mdl-model-head');
+  const toggle = el('button', 'mdl-toggle', open ? '▾' : '▸');
+  toggle.type = 'button';
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.setAttribute('aria-label', (open ? 'Collapse ' : 'Expand ') + (m.name || 'model'));
+  toggle.onclick = () => {
+    if (open) cfgExpanded.delete(m.name); else cfgExpanded.add(m.name);
+    renderModels();
+  };
+  head.appendChild(toggle);
 
   const name = document.createElement('input');
   name.className = 'mdl-name';
   name.value = m.name || '';
   name.placeholder = 'model name';
   name.spellcheck = false;
-  name.oninput = () => { m.name = name.value; refreshPriceCell(row, g, m); setPanelDirty('models', true); };
-  // Enter appends the next row and focuses it, so a list can be typed straight
-  // through the way the old chip input allowed.
-  name.onkeydown = e => {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    if (i === list.length - 1) list.push({ name: '', model: '' });
-    renderModels();
-    focusModelRow(g.id, i + 1);
+  // Deliberately does not re-render: regrouping the card into another series
+  // mid-word would move it out from under the cursor. The grouping catches up
+  // on the next render, which is right after saving.
+  name.oninput = () => {
+    m.name = name.value;
+    paintPrice(head, m.name);
+    setPanelDirty('models', true);
   };
-  row.appendChild(name);
+  head.appendChild(name);
 
-  if (g.mapped) row.appendChild(renderMapCell(row, g, m));
+  // Collapsed, the chain still has to be readable — the order is the point of
+  // the whole page, and opening 20 cards to check it defeats the grouping.
+  const summary = el('div', 'mdl-summary');
+  if (open) summary.classList.add('is-hidden');
+  m.providers.forEach((ref, i) => {
+    if (i) summary.appendChild(el('span', 'mdl-summary-sep', '›'));
+    const chip = el('span', 'mdl-summary-p' + (ref.provider === live.serving ? ' is-serving' : ''), ref.provider);
+    if (!providerMeta(ref.provider).available) chip.classList.add('is-down');
+    summary.appendChild(chip);
+  });
+  head.appendChild(summary);
 
-  const price = el('button', 'mdl-price');
-  price.type = 'button';
-  price.onclick = () => togglePriceEditor(row, g, m);
-  row.appendChild(price);
+  if (live.pinned) {
+    head.appendChild(pinBadge(m.name, live.pinned));
+  } else if (live.serving) {
+    const serving = el('span', 'mdl-serving', live.serving);
+    serving.title = 'Currently served by ' + providerLabel(live.serving);
+    head.appendChild(serving);
+  } else {
+    const down = el('span', 'mdl-serving is-down', 'unserved');
+    down.title = 'No provider in this chain can take traffic right now.';
+    head.appendChild(down);
+  }
+
+  head.appendChild(el('span', 'mdl-price'));
+  paintPrice(head, m.name);
 
   const del = el('button', 'mdl-del', '✕');
   del.type = 'button';
-  del.title = 'Remove';
-  del.onclick = () => { list.splice(i, 1); setPanelDirty('models', true); renderModels(); };
-  row.appendChild(del);
+  del.title = 'Unpublish this model';
+  del.onclick = () => {
+    cfgModels = cfgModels.filter(x => x !== m);
+    setPanelDirty('models', true);
+    renderModels();
+  };
+  head.appendChild(del);
+  card.appendChild(head);
 
-  paintPriceCell(price, g, m);
-  return row;
+  if (open) card.appendChild(renderChain(m.providers, {
+    published: m.name,
+    serving: live.serving,
+    pinned: live.pinned?.provider,
+    rename: true,
+    onPin: provider => pinModel(m.name, provider),
+    onChange: () => { setPanelDirty('models', true); renderModels(); },
+  }));
+  return card;
 }
 
-// The rename slot. One input, ghosted by CSS when empty — a click-to-create
-// button would need a state machine to answer "what if they type nothing".
-function renderMapCell(row, g, m) {
-  const wrap = el('label', 'mdl-map');
-  wrap.title = 'Optional: call the upstream model by a different name. ' +
-    'Blank means the name on the left is sent as-is.';
-  wrap.appendChild(el('span', 'mdl-map-mark', '↦'));
-  const inp = document.createElement('input');
-  inp.className = 'mdl-upstream';
-  inp.value = m.model || '';
-  inp.placeholder = 'upstream name';
-  inp.spellcheck = false;
-  const sync = () => wrap.classList.toggle('has-map', !!inp.value.trim());
-  inp.oninput = () => {
-    m.model = inp.value;
-    sync();
-    refreshPriceCell(row, g, m);
-    setPanelDirty('models', true);
-  };
-  sync();
-  wrap.appendChild(inp);
+function paintPrice(head, model) {
+  const cell = head.querySelector('.mdl-price');
+  if (!cell) return;
+  const p = lookupPrice(model);
+  cell.classList.toggle('is-none', !p);
+  if (!p) {
+    cell.textContent = 'unpriced';
+    // Not cosmetic: an unpriced model's tokens are silently missing from every
+    // cost figure on the dashboard.
+    cell.title = 'No published price for this model — its tokens are left out of all cost totals.';
+    return;
+  }
+  cell.textContent = `${priceLabel(p.input)}/${priceLabel(p.output)}`;
+  cell.title = `List price per 1M tokens · in ${priceLabel(p.input)} · out ${priceLabel(p.output)}`
+    + ` · cache read ${priceLabel(p.cache_read)} · write ${priceLabel(p.cache_write)}`
+    + (normalizeModel(model) === p.name ? '' : ` · matched ${p.name}`);
+}
+
+// renderChain draws one ordered provider list. Both the model chains and the
+// series defaults are exactly this, so they share it — the only differences are
+// whether a rename slot and the pin control make sense.
+function renderChain(list, opts) {
+  const wrap = el('div', 'mdl-chain');
+  list.forEach((ref, i) => {
+    const row = el('div', 'mdl-link');
+    const meta = providerMeta(ref.provider);
+    row.appendChild(el('span', 'mdl-rank', String(i + 1)));
+
+    const dot = el('span', 'dot ' + (meta.available ? 'dot-green' : meta.paused ? 'dot-gray' : 'dot-yellow'));
+    dot.title = meta.available ? 'Ready to take traffic'
+      : meta.paused ? 'Paused on the Backends tab — skipped, the next provider serves'
+      : !meta.enabled ? 'Disabled in config — skipped, the next provider serves'
+      : 'No usable credentials — skipped, the next provider serves';
+    row.appendChild(dot);
+
+    const label = el('span', 'mdl-link-name', ref.provider);
+    if (ref.provider === opts.pinned) label.classList.add('is-pinned');
+    else if (ref.provider === opts.serving) label.classList.add('is-serving');
+    row.appendChild(label);
+
+    if (opts.rename) {
+      // The rename slot is a ghost until it holds something: it is a quirk of
+      // one upstream (Vertex wants dated ids), not a property of the model, and
+      // an always-visible second column would sit empty on nearly every row.
+      const map = el('label', 'mdl-map');
+      map.title = 'Optional: the id this provider knows the model by. Blank sends the published name.';
+      map.appendChild(el('span', 'mdl-map-mark', '↦'));
+      const inp = document.createElement('input');
+      inp.className = 'mdl-upstream';
+      inp.value = ref.upstream || '';
+      inp.placeholder = opts.published || 'upstream id';
+      inp.spellcheck = false;
+      const sync = () => map.classList.toggle('has-map', !!inp.value.trim());
+      inp.oninput = () => { ref.upstream = inp.value; sync(); setPanelDirty('models', true); };
+      sync();
+      map.appendChild(inp);
+      row.appendChild(map);
+    }
+
+    const controls = el('div', 'mdl-link-controls');
+    if (opts.onPin && meta.available) {
+      const pinned = ref.provider === opts.pinned;
+      const use = el('button', 'mdl-use' + (pinned ? ' is-pinned' : ''), pinned ? 'unpin' : 'use');
+      use.type = 'button';
+      use.title = pinned
+        ? 'Release the pin and go back to the chain order'
+        : `Send this model to ${providerLabel(ref.provider)} for ${PIN_TTL_MINUTES} minutes without changing the saved order`;
+      use.onclick = () => opts.onPin(pinned ? '' : ref.provider);
+      controls.appendChild(use);
+    }
+    const up = el('button', 'route-move', '↑');
+    up.type = 'button';
+    up.disabled = i === 0;
+    up.setAttribute('aria-label', `Try ${ref.provider} earlier`);
+    up.onclick = () => { [list[i - 1], list[i]] = [list[i], list[i - 1]]; opts.onChange(); };
+    controls.appendChild(up);
+    const down = el('button', 'route-move', '↓');
+    down.type = 'button';
+    down.disabled = i === list.length - 1;
+    down.setAttribute('aria-label', `Try ${ref.provider} later`);
+    down.onclick = () => { [list[i + 1], list[i]] = [list[i], list[i + 1]]; opts.onChange(); };
+    controls.appendChild(down);
+    const drop = el('button', 'mdl-del', '✕');
+    drop.type = 'button';
+    drop.title = 'Remove this provider from the chain';
+    drop.onclick = () => { list.splice(i, 1); opts.onChange(); };
+    controls.appendChild(drop);
+    row.appendChild(controls);
+    wrap.appendChild(row);
+  });
+
+  const remaining = cfgProviders.filter(p => !list.some(ref => ref.provider === p.name));
+  if (remaining.length) {
+    const add = el('div', 'mdl-link-add');
+    const sel = document.createElement('select');
+    sel.className = 'mdl-provider-select';
+    sel.setAttribute('aria-label', 'Provider to append to the chain');
+    remaining.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = providerLabel(p.name) + (p.available ? '' : ' (offline)');
+      sel.appendChild(opt);
+    });
+    add.appendChild(sel);
+    const btn = el('button', 'mdl-add', '+ fallback');
+    btn.type = 'button';
+    btn.onclick = () => { list.push({ provider: sel.value, upstream: '' }); opts.onChange(); };
+    add.appendChild(btn);
+    wrap.appendChild(add);
+  } else if (!list.length) {
+    wrap.appendChild(el('div', 'mdl-empty', 'No providers — this model cannot be served.'));
+  }
   return wrap;
 }
 
-function focusModelRow(groupId, index) {
-  const row = document.querySelector(`.mdl-row[data-group="${groupId}"][data-index="${index}"]`);
-  row?.querySelector('.mdl-name')?.focus();
+function renderSeriesDefaults() {
+  const host = document.getElementById('cfg-series');
+  if (!host) return;
+  host.innerHTML = '';
+  const known = [...SERIES_ORDER.filter(s => s !== 'other'), ...Object.keys(cfgSeries).filter(s => !SERIES_ORDER.includes(s))];
+  known.forEach(series => {
+    if (!cfgSeries[series]) cfgSeries[series] = [];
+    const group = el('div', 'mdl-series-group');
+    const head = el('div', 'mdl-series-head');
+    head.appendChild(el('span', 'mdl-series-name', SERIES_LABELS[series] || series));
+    head.appendChild(el('span', 'mdl-series-count', String(cfgSeries[series].length)));
+    group.appendChild(head);
+    group.appendChild(renderChain(cfgSeries[series], {
+      // No rename slot: an upstream id belongs to one model on one provider, and
+      // a series-wide one would hand every inheriting model the same wrong id.
+      rename: false,
+      onChange: () => { setPanelDirty('series', true); renderSeriesDefaults(); },
+    }));
+    host.appendChild(group);
+  });
 }
 
-function refreshPriceCell(row, g, m) {
-  const cell = row.querySelector('.mdl-price');
-  if (cell) paintPriceCell(cell, g, m);
+function addModelFromInput() {
+  const input = document.getElementById('cfg-new-model');
+  const name = input.value.trim();
+  if (!name) { toast('Type a model name first.', 'err'); return; }
+  if (cfgModels.some(m => m.name === name)) { toast(`${name} is already published.`, 'err'); return; }
+  // Seeded from the series default so the common case is one click: the chain is
+  // already the one every other model of that family uses.
+  const series = seriesOf(name);
+  const chain = (cfgSeries[series] || []).map(ref => ({ provider: ref.provider, upstream: '' }));
+  cfgModels.push({ name, providers: chain });
+  cfgExpanded.add(name);
+  input.value = '';
+  setPanelDirty('models', true);
+  renderModels();
+  if (!chain.length) toast(`No default chain for the ${series} series — pick a provider.`, 'err');
 }
 
-function paintPriceCell(cell, g, m) {
-  const r = resolvePrice(m.name, g.mapped ? m.model : m.name);
-  cell.classList.toggle('is-custom', r?.source === 'custom');
-  cell.classList.toggle('is-none', !r);
-  if (!r) {
-    cell.textContent = 'set price';
-    // Unpriced is not cosmetic: those requests are missing from every cost
-    // total on the dashboard, so the cell says what the consequence is.
-    cell.title = 'No price for this model — its tokens are left out of all cost totals. Click to set one.';
+// --- Pins ------------------------------------------------------------------
+// A pin is a live override, not an edit: it never touches config.yaml and it
+// expires. Trying a provider out and forgetting about it must not outlive the
+// afternoon, let alone a restart.
+async function pinModel(model, provider) {
+  const r = await apiFetch('/api/pin', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, provider, ttl_minutes: PIN_TTL_MINUTES }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.error || 'Pin failed', 'err'); return; }
+  toast(provider ? `${model} → ${provider} until ${d.until_local}` : `${model} back on its chain order`);
+  await refreshLive();
+}
+
+// refreshLive re-reads only the server-side facts (who is serving, which pins
+// are active) and leaves the edit buffer alone, so a pin never discards a chain
+// you were in the middle of reordering.
+async function refreshLive() {
+  const r = await apiFetch('/api/config');
+  if (!r.ok) return;
+  const d = await r.json();
+  readLive(d.models || []);
+  renderModels();
+}
+
+function readLive(models) {
+  cfgLive = new Map();
+  models.forEach(m => cfgLive.set(m.name, { serving: m.serving || '', pinned: m.pinned || null }));
+}
+
+function pinBadge(model, pin) {
+  const badge = el('span', 'mdl-pin');
+  badge.appendChild(el('span', 'mdl-pin-mark', '📌'));
+  badge.appendChild(el('span', 'mdl-pin-name', pin.provider));
+  const left = el('span', 'mdl-pin-left');
+  left.dataset.pinUntil = String(pin.until);
+  left.textContent = pinLeft(pin.until);
+  badge.appendChild(left);
+  badge.title = `Pinned to ${providerLabel(pin.provider)} until ${pin.until_local}. The saved chain is untouched.`;
+  const clear = el('button', 'mdl-pin-clear', '✕');
+  clear.type = 'button';
+  clear.title = 'Release the pin now';
+  clear.onclick = () => pinModel(model, '');
+  badge.appendChild(clear);
+  return badge;
+}
+
+function pinLeft(untilUnix) {
+  const secs = untilUnix - Math.floor(Date.now() / 1000);
+  if (secs <= 0) return 'expiring';
+  const mins = Math.ceil(secs / 60);
+  return mins >= 60 ? Math.floor(mins / 60) + 'h' + (mins % 60) + 'm' : mins + 'm';
+}
+
+// The countdown ticks in place rather than by re-rendering: a re-render every
+// 30s would fight with whatever you are typing in the same panel.
+function syncPinTicker() {
+  const cells = () => document.querySelectorAll('[data-pin-until]');
+  if (!cells().length) {
+    if (pinTicker) { clearInterval(pinTicker); pinTicker = null; }
     return;
   }
-  cell.textContent = `${priceLabel(r.price.input)} / ${priceLabel(r.price.output)}`;
-  // "matched X" is the line that stops the price looking arbitrary: a name can
-  // resolve through a prefix (claude-opus-4-6-vertex → claude-opus-4-6) or
-  // through its alias target, and neither is guessable from the row alone.
-  const via = r.from !== normalizeModel(m.name)
-    ? ` · matched ${r.viaAlias ? 'upstream ' : ''}${r.from}`
-    : '';
-  const cache = `cache read ${priceLabel(r.price.cache_read)} · write ${priceLabel(r.price.cache_write)}`;
-  cell.title = (r.source === 'custom' ? 'Your price' : 'Built-in list price') +
-    `${via} · ${cache} · click to ${r.source === 'custom' && !via ? 'edit' : 'override'}`;
-}
-
-// The editor drops in under its row rather than in a modal: you are usually
-// fixing several models in one pass, and a dialog per model would mean opening
-// and closing it four times.
-function togglePriceEditor(row, g, m) {
-  const open = row.nextElementSibling?.classList.contains('mdl-edit');
-  document.querySelectorAll('.mdl-edit').forEach(e => e.remove());
-  if (open) return;
-
-  const key = normalizeModel(m.name);
-  if (!key) { toast('Name the model first, then set its price.', 'err'); return; }
-  const current = resolvePrice(m.name, g.mapped ? m.model : m.name);
-
-  const box = el('div', 'mdl-edit');
-  const fields = el('div', 'mdl-edit-fields');
-  const inputs = {};
-  for (const [field, label] of PRICE_FIELDS) {
-    const f = el('label', 'mdl-edit-field');
-    f.appendChild(el('span', null, label));
-    const inp = document.createElement('input');
-    inp.type = 'number';
-    inp.min = '0';
-    inp.step = '0.01';
-    // Prefilled with whatever is in effect, so "adjust the output price" does
-    // not silently zero the other three.
-    inp.value = current ? String(current.price[field] ?? 0) : '';
-    inp.placeholder = '0';
-    inp.oninput = () => setPanelDirty('models', true);
-    inputs[field] = inp;
-    f.appendChild(inp);
-    fields.appendChild(f);
-  }
-  box.appendChild(fields);
-
-  const actions = el('div', 'mdl-edit-actions');
-  actions.appendChild(el('span', 'mdl-edit-hint', 'USD per 1M tokens · saved to config.yaml on Save Config'));
-  if (priceOverrides.has(key)) {
-    const reset = el('button', 'btn-row', 'Use default');
-    reset.type = 'button';
-    reset.onclick = () => {
-      priceOverrides.delete(key);
-      box.remove();
-      refreshPriceCell(row, g, m);
-      setPanelDirty('models', true);
-      toast('Reverted to the built-in price — save to persist.');
-    };
-    actions.appendChild(reset);
-  }
-  const apply = el('button', 'btn-row mdl-edit-apply', 'Apply');
-  apply.type = 'button';
-  apply.onclick = () => {
-    const p = { name: (m.name || '').trim() };
-    for (const [field] of PRICE_FIELDS) {
-      const v = parseFloat(inputs[field].value);
-      if (inputs[field].value !== '' && (!isFinite(v) || v < 0)) {
-        toast(`${field} must be a non-negative number.`, 'err');
-        return;
-      }
-      p[field] = inputs[field].value === '' ? 0 : v;
-    }
-    priceOverrides.set(key, p);
-    box.remove();
-    refreshPriceCell(row, g, m);
-    setPanelDirty('models', true);
-    toast('Price set — save to persist.');
-  };
-  actions.appendChild(apply);
-  box.appendChild(actions);
-
-  row.after(box);
-  box.querySelector('input')?.focus();
+  if (pinTicker) return;
+  pinTicker = setInterval(() => {
+    const nodes = cells();
+    if (!nodes.length) { clearInterval(pinTicker); pinTicker = null; return; }
+    let expired = false;
+    nodes.forEach(n => {
+      const until = Number(n.dataset.pinUntil);
+      n.textContent = pinLeft(until);
+      if (until - Math.floor(Date.now() / 1000) <= 0) expired = true;
+    });
+    if (expired) refreshLive();
+  }, 30000);
 }
 
 async function loadConfig() {
@@ -1409,32 +1504,20 @@ async function loadConfig() {
     .filter(k => k.length >= PRICE_MIN_PREFIX)
     .sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
 
-  priceOverrides = new Map();
-  (d.pricing?.models || []).forEach(p => {
-    const key = normalizeModel(p.name);
-    if (key) priceOverrides.set(key, p);
+  cfgProviders = d.providers || [];
+  // Copied out of the response rather than referenced: the live state is
+  // re-read on every pin, and the edit buffer must survive that.
+  cfgModels = (d.models || []).map(m => ({
+    name: m.name || '',
+    providers: (m.providers || []).map(p => ({ provider: p.provider, upstream: p.upstream || '' })),
+  }));
+  cfgSeries = {};
+  Object.entries(d.series || {}).forEach(([series, chain]) => {
+    cfgSeries[series] = (chain || []).map(p => ({ provider: p.provider, upstream: p.upstream || '' }));
   });
-
-  // The Go structs marshal with capitalised keys in some paths; accept both.
-  // An upstream equal to the name is not a rename — older configs spell identity
-  // mappings out in full, and showing them as renames would suggest the two can
-  // drift apart when nothing is actually mapped.
-  const pairs = list => (list || []).map(m => {
-    const name = m.Name ?? m.name ?? '';
-    const model = m.Model ?? m.model ?? '';
-    return { name, model: model === name ? '' : model };
-  });
-  cfgModels = {
-    claude: (d.claude_oauth?.models || []).map(n => ({ name: n, model: '' })),
-    codex: (d.codex?.models || []).map(n => ({ name: n, model: '' })),
-    vertex: pairs(d.vertex?.models),
-    kimi: pairs(d.kimi?.models),
-    relay: pairs(d.relay?.models),
-    anygen: (d.anygen?.models || []).map(n => ({ name: n, model: '' })),
-  };
-  cfgPriority = [...(d.routing?.backend_priority || ['claude', 'codex', 'vertex', 'kimi', 'anygen', 'relay'])];
-  renderRoutingPriority();
+  readLive(d.models || []);
   renderModels();
+  renderSeriesDefaults();
 
   document.getElementById('cfg-admin-user').value = d.server?.admin_user || '';
   document.getElementById('cfg-admin-pass').value = '';
@@ -1443,7 +1526,7 @@ async function loadConfig() {
     document.getElementById(id).oninput = () => setPanelDirty('admin', true);
   });
   setPanelDirty('models', false);
-  setPanelDirty('routing', false);
+  setPanelDirty('series', false);
   setPanelDirty('admin', false);
 }
 
@@ -1464,10 +1547,11 @@ function copyTrayToken(btn) {
   copyKeyInline(btn, val);
 }
 
-// Models and Admin are saved separately because they are separate decisions —
-// rotating the admin password should not re-publish the model lists, and a
-// failed model edit should not hold the password hostage. Every section of the
-// PUT body is optional server-side, so each save sends only its own.
+// Models, Series and Admin are saved separately because they are separate
+// decisions — rotating the admin password should not re-publish the routing
+// table, and a failed routing edit should not hold the password hostage. Every
+// section of the PUT body is optional server-side, so each save sends only its
+// own.
 async function putConfig(body, btn, okMsg) {
   if (btn) { btn.disabled = true; btn.dataset.label = btn.textContent; btn.textContent = 'Saving…'; }
   try {
@@ -1493,30 +1577,26 @@ async function putConfig(body, btn, okMsg) {
 }
 
 async function saveModels(btn) {
-  const names = id => (cfgModels[id] || []).map(m => (m.name || '').trim()).filter(Boolean);
-  const pairs = id => (cfgModels[id] || [])
-    .map(m => ({ name: (m.name || '').trim(), model: (m.model || '').trim() }))
-    .filter(m => m.name);
-  // Overrides for models that are no longer listed here are kept, not pruned:
-  // they may price a Codex model that auto-syncs at startup, or one served by a
-  // backend this page does not edit. An unused row costs nothing.
-  const d = await putConfig({
-    claude_oauth: { models: names('claude') },
-    codex: { models: names('codex') },
-    vertex: { models: pairs('vertex') },
-    kimi: { models: pairs('kimi') },
-    relay: { models: pairs('relay') },
-    anygen: { models: names('anygen') },
-    pricing: { models: [...priceOverrides.values()] },
-  }, btn, 'Models saved');
-  if (d) setPanelDirty('models', false);
+  const models = cfgModels.map(m => ({
+    name: (m.name || '').trim(),
+    providers: m.providers.map(p => ({ provider: p.provider, upstream: (p.upstream || '').trim() })),
+  }));
+  const d = await putConfig({ models }, btn, 'Models saved');
+  if (!d) return;
+  setPanelDirty('models', false);
+  // Reloaded rather than trusted: the server fills empty chains from the series
+  // default and drops non-renames, so what is on screen after a save should be
+  // what was actually stored.
+  await loadConfig();
 }
 
-async function saveRouting(btn) {
-  const d = await putConfig({
-    routing: { backend_priority: cfgPriority },
-  }, btn, 'Routing priority saved');
-  if (d) setPanelDirty('routing', false);
+async function saveSeries(btn) {
+  const series = {};
+  Object.entries(cfgSeries).forEach(([name, chain]) => {
+    series[name] = chain.map(p => ({ provider: p.provider }));
+  });
+  const d = await putConfig({ series }, btn, 'Series defaults saved');
+  if (d) setPanelDirty('series', false);
 }
 
 async function saveAdmin(btn) {
