@@ -295,10 +295,11 @@ async function loadStatus() {
   }
 
   const oauthEl = document.getElementById('backends-oauth');
+  const credEl = document.getElementById('backends-cred');
   const apiEl = document.getElementById('backends-api');
   // Entrance animation plays once; later refreshes (e.g. on window focus) skip
   // it so the cards don't visibly flash/re-fade on every re-render.
-  if (statusBooted) { oauthEl.classList.add('no-anim'); apiEl.classList.add('no-anim'); }
+  if (statusBooted) { [oauthEl, credEl, apiEl].forEach(e => e.classList.add('no-anim')); }
   statusBooted = true;
   const backendCard = b => {
     // A manually paused backend reads "Paused", not "Offline" (which means
@@ -355,13 +356,19 @@ async function loadStatus() {
       + renderBackendModels(b.models)
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   };
-  // OAuth/credential backends (account-rotated) vs API-key backends group into
-  // two labelled sections; the API group hides itself when nothing lives there.
-  const OAUTH_BACKENDS = ['claude_oauth', 'codex', 'vertex'];
-  const oauthList = d.backends.filter(b => OAUTH_BACKENDS.includes(b.name));
-  const apiList = d.backends.filter(b => !OAUTH_BACKENDS.includes(b.name));
+  // Three ways a provider can be authenticated, which is what an operator acts
+  // on here: rotating OAuth accounts, one uploaded cloud key, or an API key
+  // from the environment. Vertex sat under OAuth Accounts but has no accounts
+  // to rotate — its GCP service account is a single credential you replace.
+  const OAUTH_PROVIDERS = ['claude_oauth', 'codex'];
+  const CRED_PROVIDERS = ['vertex'];
+  const oauthList = d.backends.filter(b => OAUTH_PROVIDERS.includes(b.name));
+  const credList = d.backends.filter(b => CRED_PROVIDERS.includes(b.name));
+  const apiList = d.backends.filter(b => !OAUTH_PROVIDERS.includes(b.name) && !CRED_PROVIDERS.includes(b.name));
   syncKeyedHTML(oauthEl, oauthList.map(b => ({key: b.name, html: backendCard(b)})));
+  syncKeyedHTML(credEl, credList.map(b => ({key: b.name, html: backendCard(b)})));
   syncKeyedHTML(apiEl, apiList.map(b => ({key: b.name, html: backendCard(b)})));
+  document.getElementById('cred-group').style.display = credList.length ? '' : 'none';
   document.getElementById('api-group').style.display = apiList.length ? '' : 'none';
 
   // Render per-account quota cards
@@ -608,7 +615,7 @@ function setFilter(value) {
   loadStats();
 }
 
-const DIM_LABELS = { model: 'Model', key: 'Key', backend: 'Backend', account: 'Account', status: 'Status' };
+const DIM_LABELS = { model: 'Model', key: 'Key', backend: 'Provider', account: 'Account', status: 'Status' };
 
 // Custom themed dropdown (a native <select> popup can't be styled to match).
 function populateFilter() {
@@ -1073,7 +1080,7 @@ function el(tag, cls, text) {
 // rename any more.
 //
 // Everything about a provider that isn't its identity (which env var holds its
-// key, whether its credentials are valid) belongs to the Backends tab; this page
+// key, whether its credentials are valid) belongs to the Providers tab; this page
 // only decides who gets asked, and in what order.
 const PROVIDER_LABELS = {
   claude_oauth: 'Claude OAuth',
@@ -1306,7 +1313,7 @@ function renderChain(list, opts) {
 
     const dot = el('span', 'dot ' + (meta.available ? 'dot-green' : meta.paused ? 'dot-gray' : 'dot-yellow'));
     dot.title = meta.available ? 'Ready to take traffic'
-      : meta.paused ? 'Paused on the Backends tab — skipped, the next provider serves'
+      : meta.paused ? 'Paused on the Providers tab — skipped, the next provider serves'
       : !meta.enabled ? 'Disabled in config — skipped, the next provider serves'
       : 'No usable credentials — skipped, the next provider serves';
     row.appendChild(dot);
