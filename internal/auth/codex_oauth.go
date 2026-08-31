@@ -404,12 +404,22 @@ func (o *CodexOAuth) exchangeCode(ctx context.Context, code, codeVerifier string
 
 const codexBaseURL = "https://chatgpt.com/backend-api"
 
-const codexUA = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64)"
+// CodexClientVersion is the codex-tui version we claim upstream. It is not
+// cosmetic: /codex/models gates the catalog on it, so a stale value silently
+// pins us to an old generation — 0.135.0 only ever saw the gpt-5.4/5.5 set and
+// never the 5.6 models. Bump this when the upstream CLI ships new models.
+const CodexClientVersion = "0.148.0"
+
+// CodexUserAgent identifies us as the CLI of the same version; upstream expects
+// the two to agree.
+const CodexUserAgent = "codex-tui/" + CodexClientVersion + " (Mac OS 26.5.0; arm64)"
+
+const codexModelsURL = codexBaseURL + "/codex/models?client_version=" + CodexClientVersion
 
 func applyCodexHeaders(req *http.Request, token string) {
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", codexUA)
+	req.Header.Set("User-Agent", CodexUserAgent)
 	req.Header.Set("Accept-Encoding", "identity")
 }
 
@@ -423,7 +433,7 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, *http.Client
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Transport: o.httpClient.Transport}
 
-	req, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
+	req, _ := http.NewRequestWithContext(ctx, "GET", codexModelsURL, nil)
 	applyCodexHeaders(req, token)
 
 	resp, err := client.Do(req)
@@ -442,40 +452,57 @@ func (o *CodexOAuth) FetchModels(ctx context.Context) ([]ModelInfo, *http.Client
 		return nil, nil, fmt.Errorf("fetch codex models: %d %s", resp.StatusCode, string(body))
 	}
 
-	var result struct {
-		Models []struct {
-			Slug        string `json:"slug"`
-			DisplayName string `json:"display_name"`
-			Description string `json:"description"`
-		} `json:"models"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		var catResult struct {
-			Categories []struct {
-				Models []struct {
-					Slug        string `json:"slug"`
-					DisplayName string `json:"display_name"`
-					Description string `json:"description"`
-				} `json:"models"`
-			} `json:"categories"`
-		}
-		if err2 := json.Unmarshal(body, &catResult); err2 == nil {
-			var models []ModelInfo
-			for _, cat := range catResult.Categories {
-				for _, m := range cat.Models {
-					models = append(models, ModelInfo{Slug: m.Slug, DisplayName: m.DisplayName, Description: m.Description})
-				}
-			}
-			return models, client, nil
-		}
+	models, err := parseCodexModels(body)
+	if err != nil {
 		return nil, nil, err
 	}
-
-	models := make([]ModelInfo, len(result.Models))
-	for i, m := range result.Models {
-		models[i] = ModelInfo{Slug: m.Slug, DisplayName: m.DisplayName, Description: m.Description}
-	}
 	return models, client, nil
+}
+
+type codexModel struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+	Description string `json:"description"`
+	// Upstream ships models the CLI is not meant to offer — an internal
+	// reviewer and a reserve model — marked "hide". They still answer requests,
+	// so nothing stops us serving one deliberately, but they must not show up
+	// in the dashboard's pick list as if they were ordinary choices.
+	Visibility string `json:"visibility"`
+}
+
+func visibleCodexModels(in []codexModel) []ModelInfo {
+	out := make([]ModelInfo, 0, len(in))
+	for _, m := range in {
+		if m.Visibility == "hide" {
+			continue
+		}
+		out = append(out, ModelInfo{Slug: m.Slug, DisplayName: m.DisplayName, Description: m.Description})
+	}
+	return out
+}
+
+// parseCodexModels reads either shape upstream returns: a flat list, or models
+// grouped into categories. The choice is made on which one yields models, not
+// on a decode error — a categories payload decodes cleanly into the flat shape
+// (unknown fields are ignored) and just comes back empty.
+func parseCodexModels(body []byte) ([]ModelInfo, error) {
+	var payload struct {
+		Models     []codexModel `json:"models"`
+		Categories []struct {
+			Models []codexModel `json:"models"`
+		} `json:"categories"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Models) > 0 {
+		return visibleCodexModels(payload.Models), nil
+	}
+	var models []ModelInfo
+	for _, cat := range payload.Categories {
+		models = append(models, visibleCodexModels(cat.Models)...)
+	}
+	return models, nil
 }
 
 // FetchQuotaWithClient fetches per-account quota using a provided http.Client with CF cookies.
@@ -612,7 +639,7 @@ func (o *CodexOAuth) FetchAllQuotas(ctx context.Context) {
 		return
 	}
 
-	warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
+	warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexModelsURL, nil)
 	applyCodexHeaders(warmupReq, warmupToken)
 	if resp, err := client.Do(warmupReq); err == nil {
 		io.ReadAll(resp.Body)
@@ -638,7 +665,7 @@ func (o *CodexOAuth) FetchQuotaForAccountByID(ctx context.Context, accountID str
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar, Transport: o.httpClient.Transport}
 
-	warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexBaseURL+"/codex/models?client_version=0.135.0", nil)
+	warmupReq, _ := http.NewRequestWithContext(ctx, "GET", codexModelsURL, nil)
 	applyCodexHeaders(warmupReq, acc.AccessToken)
 	if resp, err := client.Do(warmupReq); err == nil {
 		io.ReadAll(resp.Body)

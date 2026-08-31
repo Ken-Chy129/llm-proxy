@@ -21,7 +21,9 @@ import (
 
 const (
 	codexBaseURL   = "https://chatgpt.com/backend-api"
-	codexUserAgent = "codex-tui/0.135.0 (Mac OS 26.5.0; arm64)"
+	// Same identity we use to discover models, so we never ask for a model the
+	// version we claim is not supposed to know about.
+	codexUserAgent = auth.CodexUserAgent
 )
 
 // Codex Responses API types
