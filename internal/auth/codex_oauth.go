@@ -404,11 +404,14 @@ func (o *CodexOAuth) exchangeCode(ctx context.Context, code, codeVerifier string
 
 const codexBaseURL = "https://chatgpt.com/backend-api"
 
-// CodexClientVersion is the codex-tui version we claim upstream. It is not
-// cosmetic: /codex/models gates the catalog on it, so a stale value silently
-// pins us to an old generation — 0.135.0 only ever saw the gpt-5.4/5.5 set and
-// never the 5.6 models. Bump this when the upstream CLI ships new models.
-const CodexClientVersion = "0.148.0"
+// CodexClientVersion is the codex-tui version we claim upstream. /codex/models
+// requires the parameter (omitting it is a 400) but does not check that the
+// version exists: it gates the catalog on a floor, handing back everything to
+// anything above it. 0.135.0 fell below that floor, which is why the gpt-5.6
+// generation was invisible to us for a while. Probing 1.0.0, 0.148.0, 0.151.0
+// and 99.0.0 returned an identical list, so a deliberately unreachable version
+// clears the floor permanently and spares us chasing every CLI release.
+const CodexClientVersion = "99.0.0"
 
 // CodexUserAgent identifies us as the CLI of the same version; upstream expects
 // the two to agree.

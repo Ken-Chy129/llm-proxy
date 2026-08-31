@@ -1,15 +1,23 @@
 package auth
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
 
-// The catalog upstream returns is gated on the client_version we claim, so a
-// stale constant silently pins the dashboard to an older generation of models.
-func TestCodexClientVersionIsCurrent(t *testing.T) {
-	if CodexClientVersion == "0.135.0" {
-		t.Fatal("client version is back at 0.135.0, which never sees the gpt-5.6 models")
+// Upstream gates the catalog on a version floor, so the value only has to stay
+// above it — 0.135.0 sat below and never saw the gpt-5.6 models. Guard the
+// property that matters (comfortably past any real release) rather than one
+// blessed version, which would need editing every time the CLI ships.
+func TestCodexClientVersionClearsTheCatalogFloor(t *testing.T) {
+	major, _, _ := strings.Cut(CodexClientVersion, ".")
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		t.Fatalf("client version %q does not start with a number", CodexClientVersion)
+	}
+	if n < 1 {
+		t.Errorf("client version %q is a real 0.x release, so it will fall behind the floor again", CodexClientVersion)
 	}
 	if !strings.Contains(CodexUserAgent, CodexClientVersion) {
 		t.Errorf("user agent %q disagrees with client version %q", CodexUserAgent, CodexClientVersion)
