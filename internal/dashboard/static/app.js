@@ -666,10 +666,16 @@ function enhanceSelect(sel) {
   // overflow:hidden (and a transform from the entrance animation), which would
   // otherwise clip a fixed-positioned dropdown.
   document.body.appendChild(panel);
+  // A portalled panel outlives its trigger, so a re-rendered list (the config
+  // page rebuilds its whole chain on every edit) would leak one orphan panel
+  // per render, and each still answers closeAllDD. Tie the panel's lifetime to
+  // the select's instead of the DOM's.
+  sel._ddPanel = panel;
   const sync = () => { const o = sel.options[sel.selectedIndex]; label.textContent = o ? o.textContent : ''; };
   const addOpt = o => {
     const el = document.createElement('div');
-    el.className = 'dd-opt' + (o.selected ? ' sel' : '') + (o.disabled ? ' dis' : '');
+    el.className = 'dd-opt' + (o.selected ? ' sel' : '') + (o.disabled ? ' dis' : '') +
+      (o.dataset.muted ? ' muted' : '');
     el.textContent = o.textContent;
     if (!o.disabled) el.onclick = e => {
       e.stopPropagation();
@@ -702,6 +708,15 @@ function enhanceSelect(sel) {
   };
   sel._sync = sync;
   sync();
+}
+
+// dropEnhanced removes the body-level panels belonging to selects inside host,
+// which must be called before host is emptied — innerHTML = '' drops the
+// triggers but cannot reach the portalled panels.
+function dropEnhanced(host) {
+  host.querySelectorAll('select').forEach(sel => {
+    if (sel._ddPanel) sel._ddPanel.remove();
+  });
 }
 
 function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
@@ -1149,6 +1164,7 @@ function priceLabel(v) {
 function renderModels() {
   const host = document.getElementById('cfg-models');
   if (!host) return;
+  dropEnhanced(host);
   host.innerHTML = '';
 
   // Group by series so the list reads as families rather than 20 flat rows. A
@@ -1355,12 +1371,15 @@ function renderChain(list, opts) {
   if (remaining.length) {
     const add = el('div', 'mdl-link-add');
     const sel = document.createElement('select');
-    sel.className = 'mdl-provider-select';
     sel.setAttribute('aria-label', 'Provider to append to the chain');
     remaining.forEach(p => {
       const opt = document.createElement('option');
       opt.value = p.name;
       opt.textContent = providerLabel(p.name) + (p.available ? '' : ' (offline)');
+      // Offline providers stay selectable — adding one is how you pre-build a
+      // chain for a provider you are about to bring back — but they are dimmed
+      // so a chain is never extended with dead capacity by accident.
+      if (!p.available) opt.dataset.muted = '1';
       sel.appendChild(opt);
     });
     add.appendChild(sel);
@@ -1369,6 +1388,10 @@ function renderChain(list, opts) {
     btn.onclick = () => { list.push({ provider: sel.value, upstream: '' }); opts.onChange(); };
     add.appendChild(btn);
     wrap.appendChild(add);
+    // Themed like every other dropdown in the dashboard. The page-load sweep
+    // over .model-select/.image-select cannot cover this one: renderChain runs
+    // again on every edit, so its selects are built long after that sweep.
+    enhanceSelect(sel);
   } else if (!list.length) {
     wrap.appendChild(el('div', 'mdl-empty', 'No providers — this model cannot be served.'));
   }
@@ -1378,6 +1401,7 @@ function renderChain(list, opts) {
 function renderSeriesDefaults() {
   const host = document.getElementById('cfg-series');
   if (!host) return;
+  dropEnhanced(host);
   host.innerHTML = '';
   const known = [...SERIES_ORDER.filter(s => s !== 'other'), ...Object.keys(cfgSeries).filter(s => !SERIES_ORDER.includes(s))];
   known.forEach(series => {

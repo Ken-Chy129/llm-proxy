@@ -229,6 +229,8 @@ tr:hover td{background:var(--accent-soft);}
 .dd-trigger-label{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left;}
 .dd-opt.dis{opacity:.4;cursor:not-allowed;}
 .dd-opt.dis:hover{background:none;color:var(--text-1);}
+/* Selectable, but visibly not ready — unlike .dis, which cannot be picked. */
+.dd-opt.muted{color:var(--text-2);}
 .dd-trigger:hover{border-color:var(--text-2);}
 .dd-dot{width:7px;height:7px;border-radius:50%;background:var(--accent);box-shadow:0 0 7px rgba(var(--accent-rgb),0.7);flex-shrink:0;}
 .dd-caret{margin-left:auto;color:var(--accent-dim);font-size:10px;}
@@ -432,8 +434,11 @@ rect.cal-future{fill:transparent;}
 .mdl-use:hover{color:var(--accent);border-color:var(--accent);background:var(--accent-soft);}
 .mdl-use.is-pinned{color:var(--accent);border-color:var(--accent-dim);}
 .mdl-link-add{display:flex;align-items:center;gap:6px;padding:5px 0 0;}
-.mdl-provider-select{background:var(--bg-0);border:1px solid var(--border);color:var(--text-1);border-radius:2px;padding:4px 8px;font-size:11.5px;font-family:var(--mono);}
-.mdl-provider-select:focus{outline:none;border-color:var(--accent);}
+/* The chain's "add provider" picker is a themed dropdown like every other one;
+   only its trigger is toned down, because it sits inside a row of small chain
+   controls where a full-size control would read as the row's primary action. */
+.mdl-link-add .dd-trigger{background:var(--bg-0);border-color:var(--border);color:var(--text-1);font-size:11.5px;padding:4px 10px;min-width:132px;}
+.mdl-link-add .dd-trigger:hover{border-color:var(--accent);}
 .mdl-newbar{display:flex;align-items:center;gap:8px;}
 .mdl-newinput{flex:1;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:7px 10px;font-size:12.5px;font-family:var(--mono);}
 .mdl-newinput:focus{outline:none;border-color:var(--accent);}
