@@ -500,6 +500,43 @@ func TestResponsesAdaptsNonStreamingAnyGenToolCallToSSE(t *testing.T) {
 	assertConsistentResponseID(t, w.Body.String())
 }
 
+func TestResponsesStreamingAdapterCompletesToolCallSSE(t *testing.T) {
+	var output strings.Builder
+	_, err := (&ResponsesHandler{}).streamWithTranslation(
+		context.Background(),
+		streamingToolCallExecutor{},
+		&types.ChatCompletionRequest{Model: "claude-fable-5-1"},
+		&output,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream := output.String()
+	for _, want := range []string{
+		`"output_index":0`,
+		`"call_id":"toolu_1"`,
+		`"name":"exec_command"`,
+		"event: response.function_call_arguments.delta",
+		"event: response.function_call_arguments.done",
+		`"arguments":"{\"cmd\":\"pwd\"}"`,
+		`"status":"completed"`,
+		"event: response.output_item.done",
+		"event: response.completed",
+	} {
+		if !strings.Contains(stream, want) {
+			t.Errorf("SSE response missing %q:\n%s", want, stream)
+		}
+	}
+	assertTextInOrder(t, stream,
+		"event: response.output_item.added",
+		"event: response.function_call_arguments.delta",
+		"event: response.function_call_arguments.done",
+		"event: response.output_item.done",
+		"event: response.completed",
+	)
+}
+
 func TestResponsesNonStreamingAdapterReturnsUpstreamErrorBeforeSSE(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -662,6 +699,26 @@ func (emptyNonStreamingExecutor) Models() []string {
 
 func (emptyNonStreamingExecutor) SupportsStreaming() bool {
 	return false
+}
+
+type streamingToolCallExecutor struct{}
+
+func (streamingToolCallExecutor) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	return nil, errors.New("non-streaming execution is not expected")
+}
+
+func (streamingToolCallExecutor) ExecuteStream(_ context.Context, _ *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
+	io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-fable-5-1\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}\n\n")
+	io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-fable-5-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"toolu_1\",\"type\":\"function\",\"function\":{\"name\":\"exec_command\",\"arguments\":\"\"}}]}}]}\n\n")
+	io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-fable-5-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"{\\\"cmd\\\":\\\"pw\"}}]}}]}\n\n")
+	io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-fable-5-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"function\":{\"arguments\":\"d\\\"}\"}}]}}]}\n\n")
+	io.WriteString(w, "data: {\"id\":\"chatcmpl-test\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"claude-fable-5-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n")
+	io.WriteString(w, "data: [DONE]\n\n")
+	return nil, nil
+}
+
+func (streamingToolCallExecutor) Models() []string {
+	return []string{"claude-fable-5-1"}
 }
 
 type nativeResponsesStub struct {

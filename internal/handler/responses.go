@@ -603,7 +603,6 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 	flusher, canFlush := w.(interface{ Flush() })
 
 	responseID := fmt.Sprintf("resp_%s", uuid.New().String()[:29])
-	outputItemID := fmt.Sprintf("item_%s", uuid.New().String()[:29])
 	contentPartIdx := 0
 
 	writeEvent := func(eventType string, data interface{}) {
@@ -634,9 +633,21 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 		},
 	})
 
+	type streamedToolCall struct {
+		itemID      string
+		callID      string
+		name        string
+		outputIndex int
+		arguments   strings.Builder
+	}
+
 	outputItemSent := false
+	outputItemID := ""
+	textOutputIndex := -1
+	nextOutputIndex := 0
+	responseCompleted := false
 	var fullContent strings.Builder
-	var toolCalls []map[string]interface{}
+	var toolCalls []*streamedToolCall
 
 	scanner := bufio.NewScanner(&buf)
 	for scanner.Scan() {
@@ -662,9 +673,13 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 
 			if delta.Content != "" {
 				if !outputItemSent {
+					outputItemID = fmt.Sprintf("item_%s", uuid.New().String()[:29])
+					textOutputIndex = nextOutputIndex
+					nextOutputIndex++
 					writeEvent("response.output_item.added", map[string]interface{}{
 						"type":         "response.output_item.added",
-						"output_index": 0,
+						"response_id":  responseID,
+						"output_index": textOutputIndex,
 						"item": map[string]interface{}{
 							"id":      outputItemID,
 							"type":    "message",
@@ -675,8 +690,9 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 					})
 					writeEvent("response.content_part.added", map[string]interface{}{
 						"type":          "response.content_part.added",
+						"response_id":   responseID,
 						"item_id":       outputItemID,
-						"output_index":  0,
+						"output_index":  textOutputIndex,
 						"content_index": contentPartIdx,
 						"part": map[string]interface{}{
 							"type": "output_text",
@@ -689,8 +705,9 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 				fullContent.WriteString(delta.Content)
 				writeEvent("response.output_text.delta", map[string]interface{}{
 					"type":          "response.output_text.delta",
+					"response_id":   responseID,
 					"item_id":       outputItemID,
-					"output_index":  0,
+					"output_index":  textOutputIndex,
 					"content_index": contentPartIdx,
 					"delta":         delta.Content,
 				})
@@ -698,96 +715,130 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 
 			if len(delta.ToolCalls) > 0 {
 				for _, tc := range delta.ToolCalls {
+					var current *streamedToolCall
 					if tc.ID != "" {
-						tcItemID := fmt.Sprintf("fc_%s", uuid.New().String()[:30])
+						current = &streamedToolCall{
+							itemID:      fmt.Sprintf("fc_%s", uuid.New().String()[:30]),
+							callID:      tc.ID,
+							name:        tc.Function.Name,
+							outputIndex: nextOutputIndex,
+						}
+						nextOutputIndex++
 						writeEvent("response.output_item.added", map[string]interface{}{
 							"type":         "response.output_item.added",
-							"output_index": len(toolCalls) + 1,
+							"response_id":  responseID,
+							"output_index": current.outputIndex,
 							"item": map[string]interface{}{
-								"id":        tcItemID,
+								"id":        current.itemID,
 								"type":      "function_call",
 								"status":    "in_progress",
-								"call_id":   tc.ID,
-								"name":      tc.Function.Name,
+								"call_id":   current.callID,
+								"name":      current.name,
 								"arguments": "",
 							},
 						})
-						toolCalls = append(toolCalls, map[string]interface{}{
-							"item_id": tcItemID,
-							"call_id": tc.ID,
-							"name":    tc.Function.Name,
-							"index":   len(toolCalls) + 1,
-						})
+						toolCalls = append(toolCalls, current)
+					} else if len(toolCalls) > 0 {
+						current = toolCalls[len(toolCalls)-1]
 					}
-					if tc.Function.Arguments != "" && len(toolCalls) > 0 {
-						last := toolCalls[len(toolCalls)-1]
+					if tc.Function.Arguments != "" && current != nil {
+						current.arguments.WriteString(tc.Function.Arguments)
 						writeEvent("response.function_call_arguments.delta", map[string]interface{}{
 							"type":         "response.function_call_arguments.delta",
-							"item_id":      last["item_id"],
-							"output_index": last["index"],
+							"response_id":  responseID,
+							"item_id":      current.itemID,
+							"output_index": current.outputIndex,
 							"delta":        tc.Function.Arguments,
 						})
 					}
 				}
 			}
 
-			if choice.FinishReason != nil {
+			if choice.FinishReason != nil && !responseCompleted {
+				responseCompleted = true
+				completedOutput := make([]interface{}, nextOutputIndex)
 				if outputItemSent && fullContent.Len() > 0 {
 					writeEvent("response.output_text.done", map[string]interface{}{
 						"type":          "response.output_text.done",
+						"response_id":   responseID,
 						"item_id":       outputItemID,
-						"output_index":  0,
+						"output_index":  textOutputIndex,
 						"content_index": contentPartIdx,
 						"text":          fullContent.String(),
 					})
 					writeEvent("response.content_part.done", map[string]interface{}{
 						"type":          "response.content_part.done",
+						"response_id":   responseID,
 						"item_id":       outputItemID,
-						"output_index":  0,
+						"output_index":  textOutputIndex,
 						"content_index": contentPartIdx,
 						"part": map[string]interface{}{
 							"type": "output_text",
 							"text": fullContent.String(),
 						},
 					})
-					writeEvent("response.output_item.done", map[string]interface{}{
-						"type":         "response.output_item.done",
-						"output_index": 0,
-						"item": map[string]interface{}{
-							"id":     outputItemID,
-							"type":   "message",
-							"role":   "assistant",
-							"status": "completed",
-							"content": []interface{}{
-								map[string]interface{}{
-									"type": "output_text",
-									"text": fullContent.String(),
-								},
+					completedItem := map[string]interface{}{
+						"id":     outputItemID,
+						"type":   "message",
+						"role":   "assistant",
+						"status": "completed",
+						"content": []interface{}{
+							map[string]interface{}{
+								"type": "output_text",
+								"text": fullContent.String(),
 							},
 						},
+					}
+					writeEvent("response.output_item.done", map[string]interface{}{
+						"type":         "response.output_item.done",
+						"response_id":  responseID,
+						"output_index": textOutputIndex,
+						"item":         completedItem,
 					})
+					completedOutput[textOutputIndex] = completedItem
 				}
 
 				for _, tc := range toolCalls {
+					arguments := tc.arguments.String()
+					writeEvent("response.function_call_arguments.done", map[string]interface{}{
+						"type":         "response.function_call_arguments.done",
+						"response_id":  responseID,
+						"item_id":      tc.itemID,
+						"output_index": tc.outputIndex,
+						"call_id":      tc.callID,
+						"name":         tc.name,
+						"arguments":    arguments,
+					})
+					completedItem := map[string]interface{}{
+						"id":        tc.itemID,
+						"type":      "function_call",
+						"status":    "completed",
+						"call_id":   tc.callID,
+						"name":      tc.name,
+						"arguments": arguments,
+					}
 					writeEvent("response.output_item.done", map[string]interface{}{
 						"type":         "response.output_item.done",
-						"output_index": tc["index"],
-						"item": map[string]interface{}{
-							"id":     tc["item_id"],
-							"type":   "function_call",
-							"status": "completed",
-						},
+						"response_id":  responseID,
+						"output_index": tc.outputIndex,
+						"item":         completedItem,
 					})
+					completedOutput[tc.outputIndex] = completedItem
 				}
 
+				completedResponse := map[string]interface{}{
+					"id":     responseID,
+					"object": "response",
+					"status": "completed",
+					"model":  req.Model,
+					"output": completedOutput,
+				}
+				if usage != nil {
+					completedResponse["usage"] = chatUsageAsResponses(usage)
+				}
 				writeEvent("response.completed", map[string]interface{}{
-					"type": "response.completed",
-					"response": map[string]interface{}{
-						"id":     responseID,
-						"object": "response",
-						"status": "completed",
-						"model":  req.Model,
-					},
+					"type":     "response.completed",
+					"response": completedResponse,
 				})
 			}
 		}
