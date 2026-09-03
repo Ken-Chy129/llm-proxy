@@ -56,6 +56,47 @@ func TestAnyGenExecutorExecuteUsesConfiguredKeyAndNonStreamingEndpoint(t *testin
 	}
 }
 
+func TestAnyGenExecutorExecuteUsesConfiguredUpstreamModel(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+
+	var gotRequest types.ChatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&gotRequest); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"claude-fable-5","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}`)
+	}))
+	defer server.Close()
+
+	exec := NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	exec.SetModels([]config.ModelConfig{{
+		Name:  "ken-claude-fable-5",
+		Model: "claude-fable-5",
+	}})
+
+	content, _ := json.Marshal("hello")
+	resp, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{
+		Model:    "ken-claude-fable-5",
+		Messages: []types.ChatMessage{{Role: "user", Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if gotRequest.Model != "claude-fable-5" {
+		t.Fatalf("upstream model = %q, want claude-fable-5", gotRequest.Model)
+	}
+	if resp.Model != "ken-claude-fable-5" {
+		t.Fatalf("response model = %q, want published model", resp.Model)
+	}
+	if got := exec.Models(); !slices.Equal(got, []string{"ken-claude-fable-5"}) {
+		t.Fatalf("Models() = %v, want published model", got)
+	}
+}
+
 func TestAnyGenExecutorFetchModelsUsesOpenAIModelsEndpoint(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
+	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	internaltls "github.com/Ken-Chy129/llm-proxy/internal/tls"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/google/uuid"
@@ -22,30 +23,66 @@ import (
 type ClaudeOAuthExecutor struct {
 	oauth      *auth.ClaudeOAuth
 	httpClient *http.Client
-	models     []string
+	models     []config.ModelConfig
 	modelsMu   sync.RWMutex
 }
 
-func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []string) *ClaudeOAuthExecutor {
+func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []config.ModelConfig) *ClaudeOAuthExecutor {
 	return &ClaudeOAuthExecutor{
 		oauth:      oauth,
 		httpClient: internaltls.NewAnthropicHTTPClient(),
-		models:     models,
+		models:     append([]config.ModelConfig(nil), models...),
 	}
 }
 
 func (e *ClaudeOAuthExecutor) Models() []string {
 	e.modelsMu.RLock()
 	defer e.modelsMu.RUnlock()
-	return e.models
+	models := make([]string, len(e.models))
+	for i, model := range e.models {
+		models[i] = model.Name
+	}
+	return models
 }
 
 // SetModels replaces the served model list at runtime. Callers must re-register
 // the executor with the router afterwards so routing picks up the new list.
-func (e *ClaudeOAuthExecutor) SetModels(models []string) {
+func (e *ClaudeOAuthExecutor) SetModels(models []config.ModelConfig) {
 	e.modelsMu.Lock()
-	e.models = models
+	e.models = append([]config.ModelConfig(nil), models...)
 	e.modelsMu.Unlock()
+}
+
+func (e *ClaudeOAuthExecutor) resolveModel(name string) string {
+	e.modelsMu.RLock()
+	defer e.modelsMu.RUnlock()
+	for _, model := range e.models {
+		if model.Name == name && model.Model != "" {
+			return model.Model
+		}
+	}
+	return name
+}
+
+// rewriteAnthropicModel replaces a published alias with the provider's
+// configured upstream model id. Invalid or model-less payloads are left alone
+// so Anthropic can return its normal validation error.
+func (e *ClaudeOAuthExecutor) rewriteAnthropicModel(body []byte) ([]byte, string, error) {
+	published := modelFromBody(body)
+	upstream := e.resolveModel(published)
+	if published == "" || upstream == published {
+		return body, published, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, "", fmt.Errorf("parse Anthropic request: %w", err)
+	}
+	payload["model"], _ = json.Marshal(upstream)
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return nil, "", fmt.Errorf("rewrite Anthropic model: %w", err)
+	}
+	return rewritten, upstream, nil
 }
 
 // Configured reports whether any account is signed in. Checked on every routing
@@ -149,7 +186,8 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 }
 
 func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
-	ar := ToAnthropicRequest(req, req.Model)
+	upstreamModel := e.resolveModel(req.Model)
+	ar := ToAnthropicRequest(req, upstreamModel)
 	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
 	ApplyCacheBreakpoints(ar)
 	ar.Stream = false
@@ -160,7 +198,7 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)
 
-	resp, err := e.doWithFailover(ctx, req.Model, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, upstreamModel, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -190,7 +228,8 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 }
 
 func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
-	ar := ToAnthropicRequest(req, req.Model)
+	upstreamModel := e.resolveModel(req.Model)
+	ar := ToAnthropicRequest(req, upstreamModel)
 	// 真 Anthropic 上游：打上缓存断点（见 ApplyCacheBreakpoints 的取舍说明）
 	ApplyCacheBreakpoints(ar)
 	ar.Stream = true
@@ -201,7 +240,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)
 
-	resp, err := e.doWithFailover(ctx, req.Model, func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, upstreamModel, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
 			return nil, err
@@ -378,11 +417,17 @@ func (e *ClaudeOAuthExecutor) applyHeaders(req *http.Request, token string) {
 }
 
 func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
+	var model string
+	var err error
+	body, model, err = e.rewriteAnthropicModel(body)
+	if err != nil {
+		return nil, 0, err
+	}
 	// OAuth tokens require the Claude Code identity/billing system blocks and a
 	// signed body, or Anthropic rejects the request (opaque 429). Idempotent:
 	// requests that already carry the billing header are just re-signed.
 	body = injectClaudeCodeSystemBlocks(body)
-	resp, err := e.doWithFailover(ctx, modelFromBody(body), func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, model, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {
@@ -404,10 +449,16 @@ func (e *ClaudeOAuthExecutor) ExecuteAnthropicRaw(ctx context.Context, body []by
 }
 
 func (e *ClaudeOAuthExecutor) OpenAnthropicStream(ctx context.Context, body []byte, clientHeaders http.Header) (io.ReadCloser, int, error) {
+	var model string
+	var err error
+	body, model, err = e.rewriteAnthropicModel(body)
+	if err != nil {
+		return nil, 0, err
+	}
 	// OAuth tokens require the Claude Code identity/billing system blocks and a
 	// signed body, or Anthropic rejects the request (opaque 429). Idempotent.
 	body = injectClaudeCodeSystemBlocks(body)
-	resp, err := e.doWithFailover(ctx, modelFromBody(body), func(token string) (*http.Request, error) {
+	resp, err := e.doWithFailover(ctx, model, func(token string) (*http.Request, error) {
 		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 			"https://api.anthropic.com/v1/messages", bytes.NewReader(body))
 		if err != nil {

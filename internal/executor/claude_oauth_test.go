@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strconv"
@@ -10,6 +12,8 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
+	"github.com/Ken-Chy129/llm-proxy/internal/config"
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -47,6 +51,150 @@ func TestClaudeCodeIdentityVersionMeetsAnthropicModelFloor(t *testing.T) {
 	}
 	if got, want := claudeOAuthUserAgent, "claude-cli/"+claudeCodeVersion+" (external, sdk-cli)"; got != want {
 		t.Fatalf("Claude OAuth User-Agent=%q want %q", got, want)
+	}
+}
+
+func TestClaudeOAuthExecuteUsesConfiguredUpstreamModel(t *testing.T) {
+	dir := t.TempDir()
+	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
+	if err := store.Add(&auth.TokenData{
+		ID: "A", Provider: "claude", AccessToken: "token-A",
+		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	exec := NewClaudeOAuthExecutor(auth.NewClaudeOAuth(store), nil)
+	exec.SetModels([]config.ModelConfig{{
+		Name:  "ken-claude-fable-5",
+		Model: "claude-fable-5",
+	}})
+
+	var gotModel string
+	exec.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		gotModel = modelFromBody(body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-fable-5","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+			Request: req,
+		}, nil
+	})}
+
+	content, _ := json.Marshal("hello")
+	resp, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{
+		Model:    "ken-claude-fable-5",
+		Messages: []types.ChatMessage{{Role: "user", Content: content}},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if gotModel != "claude-fable-5" {
+		t.Fatalf("upstream model = %q, want claude-fable-5", gotModel)
+	}
+	if resp.Model != "ken-claude-fable-5" {
+		t.Fatalf("response model = %q, want published model", resp.Model)
+	}
+}
+
+func TestClaudeOAuthExecuteStreamUsesConfiguredUpstreamModel(t *testing.T) {
+	dir := t.TempDir()
+	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
+	if err := store.Add(&auth.TokenData{
+		ID: "A", Provider: "claude", AccessToken: "token-A",
+		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	exec := NewClaudeOAuthExecutor(auth.NewClaudeOAuth(store), nil)
+	exec.SetModels([]config.ModelConfig{{
+		Name:  "ken-claude-fable-5",
+		Model: "claude-fable-5",
+	}})
+
+	var gotModel string
+	exec.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		gotModel = modelFromBody(body)
+		stream := strings.Join([]string{
+			`data: {"type":"message_start","message":{"usage":{"input_tokens":1}}}`,
+			`data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}`,
+			`data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}`,
+			"",
+		}, "\n\n")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(stream)),
+			Request:    req,
+		}, nil
+	})}
+
+	content, _ := json.Marshal("hello")
+	var output bytes.Buffer
+	if _, err := exec.ExecuteStream(context.Background(), &types.ChatCompletionRequest{
+		Model:    "ken-claude-fable-5",
+		Messages: []types.ChatMessage{{Role: "user", Content: content}},
+	}, &output); err != nil {
+		t.Fatalf("ExecuteStream() error: %v", err)
+	}
+	if gotModel != "claude-fable-5" {
+		t.Fatalf("upstream model = %q, want claude-fable-5", gotModel)
+	}
+	if !strings.Contains(output.String(), `"model":"ken-claude-fable-5"`) {
+		t.Fatalf("stream did not preserve published model: %s", output.String())
+	}
+}
+
+func TestClaudeOAuthAnthropicPassthroughUsesConfiguredUpstreamModel(t *testing.T) {
+	dir := t.TempDir()
+	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
+	if err := store.Add(&auth.TokenData{
+		ID: "A", Provider: "claude", AccessToken: "token-A",
+		ExpiresAt: time.Now().Add(time.Hour).Format(time.RFC3339),
+	}); err != nil {
+		t.Fatalf("add account: %v", err)
+	}
+
+	exec := NewClaudeOAuthExecutor(auth.NewClaudeOAuth(store), nil)
+	exec.SetModels([]config.ModelConfig{{
+		Name:  "ken-claude-fable-5",
+		Model: "claude-fable-5",
+	}})
+
+	var gotModel string
+	exec.httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(req.Body)
+		if err != nil {
+			t.Fatalf("read upstream request: %v", err)
+		}
+		gotModel = modelFromBody(body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"type":"message","model":"claude-fable-5"}`)),
+			Request:    req,
+		}, nil
+	})}
+
+	body := []byte(`{"model":"ken-claude-fable-5","stream":false,"max_tokens":16,"messages":[{"role":"user","content":"hello"}]}`)
+	if _, status, err := exec.ExecuteAnthropicRaw(context.Background(), body, nil); err != nil {
+		t.Fatalf("ExecuteAnthropicRaw() error: %v", err)
+	} else if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200", status)
+	}
+	if gotModel != "claude-fable-5" {
+		t.Fatalf("upstream model = %q, want claude-fable-5", gotModel)
 	}
 }
 

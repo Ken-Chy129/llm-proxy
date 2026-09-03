@@ -38,7 +38,7 @@ type AnyGenExecutor struct {
 	baseURL    string
 	apiKeyEnv  string
 	catalog    []string // model ids the upstream reports it can serve
-	served     []string // the subset routing actually sends here
+	served     []config.ModelConfig
 	credits    AnyGenCredits
 	hasCredits bool
 	verifyURL  string
@@ -66,7 +66,11 @@ func NewAnyGenExecutor(cfg config.AnyGenConfig) *AnyGenExecutor {
 func (e *AnyGenExecutor) Models() []string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return append([]string(nil), e.served...)
+	models := make([]string, len(e.served))
+	for i, model := range e.served {
+		models[i] = model.Name
+	}
+	return models
 }
 
 // Catalog reports every model the upstream advertises, routed or not. The
@@ -80,9 +84,30 @@ func (e *AnyGenExecutor) Catalog() []string {
 
 // SetServed records which models routing sends here.
 func (e *AnyGenExecutor) SetServed(models []string) {
+	configured := make([]config.ModelConfig, len(models))
+	for i, model := range models {
+		configured[i] = config.ModelConfig{Name: model}
+	}
+	e.SetModels(configured)
+}
+
+// SetModels records the published model names and any upstream rename routing
+// configured for this provider.
+func (e *AnyGenExecutor) SetModels(models []config.ModelConfig) {
 	e.mu.Lock()
-	e.served = append([]string(nil), models...)
+	e.served = append([]config.ModelConfig(nil), models...)
 	e.mu.Unlock()
+}
+
+func (e *AnyGenExecutor) resolveModel(name string) string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	for _, model := range e.served {
+		if model.Name == name && model.Model != "" {
+			return model.Model
+		}
+	}
+	return name
 }
 
 func (e *AnyGenExecutor) setCatalog(models []string) {
@@ -139,6 +164,7 @@ func (e *AnyGenExecutor) newRequest(ctx context.Context, method, url string, bod
 
 func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
 	upstream := *req
+	upstream.Model = e.resolveModel(req.Model)
 	upstream.Stream = false
 	payload, err := json.Marshal(&upstream)
 	if err != nil {
@@ -164,6 +190,7 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("decode anygen response: %w", err)
 	}
+	result.Model = req.Model
 	return &result, nil
 }
 

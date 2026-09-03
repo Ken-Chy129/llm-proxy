@@ -36,7 +36,7 @@ func Apply(r *Router, cfg *config.Config, p *Providers) {
 	byProvider := ProviderModels(routes)
 
 	if p.Claude != nil {
-		p.Claude.SetModels(names(byProvider["claude_oauth"]))
+		p.Claude.SetModels(byProvider["claude_oauth"])
 	}
 	if p.Codex != nil {
 		p.Codex.SetModels(names(byProvider["codex"]))
@@ -51,7 +51,7 @@ func Apply(r *Router, cfg *config.Config, p *Providers) {
 		p.Relay.SetModels(byProvider["relay"])
 	}
 	if p.AnyGen != nil {
-		p.AnyGen.SetServed(names(byProvider["anygen"]))
+		p.AnyGen.SetModels(byProvider["anygen"])
 	}
 
 	setProvider(r, "claude_oauth", p.Claude, cfg.ClaudeOAuth.Enabled && p.Claude != nil)
