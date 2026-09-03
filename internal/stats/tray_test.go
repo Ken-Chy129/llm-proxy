@@ -54,12 +54,14 @@ func TestDayUsageIsCalendarDayNotRolling24h(t *testing.T) {
 	loc := time.FixedZone("test", tz*60)
 	nowLocal := time.Now().In(loc)
 	todayLocal := time.Date(nowLocal.Year(), nowLocal.Month(), nowLocal.Day(), 0, 0, 0, 0, loc)
+	elapsedToday := nowLocal.Sub(todayLocal)
+	remainingToday := 24*time.Hour - elapsedToday
 
-	// 2 hours into today, local time — must be counted.
-	insertAt(t, db, todayLocal.Add(2*time.Hour), "k-today", 100, 50)
-	// 2 hours before today started (i.e. yesterday 22:00 local) — inside a
-	// rolling 24h window, but must NOT be counted as today.
-	insertAt(t, db, todayLocal.Add(-2*time.Hour), "k-yday", 700, 300)
+	// Halfway between midnight and now — always inside today and in the past.
+	insertAt(t, db, todayLocal.Add(elapsedToday/2), "k-today", 100, 50)
+	// Halfway between the rolling-24h boundary and local midnight — always
+	// yesterday by calendar date while remaining inside the last 24 hours.
+	insertAt(t, db, todayLocal.Add(-remainingToday/2), "k-yday", 700, 300)
 
 	today, err := db.DayUsage(0, tz)
 	if err != nil {
