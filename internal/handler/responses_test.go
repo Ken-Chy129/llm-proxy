@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -295,6 +296,153 @@ func TestResponsesAdaptsNonStreamingAnyGenTextToSSE(t *testing.T) {
 	assertConsistentResponseID(t, w.Body.String())
 }
 
+func TestResponsesFallsBackFromNativeCodexToAdaptedAnyGenOn429(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	anygenCalls := 0
+	anygenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anygenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"gpt-5.6-sol","choices":[{"index":0,"message":{"role":"assistant","content":"fallback from AnyGen"},"finish_reason":"stop"}],"usage":{"prompt_tokens":8,"completion_tokens":3,"total_tokens":11}}`)
+	}))
+	defer anygenServer.Close()
+
+	codex := &nativeResponsesStub{
+		err: &executor.HTTPError{Backend: "codex", Status: http.StatusTooManyRequests, Body: `{"error":"usage_limit_reached"}`},
+	}
+	anygen := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   anygenServer.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygen.SetServed([]string{"gpt-5.6-sol"})
+
+	r := router.New()
+	r.SetProvider("codex", codex)
+	r.SetProvider("anygen", anygen)
+	r.SetRoutes([]router.Route{{
+		Model:     "gpt-5.6-sol",
+		Providers: []string{"codex", "anygen"},
+	}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"input":[{"role":"user","content":"hello"}]
+	}`))
+	h.HandleResponses(c)
+
+	if codex.responsesCalls != 1 {
+		t.Fatalf("Codex Responses calls = %d, want 1", codex.responsesCalls)
+	}
+	if anygenCalls != 1 {
+		t.Fatalf("AnyGen calls = %d, want 1 after Codex 429; body=%s", anygenCalls, w.Body.String())
+	}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "fallback from AnyGen") {
+		t.Fatalf("status=%d body=%s, want adapted AnyGen success", w.Code, w.Body.String())
+	}
+}
+
+func TestResponsesUsesAdaptedAnyGenBeforeNativeCodexWhenConfiguredFirst(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	anygenCalls := 0
+	anygenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anygenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"gpt-5.6-sol","choices":[{"index":0,"message":{"role":"assistant","content":"AnyGen was first"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	}))
+	defer anygenServer.Close()
+
+	anygen := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   anygenServer.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygen.SetServed([]string{"gpt-5.6-sol"})
+	codex := &nativeResponsesStub{
+		body: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.6-sol\"}}\n\n",
+	}
+
+	r := router.New()
+	r.SetProvider("anygen", anygen)
+	r.SetProvider("codex", codex)
+	r.SetRoutes([]router.Route{{
+		Model:     "gpt-5.6-sol",
+		Providers: []string{"anygen", "codex"},
+	}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"input":[{"role":"user","content":"hello"}]
+	}`))
+	h.HandleResponses(c)
+
+	if anygenCalls != 1 {
+		t.Fatalf("AnyGen calls = %d, want configured first provider to run; body=%s", anygenCalls, w.Body.String())
+	}
+	if codex.responsesCalls != 0 {
+		t.Fatalf("Codex Responses calls = %d, want 0 when AnyGen succeeds first", codex.responsesCalls)
+	}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "AnyGen was first") {
+		t.Fatalf("status=%d body=%s, want adapted AnyGen success", w.Code, w.Body.String())
+	}
+}
+
+func TestResponsesFallsBackFromAdaptedAnyGenToNativeCodexOn429(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	anygenCalls := 0
+	anygenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anygenCalls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `{"error":"quota exhausted"}`)
+	}))
+	defer anygenServer.Close()
+
+	anygen := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   anygenServer.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygen.SetServed([]string{"gpt-5.6-sol"})
+	codex := &nativeResponsesStub{
+		body: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback from Codex\"}]}]}}\n\n",
+	}
+
+	r := router.New()
+	r.SetProvider("anygen", anygen)
+	r.SetProvider("codex", codex)
+	r.SetRoutes([]router.Route{{
+		Model:     "gpt-5.6-sol",
+		Providers: []string{"anygen", "codex"},
+	}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"input":[{"role":"user","content":"hello"}]
+	}`))
+	h.HandleResponses(c)
+
+	if anygenCalls != 1 {
+		t.Fatalf("AnyGen calls = %d, want 1", anygenCalls)
+	}
+	if codex.responsesCalls != 1 {
+		t.Fatalf("Codex Responses calls = %d, want 1 after AnyGen 429; body=%s", codex.responsesCalls, w.Body.String())
+	}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "fallback from Codex") {
+		t.Fatalf("status=%d body=%s, want native Codex success", w.Code, w.Body.String())
+	}
+}
+
 func TestResponsesAdaptsNonStreamingAnyGenToolCallToSSE(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -514,4 +662,28 @@ func (emptyNonStreamingExecutor) Models() []string {
 
 func (emptyNonStreamingExecutor) SupportsStreaming() bool {
 	return false
+}
+
+type nativeResponsesStub struct {
+	responsesCalls int
+	body           string
+	err            error
+}
+
+func (s *nativeResponsesStub) Models() []string { return []string{"gpt-5.6-sol"} }
+
+func (s *nativeResponsesStub) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	return nil, errors.New("chat adapter should not be called for native Responses")
+}
+
+func (s *nativeResponsesStub) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
+	return nil, errors.New("chat streaming adapter should not be called for native Responses")
+}
+
+func (s *nativeResponsesStub) OpenResponsesStream(context.Context, []byte) (io.ReadCloser, error) {
+	s.responsesCalls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return io.NopCloser(strings.NewReader(s.body)), nil
 }

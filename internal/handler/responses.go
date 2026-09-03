@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -105,6 +106,64 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	// ended up serving.
 	c.Request = c.Request.WithContext(ctx)
 
+	if chain, ok := exec.(*executor.Chain); ok && chain.HasMixedResponsesSupport() {
+		var chatReq *types.ChatCompletionRequest
+		var conversionErr error
+		var adaptedUsage *types.Usage
+		stream, openErr := chain.OpenResponsesStreamWithAdapter(ctx, body, func(ctx context.Context, provider executor.Executor) (io.ReadCloser, error) {
+			if chatReq == nil && conversionErr == nil {
+				chatReq, conversionErr = h.toChatCompletionRequest(&req)
+			}
+			if conversionErr != nil {
+				return nil, &executor.HTTPError{
+					Backend: "responses adapter",
+					Status:  http.StatusBadRequest,
+					Body:    conversionErr.Error(),
+				}
+			}
+			stream, usage, err := h.openAdaptedResponsesStream(ctx, provider, chatReq, req.Model, trailingCompactionTrigger(req.Input))
+			if err == nil {
+				adaptedUsage = usage
+			}
+			return stream, err
+		})
+		if openErr != nil {
+			log.Printf("responses open error: %v", openErr)
+			account, failedOver := getAccount()
+			h.recordLog(c, req.Model, start, nil, account, failedOver, openErr)
+			status := http.StatusBadGateway
+			errorType := "server_error"
+			var httpErr *executor.HTTPError
+			if errors.As(openErr, &httpErr) && httpErr.Backend == "responses adapter" && httpErr.Status == http.StatusBadRequest {
+				status = http.StatusBadRequest
+				errorType = "invalid_request_error"
+			}
+			c.JSON(status, gin.H{
+				"error": gin.H{"message": openErr.Error(), "type": errorType},
+			})
+			return
+		}
+		defer stream.Close()
+
+		setSSEHeaders()
+		c.Writer.Flush()
+		responsesUsage, copyErr := copyResponsesStreamAndExtractUsage(stream, c.Writer)
+		account, failedOver := getAccount()
+		var breakdown *types.TokenUsage
+		if responsesUsage != nil {
+			b := responsesUsage.Breakdown()
+			breakdown = &b
+		} else if adaptedUsage != nil {
+			b := adaptedUsage.Breakdown()
+			breakdown = &b
+		}
+		h.recordLog(c, req.Model, start, breakdown, account, failedOver, copyErr)
+		if copyErr != nil {
+			log.Printf("responses stream error: %v", copyErr)
+		}
+		return
+	}
+
 	if re, ok := executor.AsResponsesExecutor(exec); ok {
 		stream, openErr := re.OpenResponsesStream(ctx, body)
 		if openErr != nil {
@@ -195,6 +254,57 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	if streamErr != nil {
 		log.Printf("responses translate stream error: %v", streamErr)
 	}
+}
+
+// openAdaptedResponsesStream serves one non-native Responses provider and
+// buffers the translated event stream before returning it. Buffering is what
+// keeps provider failover safe: an adapted provider can fail without having
+// written a partial Responses stream to the client.
+func (h *ResponsesHandler) openAdaptedResponsesStream(
+	ctx context.Context,
+	exec executor.Executor,
+	req *types.ChatCompletionRequest,
+	model string,
+	compaction bool,
+) (io.ReadCloser, *types.Usage, error) {
+	var buf bytes.Buffer
+	if compaction {
+		resp, err := exec.Execute(ctx, prepareCompactionRequest(req))
+		if err != nil {
+			return nil, nil, err
+		}
+		summary := chatResponseSummary(resp)
+		if summary == "" {
+			return nil, nil, fmt.Errorf("compaction produced no summary")
+		}
+		if err := writeCompactionV2SSE(resp, model, summary, &buf); err != nil {
+			return nil, nil, err
+		}
+		var usage *types.Usage
+		if resp != nil {
+			usage = resp.Usage
+		}
+		return io.NopCloser(bytes.NewReader(buf.Bytes())), usage, nil
+	}
+
+	if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
+		nonStreaming := *req
+		nonStreaming.Stream = false
+		resp, err := exec.Execute(ctx, &nonStreaming)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := writeChatCompletionAsResponsesSSE(resp, model, &buf); err != nil {
+			return nil, nil, err
+		}
+		return io.NopCloser(bytes.NewReader(buf.Bytes())), resp.Usage, nil
+	}
+
+	usage, err := h.streamWithTranslation(ctx, exec, req, &buf)
+	if err != nil {
+		return nil, usage, err
+	}
+	return io.NopCloser(bytes.NewReader(buf.Bytes())), usage, nil
 }
 
 func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*types.ChatCompletionRequest, error) {

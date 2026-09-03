@@ -216,36 +216,96 @@ func (e *Chain) SupportsResponses() bool {
 	return false
 }
 
+// HasMixedResponsesSupport reports whether this chain combines providers that
+// speak native Responses with providers that need the Chat Completions adapter.
+// The Responses handler must preserve the configured order in that case instead
+// of choosing one protocol for the whole chain.
+func (e *Chain) HasMixedResponsesSupport() bool {
+	native, adapted := false, false
+	for _, link := range e.links {
+		if _, ok := link.Exec.(ResponsesExecutor); ok {
+			native = true
+		} else {
+			adapted = true
+		}
+	}
+	return native && adapted
+}
+
 // OpenResponsesStream forwards the native Responses protocol. Like the
 // Anthropic stream, the upstream status is known before any byte reaches the
 // client, so moving to the next provider is safe.
 func (e *Chain) OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error) {
+	return e.openResponsesStream(ctx, body, nil)
+}
+
+// OpenResponsesStreamWithAdapter walks every provider in configured order.
+// Native Responses providers receive the original body; other providers are
+// opened through adapt, which converts their Chat Completions result back into
+// a Responses event stream. This is what lets a chain cross the protocol
+// boundary in either direction, for example codex -> anygen and anygen -> codex.
+func (e *Chain) OpenResponsesStreamWithAdapter(
+	ctx context.Context,
+	body []byte,
+	adapt func(context.Context, Executor) (io.ReadCloser, error),
+) (io.ReadCloser, error) {
+	return e.openResponsesStream(ctx, body, adapt)
+}
+
+func (e *Chain) openResponsesStream(
+	ctx context.Context,
+	body []byte,
+	adapt func(context.Context, Executor) (io.ReadCloser, error),
+) (io.ReadCloser, error) {
 	var lastErr error
 	tried := false
+	var previousProvider string
 	for i, link := range e.links {
 		re, ok := link.Exec.(ResponsesExecutor)
-		if !ok {
+		if !ok && adapt == nil {
 			continue
 		}
 		if tried {
-			recordBackendFallover(ctx, e.links[i-1].Provider)
+			recordBackendFallover(ctx, previousProvider)
 		}
 		tried = true
+		previousProvider = link.Provider
 		recordBackend(ctx, link.Provider)
-		stream, err := re.OpenResponsesStream(ctx, body)
+		var stream io.ReadCloser
+		var err error
+		if ok {
+			stream, err = re.OpenResponsesStream(ctx, body)
+		} else {
+			stream, err = adapt(ctx, link.Exec)
+		}
 		if err == nil {
 			return stream, nil
+		}
+		if stream != nil {
+			stream.Close()
 		}
 		lastErr = err
 		status := StatusFromError(err)
 		if !shouldFallOver(status, nil) && status != 0 {
 			return nil, err
 		}
+		if next, ok := e.nextResponsesProvider(i, adapt != nil); ok {
+			log.Printf("[chain] %s exhausted (%v); retrying on %s", link.Provider, err, next)
+		}
 	}
 	if !tried {
 		return nil, errNoResponsesProvider
 	}
 	return nil, lastErr
+}
+
+func (e *Chain) nextResponsesProvider(i int, adapterAvailable bool) (string, bool) {
+	for _, link := range e.links[i+1:] {
+		if _, ok := link.Exec.(ResponsesExecutor); ok || adapterAvailable {
+			return link.Provider, true
+		}
+	}
+	return "", false
 }
 
 type firstWriteTracker struct {
