@@ -44,7 +44,7 @@ func TestInjectClaudeCodeSystemBlocksUsesRequestFingerprintWithoutCCH(t *testing
 	if len(parsed.System) != 3 {
 		t.Fatalf("system blocks=%d want 3: %s", len(parsed.System), got)
 	}
-	wantHeader := "x-anthropic-billing-header: cc_version=2.1.220.032; cc_entrypoint=sdk-cli;"
+	wantHeader := "x-anthropic-billing-header: cc_version=2.1.259.82b; cc_entrypoint=sdk-cli;"
 	if parsed.System[0].Text != wantHeader {
 		t.Fatalf("billing header=%q want %q", parsed.System[0].Text, wantHeader)
 	}

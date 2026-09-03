@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -15,6 +16,38 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func claudeVersionValue(t *testing.T, version string) int {
+	t.Helper()
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		t.Fatalf("invalid Claude Code version %q", version)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		t.Fatalf("invalid Claude Code major version %q: %v", version, err)
+	}
+	minor, err := strconv.Atoi(parts[1])
+	if err != nil {
+		t.Fatalf("invalid Claude Code minor version %q: %v", version, err)
+	}
+	patch, err := strconv.Atoi(parts[2])
+	if err != nil {
+		t.Fatalf("invalid Claude Code patch version %q: %v", version, err)
+	}
+	return major*1_000_000 + minor*1_000 + patch
+}
+
+func TestClaudeCodeIdentityVersionMeetsAnthropicModelFloor(t *testing.T) {
+	const minimumVersion = "2.1.251"
+
+	if got := claudeVersionValue(t, claudeCodeVersion); got < claudeVersionValue(t, minimumVersion) {
+		t.Fatalf("Claude Code identity version=%q is older than required minimum %q", claudeCodeVersion, minimumVersion)
+	}
+	if got, want := claudeOAuthUserAgent, "claude-cli/"+claudeCodeVersion+" (external, sdk-cli)"; got != want {
+		t.Fatalf("Claude OAuth User-Agent=%q want %q", got, want)
+	}
 }
 
 // A single 429 must never sideline the whole Claude account for longer than
@@ -169,7 +202,7 @@ func TestAnthropicPassthroughHeadersPreserveOAuthIdentity(t *testing.T) {
 			t.Errorf("beta %q count=%d in %q", want, count, req.Header.Get("anthropic-beta"))
 		}
 	}
-	if got, want := req.Header.Get("User-Agent"), "claude-cli/2.1.220 (external, sdk-cli)"; got != want {
+	if got, want := req.Header.Get("User-Agent"), "claude-cli/"+claudeCodeVersion+" (external, sdk-cli)"; got != want {
 		t.Errorf("User-Agent=%q want %q", got, want)
 	}
 	if got := req.Header.Get("x-app"); got != "cli" {
