@@ -307,6 +307,20 @@ func (h *ResponsesHandler) openAdaptedResponsesStream(
 	return io.NopCloser(bytes.NewReader(buf.Bytes())), usage, nil
 }
 
+// newAssistantMessageID mints the id for an assistant message item we synthesize
+// when a Chat Completions provider answers a Responses request.
+//
+// The prefix is load-bearing. Clients persist these ids in their conversation
+// history and send them back on the next turn, so an id minted here can arrive
+// at the real Responses upstream later — which rejects anything that is not
+// "msg_" for a message item. An earlier "item_" prefix was invented rather than
+// observed, and it poisoned any session that switched from a translated
+// provider to Codex: every subsequent turn failed with a 400 that no retry
+// could clear, because the bad id was already in the client's history.
+func newAssistantMessageID() string {
+	return "msg_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+}
+
 func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*types.ChatCompletionRequest, error) {
 	chatReq := &types.ChatCompletionRequest{
 		Model:       req.Model,
@@ -673,7 +687,7 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 
 			if delta.Content != "" {
 				if !outputItemSent {
-					outputItemID = fmt.Sprintf("item_%s", uuid.New().String()[:29])
+					outputItemID = newAssistantMessageID()
 					textOutputIndex = nextOutputIndex
 					nextOutputIndex++
 					writeEvent("response.output_item.added", map[string]interface{}{
@@ -905,7 +919,7 @@ func writeChatCompletionAsResponsesSSE(resp *types.ChatCompletionResponse, reque
 		}
 		message := choice.Message
 		if message.Content != "" {
-			itemID := fmt.Sprintf("item_%s", uuid.New().String()[:29])
+			itemID := newAssistantMessageID()
 			if err := writeEvent("response.output_item.added", map[string]interface{}{
 				"type": "response.output_item.added", "response_id": responseID, "output_index": outputIndex,
 				"item": map[string]interface{}{

@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	codexBaseURL   = "https://chatgpt.com/backend-api"
+	codexBaseURL = "https://chatgpt.com/backend-api"
 	// Same identity we use to discover models, so we never ask for a model the
 	// version we claim is not supposed to know about.
 	codexUserAgent = auth.CodexUserAgent
@@ -400,6 +400,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	if _, ok := reqMap["instructions"]; !ok {
 		reqMap["instructions"] = ""
 	}
+	stripForeignInputIDs(reqMap)
 	patchedBody, _ := json.Marshal(reqMap)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(patchedBody))
@@ -429,6 +430,49 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	}
 
 	return resp.Body, nil
+}
+
+// stripForeignInputIDs drops item ids upstream will not accept.
+//
+// A conversation can move between providers, and a turn answered by a
+// translated provider is replayed to us with the ids we synthesized for it.
+// Upstream validates the prefix of every id it is given and rejects the whole
+// request when one is not its own — which strands the session for good, since
+// the offending id lives in the client's history and comes back on every retry.
+//
+// The id is optional on input, so dropping an unrecognized one costs nothing:
+// upstream reads the item's content either way. Ids that already look native
+// are left untouched, because they may reference stored state we cannot
+// reconstruct.
+func stripForeignInputIDs(reqMap map[string]interface{}) {
+	input, ok := reqMap["input"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, raw := range input {
+		item, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id, ok := item["id"].(string)
+		if !ok || id == "" {
+			continue
+		}
+		if !nativeResponsesID(id) {
+			delete(item, "id")
+		}
+	}
+}
+
+// nativeResponsesID reports whether an id uses one of the prefixes the Responses
+// API issues. Anything else was minted by a translation layer.
+func nativeResponsesID(id string) bool {
+	for _, prefix := range []string{"msg_", "fc_", "rs_", "fcout_", "cu_", "ws_", "mcp_", "ig_"} {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // sseTranslator translates Codex SSE events to OpenAI chat.completion.chunk format on the fly

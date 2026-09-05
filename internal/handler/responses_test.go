@@ -744,3 +744,48 @@ func (s *nativeResponsesStub) OpenResponsesStream(context.Context, []byte) (io.R
 	}
 	return io.NopCloser(strings.NewReader(s.body)), nil
 }
+
+// The ids we synthesize for a translated provider's reply do not stay with us:
+// clients persist them and replay them on the next turn, which may be served by
+// the real Responses upstream. That upstream validates the prefix of a message
+// item's id and rejects anything but "msg_", so an invented prefix strands
+// every session that switches providers mid-conversation — the bad id is in the
+// client's history, so no retry can clear it.
+func TestAdaptedResponsesMintsUpstreamCompatibleMessageIDs(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer server.Close()
+
+	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		Enabled:   true,
+		BaseURL:   server.URL + "/api/v1",
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygenExec.SetServed([]string{"gpt-5.6-luna"})
+	r := router.New()
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-luna", Providers: []string{"anygen"}}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-luna",
+		"stream":true,
+		"input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]
+	}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.HandleResponses(c)
+
+	body := w.Body.String()
+	if strings.Contains(body, `"id":"item_`) {
+		t.Errorf("message item uses an id prefix upstream rejects:\n%s", body)
+	}
+	if !strings.Contains(body, `"id":"msg_`) {
+		t.Errorf("message item is missing a msg_ id:\n%s", body)
+	}
+}
