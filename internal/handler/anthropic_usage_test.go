@@ -125,6 +125,23 @@ func TestCopyResponsesStreamExtractsUsage(t *testing.T) {
 	}
 }
 
+func TestCopyIncompleteResponsesStreamExtractsUsage(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.incomplete`,
+		`data: {"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":9000,"output_tokens":4000}}}`,
+		``,
+	}, "\n")
+
+	var out strings.Builder
+	usage, err := copyResponsesStreamAndExtractUsage(strings.NewReader(stream), &out)
+	if err != nil {
+		t.Fatalf("copyResponsesStreamAndExtractUsage: %v", err)
+	}
+	if usage == nil || usage.InputTokens != 9000 || usage.OutputTokens != 4000 {
+		t.Fatalf("usage = %+v, want incomplete response usage", usage)
+	}
+}
+
 func TestCopyResponsesStreamWithoutCompletedEvent(t *testing.T) {
 	// A stream that dies before response.completed has no usage to report; the
 	// caller must get nil rather than a zero-value object claiming 0 tokens.

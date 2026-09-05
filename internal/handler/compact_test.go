@@ -202,7 +202,7 @@ func TestResponsesCompactionEmptySummaryFailsBeforeSSE(t *testing.T) {
 	if got := w.Header().Get("Content-Type"); strings.HasPrefix(got, "text/event-stream") {
 		t.Fatalf("Content-Type = %q, empty summary must fail before SSE", got)
 	}
-	if !strings.Contains(w.Body.String(), "no summary") {
+	if !strings.Contains(w.Body.String(), "no usable assistant output") {
 		t.Fatalf("error body = %s", w.Body.String())
 	}
 }

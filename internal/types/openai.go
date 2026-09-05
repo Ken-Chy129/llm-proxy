@@ -1,6 +1,9 @@
 package types
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type ChatCompletionRequest struct {
 	Model           string          `json:"model"`
@@ -58,6 +61,23 @@ type ChatCompletionResponse struct {
 	Model   string                 `json:"model"`
 	Choices []ChatCompletionChoice `json:"choices"`
 	Usage   *Usage                 `json:"usage,omitempty"`
+}
+
+// HasUsableAssistantOutput reports whether adapting this response can produce
+// at least one visible text item or function call.
+func (r *ChatCompletionResponse) HasUsableAssistantOutput() bool {
+	if r == nil {
+		return false
+	}
+	for _, choice := range r.Choices {
+		if choice.Message == nil {
+			continue
+		}
+		if strings.TrimSpace(choice.Message.Content) != "" || len(choice.Message.ToolCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 type ChatCompletionChoice struct {

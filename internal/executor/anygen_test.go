@@ -97,6 +97,71 @@ func TestAnyGenExecutorExecuteUsesConfiguredUpstreamModel(t *testing.T) {
 	}
 }
 
+func TestAnyGenExecutorRejectsSuccessfulResponseWithoutUsableOutput(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "no choices",
+			body: `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[]}`,
+		},
+		{
+			name: "empty message",
+			body: `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				io.WriteString(w, tt.body)
+			}))
+			defer server.Close()
+
+			exec := NewAnyGenExecutor(config.AnyGenConfig{
+				BaseURL:   server.URL,
+				APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+			})
+			_, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{Model: "gpt-5.6-luna"})
+			if err == nil {
+				t.Fatal("Execute() succeeded, want empty upstream response rejected")
+			}
+			if got := StatusFromError(err); got != http.StatusBadGateway {
+				t.Fatalf("status = %d, want 502; err=%v", got, err)
+			}
+			if !strings.Contains(err.Error(), "no usable assistant output") {
+				t.Fatalf("error = %q, want usable-output explanation", err)
+			}
+		})
+	}
+}
+
+func TestAnyGenExecutorAcceptsToolCallOnlyResponse(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"pwd\"}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	exec := NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   server.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	resp, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{Model: "gpt-5.6-luna"})
+	if err != nil {
+		t.Fatalf("Execute() error: %v", err)
+	}
+	if len(resp.Choices) != 1 || resp.Choices[0].Message == nil || len(resp.Choices[0].Message.ToolCalls) != 1 {
+		t.Fatalf("unexpected tool-call response: %+v", resp)
+	}
+}
+
 func TestAnyGenExecutorFetchModelsUsesOpenAIModelsEndpoint(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 

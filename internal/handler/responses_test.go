@@ -394,6 +394,55 @@ func TestResponsesUsesAdaptedAnyGenBeforeNativeCodexWhenConfiguredFirst(t *testi
 	}
 }
 
+func TestResponsesFallsBackFromAdaptedAnyGenToNativeCodexOnEmptySuccess(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	anygenCalls := 0
+	anygenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		anygenCalls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[]}`)
+	}))
+	defer anygenServer.Close()
+
+	anygen := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   anygenServer.URL,
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygen.SetServed([]string{"gpt-5.6-sol"})
+	codex := &nativeResponsesStub{
+		body: "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5.6-sol\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"fallback from Codex\"}]}]}}\n\n",
+	}
+
+	r := router.New()
+	r.SetProvider("anygen", anygen)
+	r.SetProvider("codex", codex)
+	r.SetRoutes([]router.Route{{
+		Model:     "gpt-5.6-sol",
+		Providers: []string{"anygen", "codex"},
+	}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol",
+		"stream":true,
+		"input":[{"role":"user","content":"hello"}]
+	}`))
+	h.HandleResponses(c)
+
+	if anygenCalls != 1 {
+		t.Fatalf("AnyGen calls = %d, want 1", anygenCalls)
+	}
+	if codex.responsesCalls != 1 {
+		t.Fatalf("Codex Responses calls = %d, want 1 after empty AnyGen success; body=%s", codex.responsesCalls, w.Body.String())
+	}
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "fallback from Codex") {
+		t.Fatalf("status=%d body=%s, want native Codex fallback success", w.Code, w.Body.String())
+	}
+}
+
 func TestResponsesFallsBackFromAdaptedAnyGenToNativeCodexOn429(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	anygenCalls := 0
@@ -537,6 +586,84 @@ func TestResponsesStreamingAdapterCompletesToolCallSSE(t *testing.T) {
 	)
 }
 
+func TestResponsesStreamingAdapterHandlesTerminalChunkWithoutDelta(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"hello"}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"finish_reason":"stop"}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n\n")
+	var output strings.Builder
+	_, err := (&ResponsesHandler{}).streamWithTranslation(
+		context.Background(),
+		staticChatStreamExecutor{stream: stream},
+		&types.ChatCompletionRequest{Model: "claude-opus-5"},
+		&output,
+	)
+	if err != nil {
+		t.Fatalf("streamWithTranslation() error: %v", err)
+	}
+	if !strings.Contains(output.String(), "event: response.completed") {
+		t.Fatalf("terminal chunk did not complete Responses stream:\n%s", output.String())
+	}
+}
+
+func TestResponsesStreamingAdapterRejectsStreamWithoutFinishReason(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"}}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n\n")
+	var output strings.Builder
+	_, err := (&ResponsesHandler{}).streamWithTranslation(
+		context.Background(),
+		staticChatStreamExecutor{stream: stream},
+		&types.ChatCompletionRequest{Model: "claude-opus-5"},
+		&output,
+	)
+	if err == nil {
+		t.Fatal("streamWithTranslation() succeeded without a finish reason")
+	}
+	if !strings.Contains(err.Error(), "finish reason") {
+		t.Fatalf("error = %q, want finish-reason explanation", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("invalid stream leaked partial Responses events:\n%s", output.String())
+	}
+}
+
+func TestResponsesStreamingAdapterMapsLengthToIncomplete(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"partial"}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n\n")
+	var output strings.Builder
+	_, err := (&ResponsesHandler{}).streamWithTranslation(
+		context.Background(),
+		staticChatStreamExecutor{stream: stream},
+		&types.ChatCompletionRequest{Model: "claude-opus-5"},
+		&output,
+	)
+	if err != nil {
+		t.Fatalf("streamWithTranslation() error: %v", err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		"event: response.incomplete",
+		`"status":"incomplete"`,
+		`"incomplete_details":{"reason":"max_output_tokens"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("incomplete stream missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "event: response.completed") {
+		t.Fatalf("length-limited stream was marked completed:\n%s", body)
+	}
+}
+
 func TestResponsesNonStreamingAdapterReturnsUpstreamErrorBeforeSSE(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -600,6 +727,55 @@ func TestResponsesNonStreamingAdapterRejectsEmptyResponseBeforeSSE(t *testing.T)
 	}
 	if !strings.Contains(w.Body.String(), "empty response") {
 		t.Fatalf("error body = %s", w.Body.String())
+	}
+}
+
+func TestWriteChatCompletionAsResponsesSSERejectsEmptyOutputBeforeWriting(t *testing.T) {
+	finishReason := "stop"
+	resp := &types.ChatCompletionResponse{
+		Choices: []types.ChatCompletionChoice{{
+			Message:      &types.ChatResult{Role: "assistant"},
+			FinishReason: &finishReason,
+		}},
+	}
+	var output strings.Builder
+	err := writeChatCompletionAsResponsesSSE(resp, "gpt-5.6-luna", &output)
+	if err == nil {
+		t.Fatal("writeChatCompletionAsResponsesSSE() succeeded for empty output")
+	}
+	if !strings.Contains(err.Error(), "no usable assistant output") {
+		t.Fatalf("error = %q, want usable-output explanation", err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("empty response leaked SSE events:\n%s", output.String())
+	}
+}
+
+func TestWriteChatCompletionAsResponsesSSEMapsLengthToIncomplete(t *testing.T) {
+	finishReason := "length"
+	resp := &types.ChatCompletionResponse{
+		Model: "gpt-5.6-luna",
+		Choices: []types.ChatCompletionChoice{{
+			Message:      &types.ChatResult{Role: "assistant", Content: "partial"},
+			FinishReason: &finishReason,
+		}},
+	}
+	var output strings.Builder
+	if err := writeChatCompletionAsResponsesSSE(resp, resp.Model, &output); err != nil {
+		t.Fatalf("writeChatCompletionAsResponsesSSE() error: %v", err)
+	}
+	body := output.String()
+	for _, want := range []string{
+		"event: response.incomplete",
+		`"status":"incomplete"`,
+		`"incomplete_details":{"reason":"max_output_tokens"}`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("incomplete response missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "event: response.completed") {
+		t.Fatalf("length-limited response was marked completed:\n%s", body)
 	}
 }
 
@@ -719,6 +895,23 @@ func (streamingToolCallExecutor) ExecuteStream(_ context.Context, _ *types.ChatC
 
 func (streamingToolCallExecutor) Models() []string {
 	return []string{"claude-fable-5-1"}
+}
+
+type staticChatStreamExecutor struct {
+	stream string
+}
+
+func (s staticChatStreamExecutor) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	return nil, errors.New("non-streaming execution is not expected")
+}
+
+func (s staticChatStreamExecutor) ExecuteStream(_ context.Context, _ *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
+	_, err := io.WriteString(w, s.stream)
+	return nil, err
+}
+
+func (s staticChatStreamExecutor) Models() []string {
+	return []string{"claude-opus-5"}
 }
 
 type nativeResponsesStub struct {

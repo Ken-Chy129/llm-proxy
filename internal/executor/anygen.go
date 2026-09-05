@@ -190,6 +190,13 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("decode anygen response: %w", err)
 	}
+	if !result.HasUsableAssistantOutput() {
+		return nil, &HTTPError{
+			Backend: "anygen",
+			Status:  http.StatusBadGateway,
+			Body:    "successful response contained no usable assistant output",
+		}
+	}
 	result.Model = req.Model
 	return &result, nil
 }
