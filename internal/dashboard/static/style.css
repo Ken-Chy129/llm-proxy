@@ -464,6 +464,11 @@ rect.cal-future{fill:transparent;}
 .mdl-upstream::placeholder{color:var(--text-2);}
 .mdl-map:not(.has-map) .mdl-upstream{border-color:transparent;background:transparent;}
 .mdl-map:not(.has-map):focus-within .mdl-upstream{border-color:var(--accent);background:var(--bg-0);}
+/* The provider never listed this id: still saveable (catalogs can lag, and
+   Vertex has none), but no longer silent until a request fails. */
+.mdl-map.is-unknown{opacity:1;}
+.mdl-map.is-unknown .mdl-map-mark{color:var(--yellow);}
+.mdl-map.is-unknown .mdl-upstream{border-color:rgba(255,204,77,0.55);color:var(--yellow);}
 
 .route-move{width:26px;height:24px;border:1px solid var(--border);border-radius:2px;background:transparent;color:var(--text-1);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .14s;}
 .route-move:hover:not(:disabled),.route-move:focus-visible{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none;}
