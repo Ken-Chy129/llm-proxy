@@ -61,6 +61,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	admin.PUT("/config", adminHandler.UpdateConfig)
 	admin.POST("/sync-models", adminHandler.SyncModels)
 	admin.POST("/pin", adminHandler.PinModel)
+	admin.POST("/publish", adminHandler.PublishModel)
 	admin.POST("/refresh-quota/:provider/:id", adminHandler.RefreshQuota)
 	admin.DELETE("/accounts/:provider/:id", adminHandler.DeleteAccount)
 	admin.POST("/vertex/credentials", adminHandler.SetVertexCredentials)

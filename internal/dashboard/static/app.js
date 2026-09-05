@@ -259,11 +259,46 @@ function tokenChips(t) {
   ].join('');
 }
 
-function renderBackendModels(models) {
-  const list = models || [];
-  const tags = list.map(m => `<span class="model-tag">${escapeHTML(m)}</span>`).join('');
-  if (list.length <= 8) return `<div class="backend-models">${tags}</div>`;
-  return `<details class="backend-models-collapsible"><summary><span>${list.length} models available</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
+// A provider card answers two different questions, and conflating them is what
+// made a new upstream model invisible: "what does this proxy publish here"
+// (the routing table) and "what could it publish" (the discovered catalog).
+// Routed models are drawn plainly; catalog-only ones are dimmed, and the ones
+// that appeared upstream recently carry a NEW badge — that badge is the whole
+// reason this reads the catalog at all.
+function renderBackendModels(models, catalog, provider) {
+  const routed = models || [];
+  const entries = catalog?.models || [];
+  if (!entries.length) return renderModelTagList(routed.map(m => ({ id: m, routed: true })), routed.length, null, provider);
+
+  // Routed-but-undiscovered still has to appear: a provider can serve a model
+  // its /models endpoint never lists, and dropping it would misreport the proxy.
+  const known = new Set(entries.map(e => e.id));
+  const extra = routed.filter(m => !known.has(m)).map(m => ({ id: m, routed: true }));
+  const ordered = [...extra, ...entries].sort((a, b) => (b.routed ? 1 : 0) - (a.routed ? 1 : 0));
+  return renderModelTagList(ordered, routed.length + extra.length, catalog, provider);
+}
+
+function renderModelTagList(entries, routedCount, catalog, provider) {
+  if (!entries.length) return '<div class="backend-models"></div>';
+  const tags = entries.map(e => {
+    const cls = 'model-tag' + (e.routed ? '' : ' is-unrouted') + (e.new ? ' is-new' : '');
+    const title = e.routed ? 'Published by this proxy' : 'Offered upstream — no model routes here yet';
+    // Publishing is offered inline because that is where the decision is made:
+    // seeing a model the upstream gained is only useful if acting on it does
+    // not mean opening the config page and retyping the name.
+    const publish = e.routed ? ''
+      : `<button class="model-tag-publish" title="Publish ${escapeHTML(e.id)} — routes it through this provider" onclick="publishModel('${escapeHTML(provider)}','${escapeHTML(e.id)}',event)">+</button>`;
+    return `<span class="${cls}" title="${escapeHTML(title)}">${escapeHTML(e.id)}${e.new ? '<i class="model-tag-new">new</i>' : ''}${publish}</span>`;
+  }).join('');
+  // The headline counts what the proxy serves; the extras say what is on the
+  // table but unused, which is the number worth acting on.
+  const fresh = catalog?.new || 0;
+  const unrouted = catalog?.unrouted || 0;
+  const summary = `${routedCount} routed`
+    + (unrouted ? ` · ${unrouted} more available` : '')
+    + (fresh ? ` · <b class="backend-models-new">${fresh} new</b>` : '');
+  if (entries.length <= 8 && !unrouted) return `<div class="backend-models">${tags}</div>`;
+  return `<details class="backend-models-collapsible"${fresh ? ' open' : ''}><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
 }
 
 function formatIntegerString(value) {
@@ -353,7 +388,7 @@ async function loadStatus() {
     // Expired/Offline) and the header dot already convey state.
     return `<div class="backend-card"><div class="backend-header"><span class="dot ${dc}"></span><span class="backend-name">${escapeHTML(providerLabel(b.name))}</span><span class="backend-badge ${bc}">${bl}</span></div>`
       + `<div class="backend-info"${b.endpoint ? ` title="${escapeHTML(b.endpoint)}"` : ''}>${escapeHTML(b.info || '')}</div>`
-      + renderBackendModels(b.models)
+      + renderBackendModels(b.models, b.catalog, b.name)
       + accts + `<div style="display:flex;gap:4px;flex-wrap:wrap">${addBtn}${syncBtn}${toggleBtn}</div></div>`;
   };
   // Three ways a provider can be authenticated, which is what an operator acts
@@ -1777,6 +1812,26 @@ async function refreshQuota(provider, accountId) {
     if (card) card.style.opacity = '1';
     loadStatus();
   }
+}
+
+// Publishing writes config.yaml through the same path a config-page save uses,
+// so the model is servable the moment this returns.
+async function publishModel(provider, model, event) {
+  // The chip sits inside a <summary>; without this the click also toggles the
+  // list shut, so the row you just acted on disappears.
+  if (event) { event.preventDefault(); event.stopPropagation(); }
+  const r = await apiFetch('/api/publish', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, model }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) { toast(d.error || `Could not publish ${model}.`, 'err'); return; }
+  toast(`${model} published — ${(d.providers || []).join(' › ')}`);
+  // Only the provider cards are refreshed here. The config page reloads its own
+  // copy of the routing table whenever it is opened, and forcing that now would
+  // discard edits someone left in progress there.
+  loadStatus();
 }
 
 async function syncModels() {
