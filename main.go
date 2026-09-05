@@ -28,6 +28,10 @@ func main() {
 	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir, cfg.Server.AccountStrategy)
 	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())
+	// Discovered model lists are remembered across restarts so the dashboard can
+	// say which models are *new* upstream rather than treating every one as new
+	// on every boot.
+	auth.InitModelCatalog(tokenStore.Dir())
 
 	statsDB, err := stats.Open(cfg.ClaudeOAuth.TokenDir)
 	if err != nil {
@@ -97,6 +101,28 @@ func main() {
 	// Anthropic-compatible relay: native Messages passthrough for Claude Code,
 	// with Chat Completions/Responses translated by the shared API-key executor.
 	relayExec := executor.NewRelayExecutor(cfg.Relay)
+
+	// Both API-key upstreams publish /v1/models. Discovering their catalogs at
+	// startup is what lets the provider cards show a model the upstream gained
+	// but no route names yet; a failure here is never fatal, since serving the
+	// routed models does not depend on it.
+	for _, keyed := range []struct {
+		name    string
+		enabled bool
+		exec    *executor.KimiExecutor
+	}{
+		{"kimi", cfg.Kimi.Enabled, kimiExec},
+		{"relay", cfg.Relay.Enabled, relayExec},
+	} {
+		if !keyed.enabled || !keyed.exec.Configured() {
+			continue
+		}
+		if models, err := keyed.exec.SyncModels(context.Background()); err != nil {
+			log.Printf("failed to fetch %s models: %v", keyed.name, err)
+		} else {
+			log.Printf("synced %d %s models", len(models), keyed.name)
+		}
+	}
 
 	// AnyGen API: app-scoped OpenAI-compatible Chat Completions + Models with
 	// one sk-ag key. Its catalog is free to query, so it is refreshed at startup.

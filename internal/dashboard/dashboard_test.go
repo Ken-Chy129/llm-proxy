@@ -112,7 +112,7 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	for _, want := range []string{
 		"anygen: 'AnyGen'",
 		"modelBackends.get(model) !== 'anygen'",
-		"function renderBackendModels(models)",
+		"function renderBackendModels(models, catalog, provider)",
 		"backend-models-collapsible",
 		"q.kind === 'credits'",
 		"quota-credit-value",
@@ -136,6 +136,69 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 		if !strings.Contains(styles, want) {
 			t.Errorf("AnyGen compact/quota styles missing %q", want)
 		}
+	}
+}
+
+// A provider card that lists only the routed models cannot tell an operator the
+// upstream gained a model — the case this covers. The card reads the discovered
+// catalog alongside the routing table, and says which entries are new.
+func TestProviderCardSurfacesUnroutedAndNewUpstreamModels(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"renderBackendModels(b.models, b.catalog, b.name)",
+		"catalog?.models || []",
+		"is-unrouted",
+		"model-tag-new",
+		"more available",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("provider card catalog rendering missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	styles := string(css)
+	for _, want := range []string{".model-tag.is-unrouted{", ".model-tag-new{"} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("catalog styles missing %q", want)
+		}
+	}
+}
+
+// Noticing a new upstream model is only useful if acting on it is one click, so
+// the unrouted chips carry a publish control wired to the admin API.
+func TestUnroutedModelsCanBePublishedFromTheProviderCard(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"async function publishModel(provider, model, event)",
+		"'/api/publish'",
+		"model-tag-publish",
+		// The chip lives inside a <summary>; without this the click also
+		// collapses the list and the row acted on vanishes.
+		"event.stopPropagation()",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("publish control missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	if !strings.Contains(string(css), ".model-tag-publish{") {
+		t.Error("publish control has no styling")
 	}
 }
 

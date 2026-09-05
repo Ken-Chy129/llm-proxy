@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -80,13 +81,15 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"info":              h.vertexExec.ProjectID() + " / " + h.vertexExec.Region() + " · " + source,
 				"models":            h.router.ModelsByBackend("vertex"),
 				"credential_source": source,
+				"catalog":           h.catalogView("vertex"),
 			})
 		} else {
 			backends = append(backends, gin.H{
-				"name":   "vertex",
-				"status": "not_authenticated",
-				"info":   "No GCP credentials — upload a service account key",
-				"models": h.router.ModelsByBackend("vertex"),
+				"name":    "vertex",
+				"status":  "not_authenticated",
+				"info":    "No GCP credentials — upload a service account key",
+				"models":  h.router.ModelsByBackend("vertex"),
+				"catalog": h.catalogView("vertex"),
 			})
 		}
 	}
@@ -109,6 +112,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.router.ModelsByBackend("kimi"),
+			"catalog":  h.catalogView("kimi"),
 		})
 	}
 
@@ -130,6 +134,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.router.ModelsByBackend("relay"),
+			"catalog":  h.catalogView("relay"),
 		})
 	}
 
@@ -164,6 +169,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"disabled": disabled,
 			"info":     info,
 			"models":   h.router.ModelsByBackend("anygen"),
+			"catalog":  h.catalogView("anygen"),
 			"endpoint": h.anygenExec.BaseURL(),
 		}
 		if creditsQuota != nil {
@@ -272,6 +278,7 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"status":   status,
 			"info":     info,
 			"models":   h.router.ModelsByBackend(p.name),
+			"catalog":  h.catalogView(p.name),
 			"accounts": accountList,
 			"disabled": disabled,
 		}
@@ -507,8 +514,79 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 		if h.codexExec != nil {
 			return h.codexExec.Catalog()
 		}
+	case "kimi":
+		if h.kimiExec != nil {
+			return h.kimiExec.Catalog()
+		}
+	case "relay":
+		if h.relayExec != nil {
+			return h.relayExec.Catalog()
+		}
 	}
 	return nil
+}
+
+// newModelWindow is how long a model stays flagged as new after it first shows
+// up upstream. Long enough to survive a weekend away from the dashboard, short
+// enough that the badge still means "recent".
+const newModelWindow = 14 * 24 * time.Hour
+
+// catalogView describes what a provider *could* serve, next to what routing
+// actually publishes.
+//
+// The provider cards used to draw only the routed models, which meant a model
+// added upstream was invisible until someone happened to read release notes.
+// This reports the discovered catalog, marks the entries no route names, and
+// flags the ones that appeared recently — so a new model is noticed on the page
+// that is already open.
+func (h *AdminHandler) catalogView(provider string) gin.H {
+	models := h.providerCatalog(provider)
+	if len(models) == 0 {
+		return nil
+	}
+	// Persisted, so "new" survives a restart; without it every model would look
+	// new on every boot, which is the same as none of them looking new.
+	entries := auth.ModelCatalog.Set(provider, models)
+
+	routed := make(map[string]bool, len(models))
+	for _, m := range h.router.ModelsByBackend(provider) {
+		routed[m] = true
+	}
+	// A published model can be renamed upstream (Vertex wants dated ids), and
+	// the chain records that mapping — a renamed model is routed, not missing.
+	for _, route := range h.cfg.Routes() {
+		for _, ref := range route.Providers {
+			if ref.Provider == provider && strings.TrimSpace(ref.Upstream) != "" {
+				routed[ref.Upstream] = true
+			}
+		}
+	}
+
+	cutoff := time.Now().Add(-newModelWindow).Unix()
+	list := make([]gin.H, 0, len(entries))
+	unrouted, fresh := 0, 0
+	for _, entry := range entries {
+		isRouted := routed[entry.ID]
+		isNew := entry.FirstSeen >= cutoff
+		if !isRouted {
+			unrouted++
+		}
+		if isNew {
+			fresh++
+		}
+		list = append(list, gin.H{
+			"id":         entry.ID,
+			"routed":     isRouted,
+			"new":        isNew,
+			"first_seen": entry.FirstSeen,
+		})
+	}
+	return gin.H{
+		"models":   list,
+		"total":    len(list),
+		"unrouted": unrouted,
+		"new":      fresh,
+	}
 }
 
 // providerAvailable reports whether a provider could serve a request right now:
@@ -649,6 +727,11 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 			for i, m := range models {
 				slugs[i] = m.Slug
 			}
+			// Without this the sync reported a fresh list while the dashboard
+			// kept rendering the catalog discovered at startup.
+			if h.codexExec != nil {
+				h.codexExec.SetCatalog(slugs)
+			}
 			results["codex"] = gin.H{"models": slugs, "count": len(slugs)}
 		}
 		// Refresh all account quotas
@@ -666,11 +749,133 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 			results["anygen"] = gin.H{"models": models, "count": len(models)}
 		}
 	}
+	// The API-key upstreams answer /v1/models too, so they are discoverable on
+	// the same button. A failure is reported per provider rather than aborting:
+	// one relay being down must not hide a fresh Codex catalog.
+	for _, keyed := range []struct {
+		name    string
+		enabled bool
+		exec    *executor.KimiExecutor
+	}{
+		{"kimi", h.cfg.Kimi.Enabled, h.kimiExec},
+		{"relay", h.cfg.Relay.Enabled, h.relayExec},
+	} {
+		if keyed.exec == nil || !keyed.enabled || !keyed.exec.Configured() {
+			continue
+		}
+		models, err := keyed.exec.SyncModels(c.Request.Context())
+		if err != nil {
+			results[keyed.name] = gin.H{"error": err.Error()}
+			continue
+		}
+		results[keyed.name] = gin.H{"models": models, "count": len(models)}
+	}
 	// A sync changes what each provider *could* serve; routing decides what it
 	// does serve, so re-apply it rather than registering anything directly.
 	h.applyRouting()
 
 	c.JSON(http.StatusOK, results)
+}
+
+// PublishModel adds one discovered model to the routing table.
+//
+// This is the counterpart to the catalog on each provider card: seeing that an
+// upstream gained a model is only useful if acting on it does not mean hand-
+// editing config.yaml. The new route is seeded from the model's series default
+// so it inherits the same failover chain its siblings use, with the discovering
+// provider guaranteed a place in it — publishing from AnyGen's card must not
+// produce a chain that never reaches AnyGen.
+//
+// It writes config.yaml and re-applies routing through the same path a
+// dashboard save uses, so a published model is servable immediately and the
+// running state cannot drift from the file.
+func (h *AdminHandler) PublishModel(c *gin.Context) {
+	var req struct {
+		Provider string `json:"provider"`
+		Model    string `json:"model"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body: " + err.Error()})
+		return
+	}
+	provider := strings.TrimSpace(req.Provider)
+	model := strings.TrimSpace(req.Model)
+	if provider == "" || model == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider and model are required"})
+		return
+	}
+	if !slices.Contains(config.KnownProviders, provider) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown provider " + provider})
+		return
+	}
+	// Publishing a name that is already published would silently rewrite that
+	// model's chain, which is an edit the operator did not ask for.
+	routes := h.cfg.Routes()
+	for _, route := range routes {
+		if route.Name == model {
+			c.JSON(http.StatusConflict, gin.H{"error": model + " is already published"})
+			return
+		}
+	}
+
+	chain := h.publishChain(provider, model)
+	routes = append(routes, config.ModelRoute{Name: model, Providers: chain})
+	if err := h.cfg.SetRoutes(routes); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := config.Save(h.configPath, h.cfg); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "save config: " + err.Error()})
+		return
+	}
+	h.applyRouting()
+
+	providers := make([]string, len(chain))
+	for i, ref := range chain {
+		providers[i] = ref.Provider
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":        true,
+		"model":     model,
+		"providers": providers,
+		"serving":   h.router.BackendName(model),
+	})
+}
+
+// publishChain picks the provider chain a newly published model starts with.
+//
+// The series default is the right starting point — it is what every other model
+// in the family uses — but only if the provider the model was discovered on can
+// actually be reached through it. A gemini model found on AnyGen must not be
+// published onto a claude chain that never lists AnyGen, so the discovering
+// provider is appended when the default omits it, and is the whole chain when
+// there is no default at all.
+func (h *AdminHandler) publishChain(provider, model string) []config.ProviderRef {
+	defaults := h.cfg.SeriesDefaults()[config.SeriesOf(model)]
+	chain := make([]config.ProviderRef, 0, len(defaults)+1)
+	for _, ref := range defaults {
+		// Only providers that could serve this model belong in the seeded chain;
+		// a default naming a provider whose catalog lacks the model would add a
+		// hop that always fails over.
+		if ref.Provider == provider || h.providerOffers(ref.Provider, model) {
+			chain = append(chain, config.ProviderRef{Provider: ref.Provider})
+		}
+	}
+	if !slices.ContainsFunc(chain, func(ref config.ProviderRef) bool { return ref.Provider == provider }) {
+		chain = append(chain, config.ProviderRef{Provider: provider})
+	}
+	return chain
+}
+
+// providerOffers reports whether a provider's discovered catalog contains a
+// model. Providers without a catalog (Vertex, Claude OAuth) answer true: they
+// have no discovery endpoint, so absence is unknown rather than "no".
+func (h *AdminHandler) providerOffers(provider, model string) bool {
+	catalog := h.providerCatalog(provider)
+	if len(catalog) == 0 {
+		return true
+	}
+	return slices.Contains(catalog, model)
 }
 
 func (h *AdminHandler) RefreshQuota(c *gin.Context) {

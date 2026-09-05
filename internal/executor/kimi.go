@@ -37,6 +37,7 @@ type KimiExecutor struct {
 	apiFormat     string
 	promptCaching bool
 	models        []config.ModelConfig
+	catalog       []string // model ids the upstream reports it can serve
 	httpClient    *http.Client
 }
 
@@ -107,6 +108,75 @@ func (e *KimiExecutor) SetModels(models []config.ModelConfig) {
 	e.mu.Lock()
 	e.models = append([]config.ModelConfig(nil), models...)
 	e.mu.Unlock()
+}
+
+// Catalog reports every model this upstream advertises, routed or not, so the
+// dashboard can show what the provider gained since the routing table was
+// written. Both the OpenAI- and Anthropic-shaped upstreams answer /v1/models.
+func (e *KimiExecutor) Catalog() []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return append([]string(nil), e.catalog...)
+}
+
+func (e *KimiExecutor) setCatalog(models []string) {
+	e.mu.Lock()
+	e.catalog = append([]string(nil), models...)
+	e.mu.Unlock()
+}
+
+// modelsEndpoint mirrors anthropicEndpoint: base URLs are configured with or
+// without the /v1 suffix, and guessing wrong is a 404 rather than an error we
+// could explain.
+func (e *KimiExecutor) modelsEndpoint() string {
+	baseURL := e.BaseURL()
+	if strings.HasSuffix(baseURL, "/v1") {
+		return baseURL + "/models"
+	}
+	return baseURL + "/v1/models"
+}
+
+// SyncModels asks the upstream what it can serve. The result is a catalog, not
+// a routing decision: a model becomes servable by being published in the
+// routing table, never by appearing here.
+func (e *KimiExecutor) SyncModels(ctx context.Context) ([]string, error) {
+	key, err := e.apiKey()
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, e.modelsEndpoint(), nil)
+	if err != nil {
+		return nil, err
+	}
+	// Sent both ways deliberately: the Anthropic-shaped upstreams authenticate
+	// with x-api-key and the OpenAI-shaped ones with a bearer token, and one
+	// executor serves both.
+	req.Header.Set("Authorization", "Bearer "+key)
+	req.Header.Set("x-api-key", key)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s models: %w", e.Backend(), err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s models: %w", e.Backend(), err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, &HTTPError{Backend: e.Backend() + " models", Status: resp.StatusCode, Body: string(body)}
+	}
+	models, err := parseModelListIDs(body)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s models: %w", e.Backend(), err)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("%s models response contained no model ids", e.Backend())
+	}
+	e.setCatalog(models)
+	return append([]string(nil), models...), nil
 }
 
 func (e *KimiExecutor) Configured() bool {
