@@ -221,23 +221,9 @@ func (e *AnyGenExecutor) SyncModels(ctx context.Context) ([]string, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &HTTPError{Backend: "anygen models", Status: resp.StatusCode, Body: string(body)}
 	}
-	var result struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(body, &result); err != nil {
+	models, err := parseModelListIDs(body)
+	if err != nil {
 		return nil, fmt.Errorf("decode anygen models: %w", err)
-	}
-	models := make([]string, 0, len(result.Data))
-	seen := make(map[string]bool, len(result.Data))
-	for _, item := range result.Data {
-		id := strings.TrimSpace(item.ID)
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		models = append(models, id)
 	}
 	if len(models) == 0 {
 		return nil, fmt.Errorf("anygen models response contained no model ids")
