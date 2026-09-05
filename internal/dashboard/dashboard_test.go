@@ -242,6 +242,43 @@ func TestUnroutedModelsCanBePublishedFromTheProviderCard(t *testing.T) {
 	}
 }
 
+// The upstream-rename box used to be free text, so a typo only surfaced when a
+// real request failed. It now suggests the provider's discovered catalog and
+// flags an id that catalog never listed — while still accepting one, because
+// Vertex has no discovery endpoint and catalogs can lag a new model.
+func TestUpstreamRenameBoxIsGuidedByTheProviderCatalog(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"createElement('datalist')",
+		"inp.setAttribute('list', listID)",
+		"meta.catalog || []",
+		// A blank box sends the published name, so that is the id to check.
+		"const effective = typed || opts.published || '';",
+		"map.classList.toggle('is-unknown', unknown)",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("catalog-guided rename box missing %q", want)
+		}
+	}
+	// A <select> here would make the catalog a rule rather than a hint and lock
+	// out every id the provider serves without advertising.
+	if strings.Contains(script, "inp = document.createElement('select')") {
+		t.Error("rename box must stay an input: the catalog is a hint, not a whitelist")
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	if !strings.Contains(string(css), ".mdl-map.is-unknown") {
+		t.Error("unknown-upstream warning has no styling")
+	}
+}
+
 // The config page's subject is the published model and its ordered providers.
 // These assertions pin the contract it has with the admin API — the field names
 // the editor reads and writes — because a rename on either side fails silently

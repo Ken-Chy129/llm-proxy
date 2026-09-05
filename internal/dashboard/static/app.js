@@ -1400,7 +1400,36 @@ function renderChain(list, opts) {
       inp.value = ref.upstream || '';
       inp.placeholder = opts.published || 'upstream id';
       inp.spellcheck = false;
-      const sync = () => map.classList.toggle('has-map', !!inp.value.trim());
+      // Offer the provider's discovered catalog as suggestions. A datalist, not
+      // a <select>: the catalog is a hint, not a rule. Vertex has no discovery
+      // endpoint at all, and a provider can serve an id it does not advertise,
+      // so the box has to keep accepting anything typed into it.
+      const catalog = meta.catalog || [];
+      if (catalog.length) {
+        const listID = `up-${opts.published || 'series'}-${ref.provider}-${i}`.replace(/[^\w-]/g, '_');
+        const dl = document.createElement('datalist');
+        dl.id = listID;
+        catalog.forEach(id => {
+          const opt = document.createElement('option');
+          opt.value = id;
+          dl.appendChild(opt);
+        });
+        map.appendChild(dl);
+        inp.setAttribute('list', listID);
+      }
+      // Warn when the id that will actually go on the wire — the rename, or the
+      // published name when the box is blank — is absent from the catalog. It
+      // is the typo the box used to swallow until a real request failed.
+      const sync = () => {
+        const typed = inp.value.trim();
+        map.classList.toggle('has-map', !!typed);
+        const effective = typed || opts.published || '';
+        const unknown = catalog.length > 0 && effective !== '' && !catalog.includes(effective);
+        map.classList.toggle('is-unknown', unknown);
+        inp.title = unknown
+          ? `${providerLabel(ref.provider)} did not list "${effective}" — check the id, or sync the provider if it is new.`
+          : '';
+      };
       inp.oninput = () => { ref.upstream = inp.value; sync(); setPanelDirty('models', true); };
       sync();
       map.appendChild(inp);
