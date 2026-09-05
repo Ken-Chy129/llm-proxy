@@ -530,13 +530,18 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 	return nil
 }
 
-// catalogView describes what a provider *could* serve, next to what routing
-// actually publishes.
+// catalogView reports what a provider's upstream says it can serve, marking the
+// entries this proxy has published.
 //
-// The provider cards used to draw only the routed models, which meant a model
-// added upstream was invisible until someone happened to read release notes.
-// This reports the discovered catalog and marks the entries no route names, so
-// the models available to add are visible on the page that is already open.
+// The card is about the provider, so the catalog is the whole of it: a model
+// added upstream used to be invisible until someone read release notes, and a
+// name that exists only in our routing table (an alias, or one pointing at an
+// id the upstream does not have) says nothing about the provider and is left to
+// the config page.
+//
+// Aliases still count as routed, keyed by the upstream id they resolve to —
+// "codex-auto-review" published onto gpt-5.6-sol means gpt-5.6-sol is served,
+// and offering to publish it again would be wrong.
 func (h *AdminHandler) catalogView(provider string) gin.H {
 	models := h.providerCatalog(provider)
 	if len(models) == 0 {

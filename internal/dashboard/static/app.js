@@ -292,22 +292,22 @@ function tokenChips(t) {
   ].join('');
 }
 
-// A provider card answers two different questions, and conflating them is what
-// made an upstream model invisible: "what does this proxy publish here" (the
-// routing table) and "what could it publish" (the discovered catalog). Routed
-// models are drawn plainly; the ones no route names yet are dimmed and carry
-// the control that publishes them.
+// A provider card describes one upstream: the models it reports it can serve,
+// and which of those this proxy has published. Nothing else belongs here — a
+// published name that exists only in our routing table (an alias like
+// "codex-auto-review", or a name pointing at an id the upstream does not have)
+// says something about the routing table, not about the provider, and belongs
+// on the config page where chains are edited.
 function renderBackendModels(models, catalog, provider) {
   const routed = models || [];
   const entries = catalog?.models || [];
+  // No catalog means the provider has no discovery endpoint (Vertex). Then the
+  // routed list is the only thing known about it, so it is what gets drawn.
   if (!entries.length) return renderModelTagList(routed.map(m => ({ id: m, routed: true })), routed.length, null, provider);
 
-  // Routed-but-undiscovered still has to appear: a provider can serve a model
-  // its /models endpoint never lists, and dropping it would misreport the proxy.
-  const known = new Set(entries.map(e => e.id));
-  const extra = routed.filter(m => !known.has(m)).map(m => ({ id: m, routed: true }));
-  const ordered = [...extra, ...entries].sort((a, b) => (b.routed ? 1 : 0) - (a.routed ? 1 : 0));
-  return renderModelTagList(ordered, routed.length + extra.length, catalog, provider);
+  const ordered = [...entries].sort((a, b) => (b.routed ? 1 : 0) - (a.routed ? 1 : 0));
+  const routedCount = entries.filter(e => e.routed).length;
+  return renderModelTagList(ordered, routedCount, catalog, provider);
 }
 
 function renderModelTagList(entries, routedCount, catalog, provider) {
@@ -328,7 +328,7 @@ function renderModelTagList(entries, routedCount, catalog, provider) {
   const summary = `${routedCount} routed`
     + (unrouted ? ` · <b class="backend-models-add">${unrouted} available to add</b>` : '');
   if (entries.length <= 8 && !unrouted) return `<div class="backend-models">${tags}</div>`;
-  return `<details class="backend-models-collapsible"><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list" data-refresh-scroll>${tags}</div></details>`;
+  return `<details class="backend-models-collapsible"><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
 }
 
 function formatIntegerString(value) {

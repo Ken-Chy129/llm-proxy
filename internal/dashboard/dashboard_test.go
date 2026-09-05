@@ -187,6 +187,18 @@ func TestProviderCardSurfacesUnroutedUpstreamModels(t *testing.T) {
 			t.Errorf("provider card catalog rendering missing %q", want)
 		}
 	}
+	// The card is about the upstream, so a discovered catalog is drawn as-is.
+	// Merging routed-but-undiscovered names back in put routing-table artifacts
+	// (aliases, chains naming ids the upstream lacks) on a card that claims to
+	// describe the provider.
+	for _, gone := range []string{
+		"routed.filter(m => !known.has(m))",
+		"[...extra, ...entries]",
+	} {
+		if strings.Contains(script, gone) {
+			t.Errorf("provider card still merges routing-table names into the catalog: %q", gone)
+		}
+	}
 
 	css, err := staticFiles.ReadFile("static/style.css")
 	if err != nil {

@@ -416,3 +416,62 @@ func TestClaudeOAuthCatalogReachesTheProviderCard(t *testing.T) {
 		t.Error("a model no route names was marked routed")
 	}
 }
+
+// The card describes the upstream, so a published name that exists only in our
+// routing table must not appear on it. Two kinds reach this point: an alias
+// ("codex-auto-review" served by gpt-5.6-sol), and a chain naming an id the
+// upstream does not have. Both say something about routing, not about the
+// provider, and belong on the config page.
+func TestCatalogViewReportsOnlyWhatTheUpstreamOffers(t *testing.T) {
+	anygenExec := syncedAnyGen(t, "gpt-5.6-sol", "claude-fable-5")
+
+	cfg := &config.Config{AnyGen: config.AnyGenConfig{Enabled: true}}
+	if err := cfg.SetRoutes([]config.ModelRoute{
+		// An alias: published under our own name, served as gpt-5.6-sol.
+		{Name: "codex-auto-review", Providers: []config.ProviderRef{
+			{Provider: "anygen", Upstream: "gpt-5.6-sol"},
+		}},
+		// A chain naming an id AnyGen does not have (it only offers -5, not -5-1).
+		{Name: "claude-fable-5-1", Providers: []config.ProviderRef{{Provider: "anygen"}}},
+	}); err != nil {
+		t.Fatalf("SetRoutes: %v", err)
+	}
+	r := router.New()
+	r.SetRoutes([]router.Route{
+		{Model: "codex-auto-review", Providers: []string{"anygen"}},
+		{Model: "claude-fable-5-1", Providers: []string{"anygen"}},
+	})
+	h := &AdminHandler{cfg: cfg, router: r, anygenExec: anygenExec}
+
+	view := h.catalogView("anygen")
+	ids := map[string]bool{}
+	routed := map[string]bool{}
+	for _, entry := range catalogEntries(t, view) {
+		id, _ := entry["id"].(string)
+		flag, _ := entry["routed"].(bool)
+		ids[id] = true
+		routed[id] = flag
+	}
+
+	if view["total"] != 2 {
+		t.Fatalf("total = %v, want only the two models AnyGen offers", view["total"])
+	}
+	for _, absent := range []string{"codex-auto-review", "claude-fable-5-1"} {
+		if ids[absent] {
+			t.Errorf("%q is a routing-table name and must not appear on the provider card", absent)
+		}
+	}
+	// The alias resolves to a real upstream id, so that id is served — offering
+	// to publish it again would be wrong.
+	if !routed["gpt-5.6-sol"] {
+		t.Error("an aliased upstream id was not counted as routed")
+	}
+	// The unreachable chain publishes nothing here, so the model it names stays
+	// available to add under the id the upstream actually has.
+	if routed["claude-fable-5"] {
+		t.Error("claude-fable-5 was marked routed, but no chain names it")
+	}
+	if view["unrouted"] != 1 {
+		t.Fatalf("unrouted = %v, want 1", view["unrouted"])
+	}
+}
