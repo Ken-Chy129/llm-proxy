@@ -64,9 +64,10 @@ type ServerConfig struct {
 }
 
 type VertexConfig struct {
-	ProjectID string `yaml:"project_id"`
-	Region    string `yaml:"region"`
-	Enabled   bool   `yaml:"enabled"`
+	ProjectID string   `yaml:"project_id"`
+	Region    string   `yaml:"region"`
+	Enabled   bool     `yaml:"enabled"`
+	Models    []string `yaml:"models,omitempty"`
 }
 
 // ModelConfig is one model as a provider must be told about it: the published
@@ -82,39 +83,48 @@ type ModelConfig struct {
 }
 
 type ClaudeOAuthConfig struct {
-	Enabled  bool   `yaml:"enabled"`
-	TokenDir string `yaml:"token_dir"`
+	Enabled  bool     `yaml:"enabled"`
+	TokenDir string   `yaml:"token_dir"`
+	Models   []string `yaml:"models,omitempty"`
 }
 
 type CodexConfig struct {
-	Enabled bool `yaml:"enabled"`
+	Enabled bool     `yaml:"enabled"`
+	Models  []string `yaml:"models,omitempty"`
 }
 
 // KimiConfig intentionally stores only the name of an environment variable,
 // never the API key itself. This keeps config.yaml and dashboard saves free of
 // upstream credentials.
 type KimiConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	BaseURL   string `yaml:"base_url"`
-	APIKeyEnv string `yaml:"api_key_env"`
-	APIFormat string `yaml:"api_format"`
+	Enabled   bool     `yaml:"enabled"`
+	BaseURL   string   `yaml:"base_url"`
+	APIKeyEnv string   `yaml:"api_key_env"`
+	APIFormat string   `yaml:"api_format"`
+	Models    []string `yaml:"models,omitempty"`
 }
 
 // RelayConfig describes an Anthropic-compatible upstream authenticated with a
 // static token read from the environment. Keeping only the environment variable
 // name here prevents relay credentials from being persisted by dashboard saves.
+//
+// Models is worth setting for this one in particular: the relay answers
+// /v1/models with a stale list that omits models it happily serves, so
+// discovery understates it.
 type RelayConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	BaseURL      string `yaml:"base_url"`
-	AuthTokenEnv string `yaml:"auth_token_env"`
+	Enabled      bool     `yaml:"enabled"`
+	BaseURL      string   `yaml:"base_url"`
+	AuthTokenEnv string   `yaml:"auth_token_env"`
+	Models       []string `yaml:"models,omitempty"`
 }
 
 // AnyGenConfig keeps the sk-ag credential outside config.yaml. Its catalog is
 // discovered at runtime from the OpenAI-compatible /models endpoint.
 type AnyGenConfig struct {
-	Enabled   bool   `yaml:"enabled"`
-	BaseURL   string `yaml:"base_url"`
-	APIKeyEnv string `yaml:"api_key_env"`
+	Enabled   bool     `yaml:"enabled"`
+	BaseURL   string   `yaml:"base_url"`
+	APIKeyEnv string   `yaml:"api_key_env"`
+	Models    []string `yaml:"models,omitempty"`
 }
 
 // KnownProviders is every provider this proxy can route to. A provider is a
@@ -382,6 +392,48 @@ func (c *Config) ProviderEnabled(provider string) bool {
 	default:
 		return false
 	}
+}
+
+// ProviderModels returns the catalog an operator pinned for a provider, or nil
+// to mean "ask the upstream".
+//
+// Discovery is the better default — it notices a new model without anyone
+// editing YAML — but it is only as honest as the endpoint behind it. The relay
+// advertises a list that lags what it actually serves, so models routed there
+// looked unroutable on the provider card and the config editor warned about
+// ids that work fine. A configured list is the operator overriding a source
+// they know to be wrong, so it wins outright rather than merging: a merge
+// would keep resurrecting the stale entries this exists to suppress.
+func (c *Config) ProviderModels(provider string) []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var models []string
+	switch provider {
+	case "claude_oauth":
+		models = c.ClaudeOAuth.Models
+	case "codex":
+		models = c.Codex.Models
+	case "vertex":
+		models = c.Vertex.Models
+	case "kimi":
+		models = c.Kimi.Models
+	case "relay":
+		models = c.Relay.Models
+	case "anygen":
+		models = c.AnyGen.Models
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(models))
+	for _, m := range models {
+		if m = strings.TrimSpace(m); m != "" {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Environment fallbacks for the dashboard credentials. Containerised deploys
