@@ -7,9 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
+	"github.com/tidwall/gjson"
 )
 
 func TestRelayServesNothingUntilRoutingAssignsModels(t *testing.T) {
@@ -78,5 +81,81 @@ func TestRelayExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
 	}
 	if _, ok := gotBody["context_management"]; !ok {
 		t.Fatal("Claude Code extension field was dropped")
+	}
+	forwarded, _ := json.Marshal(gotBody)
+	if strings.Contains(string(forwarded), `"cache_control"`) {
+		t.Fatal("native Messages passthrough must not invent cache breakpoints")
+	}
+}
+
+func TestRelayTranslatedRequestAddsCacheBreakpoints(t *testing.T) {
+	exec := NewRelayExecutor(config.RelayConfig{})
+	exec.SetModels([]config.ModelConfig{{Name: "relay-sonnet", Model: "claude-sonnet-4-5-20250929"}})
+
+	system, _ := json.Marshal("You are a coding agent.")
+	user, _ := json.Marshal("inspect the repository")
+	assistant, _ := json.Marshal("I will inspect it.")
+	followup, _ := json.Marshal("continue")
+	req := &types.ChatCompletionRequest{
+		Model: "relay-sonnet",
+		Messages: []types.ChatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+			{Role: "assistant", Content: assistant},
+			{Role: "user", Content: followup},
+		},
+		Tools: []types.Tool{{
+			Type: "function",
+			Function: types.ToolFunction{
+				Name:       "shell",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+	}
+
+	translated := exec.translatedAnthropicRequest(req, true)
+	if translated.Model != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("model = %q", translated.Model)
+	}
+	if !translated.Stream {
+		t.Fatal("stream flag was not preserved")
+	}
+	if translated.Tools[0].CacheControl == nil {
+		t.Fatal("relay tool prefix has no cache breakpoint")
+	}
+	if translated.System[0].CacheControl == nil {
+		t.Fatal("relay system prefix has no cache breakpoint")
+	}
+	last := translated.Messages[len(translated.Messages)-1].Content
+	if got := gjson.GetBytes(last, "0.cache_control.type").String(); got != "ephemeral" {
+		t.Fatalf("relay conversation prefix cache breakpoint = %q; content=%s", got, last)
+	}
+}
+
+func TestKimiTranslatedRequestDoesNotAddAnthropicCacheBreakpoints(t *testing.T) {
+	exec := NewKimiExecutor(config.KimiConfig{APIFormat: "anthropic"})
+	system, _ := json.Marshal("You are a coding agent.")
+	user, _ := json.Marshal("hello")
+	assistant, _ := json.Marshal("hi")
+	followup, _ := json.Marshal("continue")
+	req := &types.ChatCompletionRequest{
+		Model: "kimi-k3",
+		Messages: []types.ChatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+			{Role: "assistant", Content: assistant},
+			{Role: "user", Content: followup},
+		},
+		Tools: []types.Tool{{Type: "function", Function: types.ToolFunction{Name: "shell", Parameters: json.RawMessage(`{}`)}}},
+	}
+
+	body, err := json.Marshal(exec.translatedAnthropicRequest(req, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(body, "tools.0.cache_control").Exists() ||
+		gjson.GetBytes(body, "system.0.cache_control").Exists() ||
+		gjson.GetBytes(body, "messages.3.content.0.cache_control").Exists() {
+		t.Fatalf("Kimi request unexpectedly received Anthropic cache breakpoints: %s", body)
 	}
 }

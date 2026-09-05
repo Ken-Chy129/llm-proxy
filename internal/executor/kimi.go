@@ -30,13 +30,14 @@ const (
 // OpenAI-compatible Kimi API. It also implements AnthropicExecutor so Claude
 // Code can use the same models through /v1/messages.
 type KimiExecutor struct {
-	mu         sync.RWMutex
-	backend    string
-	baseURL    string
-	apiKeyEnv  string
-	apiFormat  string
-	models     []config.ModelConfig
-	httpClient *http.Client
+	mu            sync.RWMutex
+	backend       string
+	baseURL       string
+	apiKeyEnv     string
+	apiFormat     string
+	promptCaching bool
+	models        []config.ModelConfig
+	httpClient    *http.Client
 }
 
 func NewKimiExecutor(cfg config.KimiConfig) *KimiExecutor {
@@ -74,11 +75,12 @@ func NewRelayExecutor(cfg config.RelayConfig) *KimiExecutor {
 		authTokenEnv = defaultRelayTokenEnv
 	}
 	return &KimiExecutor{
-		backend:    "relay",
-		baseURL:    baseURL,
-		apiKeyEnv:  authTokenEnv,
-		apiFormat:  "anthropic",
-		httpClient: http.DefaultClient,
+		backend:       "relay",
+		baseURL:       baseURL,
+		apiKeyEnv:     authTokenEnv,
+		apiFormat:     "anthropic",
+		promptCaching: true,
+		httpClient:    http.DefaultClient,
 	}
 }
 
@@ -297,10 +299,7 @@ func (e *KimiExecutor) openAnthropic(ctx context.Context, body []byte, clientHea
 }
 
 func (e *KimiExecutor) executeAnthropicChat(ctx context.Context, req *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
-	upstreamModel := e.resolveModel(req.Model)
-	anthropicReq := ToAnthropicRequest(req, upstreamModel)
-	anthropicReq.Stream = false
-	anthropicReq.AnthropicVersion = ""
+	anthropicReq := e.translatedAnthropicRequest(req, false)
 	body, err := json.Marshal(anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal kimi anthropic request: %w", err)
@@ -325,10 +324,7 @@ func (e *KimiExecutor) executeAnthropicChat(ctx context.Context, req *types.Chat
 }
 
 func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
-	upstreamModel := e.resolveModel(req.Model)
-	anthropicReq := ToAnthropicRequest(req, upstreamModel)
-	anthropicReq.Stream = true
-	anthropicReq.AnthropicVersion = ""
+	anthropicReq := e.translatedAnthropicRequest(req, true)
 	body, err := json.Marshal(anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("marshal kimi anthropic request: %w", err)
@@ -447,6 +443,21 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	return &usage, nil
+}
+
+// translatedAnthropicRequest adapts the proxy's internal Chat Completions
+// shape for an Anthropic-compatible upstream. The generic relay ultimately
+// serves real Anthropic models, so translated Codex/OpenAI traffic must opt in
+// to prompt caching here. Kimi's compatible endpoint has its own cache
+// semantics and deliberately remains unmarked.
+func (e *KimiExecutor) translatedAnthropicRequest(req *types.ChatCompletionRequest, stream bool) *types.AnthropicRequest {
+	anthropicReq := ToAnthropicRequest(req, e.resolveModel(req.Model))
+	if e.promptCaching {
+		ApplyCacheBreakpoints(anthropicReq)
+	}
+	anthropicReq.Stream = stream
+	anthropicReq.AnthropicVersion = ""
+	return anthropicReq
 }
 
 type kimiAnthropicRequest struct {
