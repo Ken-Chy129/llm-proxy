@@ -522,6 +522,10 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 		if h.relayExec != nil {
 			return h.relayExec.Catalog()
 		}
+	case "claude_oauth":
+		if h.claudeExec != nil {
+			return h.claudeExec.Catalog()
+		}
 	}
 	return nil
 }
@@ -718,7 +722,17 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 	}
 	if h.claudeOAuth != nil {
 		h.claudeOAuth.FetchAllQuotas(c.Request.Context())
-		results["claude"] = gin.H{"quotas": "refreshed"}
+		entry := gin.H{"quotas": "refreshed"}
+		if models, err := h.claudeOAuth.FetchModels(c.Request.Context()); err != nil {
+			entry["error"] = err.Error()
+		} else {
+			if h.claudeExec != nil {
+				h.claudeExec.SetCatalog(models)
+			}
+			entry["models"] = models
+			entry["count"] = len(models)
+		}
+		results["claude"] = entry
 	}
 	if h.anygenExec != nil && h.cfg.AnyGen.Enabled && h.anygenExec.Configured() {
 		models, err := h.anygenExec.SyncModels(c.Request.Context())

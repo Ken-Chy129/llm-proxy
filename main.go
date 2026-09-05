@@ -57,6 +57,15 @@ func main() {
 		claudeOAuth.ServerPort = cfg.Server.Port
 		claudeExec = executor.NewClaudeOAuthExecutor(claudeOAuth, nil)
 		if len(tokenStore.AllForProvider("claude")) > 0 {
+			// The plan's model list is discoverable with the same OAuth identity
+			// used to call it, so the dashboard can show which models are
+			// available to add. What gets *served* still comes from routing.
+			if models, err := claudeOAuth.FetchModels(context.Background()); err != nil {
+				log.Printf("failed to fetch claude models: %v", err)
+			} else {
+				claudeExec.SetCatalog(models)
+				log.Printf("synced %d claude models", len(models))
+			}
 			log.Printf("fetching claude quotas for %d accounts...", len(tokenStore.AllForProvider("claude")))
 			claudeOAuth.FetchAllQuotas(context.Background())
 		}

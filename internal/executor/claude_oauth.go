@@ -24,6 +24,7 @@ type ClaudeOAuthExecutor struct {
 	oauth      *auth.ClaudeOAuth
 	httpClient *http.Client
 	models     []config.ModelConfig
+	catalog    []string // model ids the signed-in plan exposes
 	modelsMu   sync.RWMutex
 }
 
@@ -33,6 +34,20 @@ func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []config.ModelConfig
 		httpClient: internaltls.NewAnthropicHTTPClient(),
 		models:     append([]config.ModelConfig(nil), models...),
 	}
+}
+
+// Catalog reports the models the signed-in plan exposes, routed or not, so the
+// dashboard can show what is available to add.
+func (e *ClaudeOAuthExecutor) Catalog() []string {
+	e.modelsMu.RLock()
+	defer e.modelsMu.RUnlock()
+	return append([]string(nil), e.catalog...)
+}
+
+func (e *ClaudeOAuthExecutor) SetCatalog(models []string) {
+	e.modelsMu.Lock()
+	e.catalog = append([]string(nil), models...)
+	e.modelsMu.Unlock()
 }
 
 func (e *ClaudeOAuthExecutor) Models() []string {

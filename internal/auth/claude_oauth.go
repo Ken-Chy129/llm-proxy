@@ -339,6 +339,7 @@ func (o *ClaudeOAuth) exchangeCode(ctx context.Context, code, codeVerifier, stat
 const (
 	claudeAPIBaseURL     = "https://api.anthropic.com"
 	claudeOAuthBetaValue = "oauth-2025-04-20"
+	claudeCodeBetaValue  = "claude-code-20250219"
 )
 
 func applyClaudeUsageHeaders(req *http.Request, token string) {
@@ -346,6 +347,88 @@ func applyClaudeUsageHeaders(req *http.Request, token string) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("anthropic-beta", claudeOAuthBetaValue)
 	req.Header.Set("User-Agent", "claude-cli/2.1.181 (external, cli)")
+}
+
+// FetchModels lists the models the signed-in plan exposes.
+//
+// The endpoint is the public /v1/models, but it is reached with the Claude Code
+// identity rather than an API key: subscription OAuth tokens are what this proxy
+// holds, and they authenticate here as long as the request carries the same
+// betas and user-agent every other OAuth call uses.
+//
+// The catalog is informational — routing decides what is served — so this
+// returns ids only and leaves the richer metadata (context limits, capabilities)
+// on the wire.
+func (o *ClaudeOAuth) FetchModels(ctx context.Context) ([]string, error) {
+	token, err := o.GetToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := newClaudeModelsRequest(ctx, token)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := o.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetch claude models: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read claude models: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch claude models: %d %s", resp.StatusCode, string(body))
+	}
+	return parseClaudeModels(body)
+}
+
+// newClaudeModelsRequest builds the catalog request.
+//
+// Kept separate because the headers are the fragile part: /v1/models is gated on
+// the Claude Code beta *as well as* the OAuth one, and sending only the latter
+// returns a 401 that looks like an expired token.
+func newClaudeModelsRequest(ctx context.Context, token string) (*http.Request, error) {
+	// limit=100 in one page: the plan exposes about a dozen models, so
+	// paginating would be machinery for a case that does not arise.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, claudeAPIBaseURL+"/v1/models?limit=100", nil)
+	if err != nil {
+		return nil, err
+	}
+	applyClaudeUsageHeaders(req, token)
+	req.Header.Set("anthropic-beta", claudeCodeBetaValue+","+claudeOAuthBetaValue)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("x-app", "cli")
+	return req, nil
+}
+
+// parseClaudeModels reads the ids out of a /v1/models page. The response also
+// carries context limits and capability flags; routing decides what is served,
+// so only the ids are kept.
+func parseClaudeModels(body []byte) ([]string, error) {
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("decode claude models: %w", err)
+	}
+	models := make([]string, 0, len(payload.Data))
+	seen := make(map[string]bool, len(payload.Data))
+	for _, item := range payload.Data {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		models = append(models, id)
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("claude models response contained no model ids")
+	}
+	return models, nil
 }
 
 // FetchAllQuotas fetches Claude account usage limits for every active account.
@@ -523,8 +606,8 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 				// the account — otherwise the last ~10% of the window is wasted and
 				// the "limited" badge fires early. See RateWindow.Exhausted.
 				LimitReached: l.Percent >= 100,
-				ResetAt:          display,
-				ResetUnix:        unix,
+				ResetAt:      display,
+				ResetUnix:    unix,
 			})
 		}
 	} else {

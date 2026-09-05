@@ -366,3 +366,53 @@ func TestPublishedModelLeavesTheUnroutedList(t *testing.T) {
 		t.Fatalf("unrouted = %v after publishing, want 0", view["unrouted"])
 	}
 }
+
+// Claude OAuth was long treated as undiscoverable, so its card reported only
+// the routed models and a model the plan gained stayed invisible. The plan's
+// catalog reaches the card the same way every other provider's does.
+func TestClaudeOAuthCatalogReachesTheProviderCard(t *testing.T) {
+	claudeExec := executor.NewClaudeOAuthExecutor(nil, nil)
+	claudeExec.SetCatalog([]string{
+		"claude-opus-5",
+		"claude-opus-4-7",
+		"claude-sonnet-4-5-20250929",
+	})
+
+	cfg := &config.Config{ClaudeOAuth: config.ClaudeOAuthConfig{Enabled: true}}
+	if err := cfg.SetRoutes([]config.ModelRoute{
+		{Name: "claude-opus-5", Providers: []config.ProviderRef{{Provider: "claude_oauth"}}},
+		// Published under a friendly name, served under the dated upstream id —
+		// that rename must not make the model look unrouted.
+		{Name: "claude-sonnet-4-5", Providers: []config.ProviderRef{
+			{Provider: "claude_oauth", Upstream: "claude-sonnet-4-5-20250929"},
+		}},
+	}); err != nil {
+		t.Fatalf("SetRoutes: %v", err)
+	}
+	r := router.New()
+	r.SetRoutes([]router.Route{
+		{Model: "claude-opus-5", Providers: []string{"claude_oauth"}},
+		{Model: "claude-sonnet-4-5", Providers: []string{"claude_oauth"}},
+	})
+	h := &AdminHandler{cfg: cfg, router: r, claudeExec: claudeExec}
+
+	view := h.catalogView("claude_oauth")
+	if view == nil {
+		t.Fatal("claude_oauth reported no catalog")
+	}
+	if view["total"] != 3 || view["unrouted"] != 1 {
+		t.Fatalf("total=%v unrouted=%v, want 3 and 1", view["total"], view["unrouted"])
+	}
+	routed := map[string]bool{}
+	for _, entry := range catalogEntries(t, view) {
+		id, _ := entry["id"].(string)
+		flag, _ := entry["routed"].(bool)
+		routed[id] = flag
+	}
+	if !routed["claude-sonnet-4-5-20250929"] {
+		t.Error("a model served under an upstream rename was reported as unrouted")
+	}
+	if routed["claude-opus-4-7"] {
+		t.Error("a model no route names was marked routed")
+	}
+}
