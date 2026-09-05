@@ -253,8 +253,8 @@ func TestUpstreamRenameBoxIsGuidedByTheProviderCatalog(t *testing.T) {
 	}
 	script := string(app)
 	for _, want := range []string{
-		"createElement('datalist')",
-		"inp.setAttribute('list', listID)",
+		"function attachSuggest(input, options, onPick)",
+		"attachSuggest(inp, catalog,",
 		"meta.catalog || []",
 		// A blank box sends the published name, so that is the id to check.
 		"const effective = typed || opts.published || '';",
@@ -276,6 +276,42 @@ func TestUpstreamRenameBoxIsGuidedByTheProviderCatalog(t *testing.T) {
 	}
 	if !strings.Contains(string(css), ".mdl-map.is-unknown") {
 		t.Error("unknown-upstream warning has no styling")
+	}
+}
+
+// A <datalist> popup is painted by the OS in its own light theme and ignores
+// every stylesheet, which is why the suggestions are drawn with the dashboard's
+// own .dd-panel markup instead. Guard the regression: reaching for the native
+// control again would silently reintroduce the mismatched white dropdown.
+func TestUpstreamSuggestionsUseTheDashboardDropdownNotNativeDatalist(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, gone := range []string{"createElement('datalist')", "setAttribute('list'"} {
+		if strings.Contains(script, gone) {
+			t.Errorf("native datalist is back (%q) — its popup cannot be themed", gone)
+		}
+	}
+	for _, want := range []string{
+		"panel.className = 'dd-panel dd-suggest hidden'",
+		// Portalled panels outlive a re-render, so they are reaped by input too.
+		"host.querySelectorAll('select, input.mdl-upstream')",
+		// blur beats click, so the pick has to happen on mousedown.
+		"opt.onmousedown",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("themed suggestion dropdown missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	if !strings.Contains(string(css), ".dd-suggest{") {
+		t.Error("suggestion panel has no styling of its own")
 	}
 }
 
