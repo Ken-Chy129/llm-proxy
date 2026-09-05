@@ -33,22 +33,55 @@ function syncHTML(el, html) {
   return true;
 }
 
+// Compare keyed cards by the server-rendered markup that produced them, not by
+// their live DOM. Browser-owned interaction state such as <details open> and
+// scrollTop legitimately changes after rendering and must not make a card look
+// stale on the next status poll.
+const refreshMarkup = new WeakMap();
+
+function captureRefreshState(node) {
+  return {
+    details: Array.from(node.querySelectorAll('details')).map(d => d.open),
+    scroll: Array.from(node.querySelectorAll('[data-refresh-scroll]')).map(el => ({
+      top: el.scrollTop,
+      left: el.scrollLeft,
+    })),
+  };
+}
+
+function restoreRefreshState(node, state) {
+  const details = node.querySelectorAll('details');
+  state.details.forEach((open, i) => {
+    if (details[i]) details[i].open = open;
+  });
+
+  const scroll = node.querySelectorAll('[data-refresh-scroll]');
+  state.scroll.forEach((position, i) => {
+    if (!scroll[i]) return;
+    scroll[i].scrollTop = position.top;
+    scroll[i].scrollLeft = position.left;
+  });
+}
+
 function syncKeyedHTML(container, entries) {
   const existing = new Map(Array.from(container.children).map(node => [node.dataset.refreshKey, node]));
   const retained = new Set();
 
   entries.forEach(({key, html}, index) => {
-    const fragment = htmlFragment(html);
-    const next = fragment.firstElementChild;
-    if (!next || fragment.childElementCount !== 1) throw new Error('keyed render must produce one element');
-    next.dataset.refreshKey = key;
-
     let node = existing.get(key);
-    if (!node) {
+    if (!node || refreshMarkup.get(node) !== html) {
+      const fragment = htmlFragment(html);
+      const next = fragment.firstElementChild;
+      if (!next || fragment.childElementCount !== 1) throw new Error('keyed render must produce one element');
+      next.dataset.refreshKey = key;
+
+      if (node) {
+        const state = captureRefreshState(node);
+        node.replaceWith(next);
+        restoreRefreshState(next, state);
+      }
       node = next;
-    } else if (!node.isEqualNode(next)) {
-      node.replaceWith(next);
-      node = next;
+      refreshMarkup.set(node, html);
     }
 
     const atIndex = container.children[index];
@@ -295,7 +328,7 @@ function renderModelTagList(entries, routedCount, catalog, provider) {
   const summary = `${routedCount} routed`
     + (unrouted ? ` · <b class="backend-models-add">${unrouted} available to add</b>` : '');
   if (entries.length <= 8 && !unrouted) return `<div class="backend-models">${tags}</div>`;
-  return `<details class="backend-models-collapsible"><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
+  return `<details class="backend-models-collapsible"><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list" data-refresh-scroll>${tags}</div></details>`;
 }
 
 function formatIntegerString(value) {

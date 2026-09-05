@@ -103,6 +103,35 @@ func TestStatusRefreshPatchesRenderedListsInsteadOfReplacingThem(t *testing.T) {
 	}
 }
 
+func TestStatusRefreshPreservesProviderCardInteractionState(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+
+	// Opening a <details> mutates the live DOM by adding its `open` attribute.
+	// That transient browser state must not make an otherwise unchanged provider
+	// card look stale, and it must survive a real server-side card update too.
+	if strings.Contains(script, "} else if (!node.isEqualNode(next)) {") {
+		t.Error("keyed refresh still compares live DOM, so opening View list replaces the provider card")
+	}
+	for _, want := range []string{
+		"const refreshMarkup = new WeakMap();",
+		"function captureRefreshState(node)",
+		"function restoreRefreshState(node, state)",
+		"refreshMarkup.get(node) !== html",
+		"details: Array.from(node.querySelectorAll('details')).map",
+		"scroll: Array.from(node.querySelectorAll('[data-refresh-scroll]')).map",
+		"restoreRefreshState(node, state)",
+		`data-refresh-scroll`,
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("status refresh does not preserve provider interaction state: missing %q", want)
+		}
+	}
+}
+
 func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	app, err := staticFiles.ReadFile("static/app.js")
 	if err != nil {
