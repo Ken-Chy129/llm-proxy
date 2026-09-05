@@ -43,10 +43,19 @@ kimi:
 
 # Generic Anthropic-compatible relay. The token is read from the environment;
 # never paste it into this file or the dashboard.
+#
+# `models` pins what the provider is considered able to serve, overriding the
+# /v1/models discovery the dashboard otherwise relies on. Every provider accepts
+# it, but this relay is why it exists: it advertises a stale list that omits
+# models it serves perfectly well, so models routed here showed as unroutable.
+# Leave it out to let discovery notice new models on its own.
 relay:
   enabled: false
   base_url: "http://34.80.212.77/api"
   auth_token_env: "ANTHROPIC_AUTH_TOKEN"
+  # models:
+  #   - "claude-opus-5"
+  #   - "claude-fable-5-1"
 
 # AnyGen uses one app-scoped sk-ag key for Chat Completions and Models. The key
 # must grant exactly those two actions with whole_app=false. Chat Completions is

@@ -502,9 +502,15 @@ func (h *AdminHandler) providerSummaries() []gin.H {
 	return out
 }
 
-// providerCatalog lists the models a provider discovered upstream. Only the
-// synced providers have one; the rest serve whatever they are told to.
+// providerCatalog lists the models a provider can serve. A catalog pinned in
+// config wins over discovery — see Config.ProviderModels for why an operator
+// overrides rather than supplements a lying endpoint. Otherwise it is whatever
+// the upstream reported at the last sync; providers without a discovery
+// endpoint (Vertex) have neither and serve whatever they are told to.
 func (h *AdminHandler) providerCatalog(name string) []string {
+	if pinned := h.cfg.ProviderModels(name); len(pinned) > 0 {
+		return pinned
+	}
 	switch name {
 	case "anygen":
 		if h.anygenExec != nil {

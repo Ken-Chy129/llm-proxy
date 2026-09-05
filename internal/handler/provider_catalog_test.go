@@ -475,3 +475,75 @@ func TestCatalogViewReportsOnlyWhatTheUpstreamOffers(t *testing.T) {
 		t.Fatalf("unrouted = %v, want 1", view["unrouted"])
 	}
 }
+
+// Discovery is only as honest as the endpoint behind it: the relay advertises a
+// stale list that omits models it actually serves, which made models routed
+// there look unroutable. A configured list is an operator overriding a source
+// they know to be wrong, so it replaces discovery rather than merging with it —
+// a merge would keep resurrecting the very entries it exists to suppress.
+func TestConfiguredProviderModelsReplaceTheDiscoveredCatalog(t *testing.T) {
+	t.Setenv("TEST_RELAY_TOKEN", "sk-relay-test")
+	relayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"claude-3-opus-20240229"}]}`)
+	}))
+	defer relayServer.Close()
+	relayCfg := config.RelayConfig{
+		Enabled:      true,
+		BaseURL:      relayServer.URL + "/api",
+		AuthTokenEnv: "TEST_RELAY_TOKEN",
+		Models:       []string{"claude-opus-5", "  ", "claude-fable-5-1"},
+	}
+	relayExec := executor.NewRelayExecutor(relayCfg)
+	if _, err := relayExec.SyncModels(context.Background()); err != nil {
+		t.Fatalf("relay SyncModels: %v", err)
+	}
+
+	h := &AdminHandler{
+		configPath: filepath.Join(t.TempDir(), "config.yaml"),
+		cfg:        &config.Config{Relay: relayCfg},
+		router:     router.New(),
+		relayExec:  relayExec,
+	}
+
+	got := h.providerCatalog("relay")
+	want := []string{"claude-opus-5", "claude-fable-5-1"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("catalog = %v, want %v (configured list, blanks dropped)", got, want)
+	}
+	// The stale entry is the whole reason the override exists.
+	if slices.Contains(got, "claude-3-opus-20240229") {
+		t.Error("discovered catalog leaked through the configured one")
+	}
+}
+
+// Without a configured list the upstream stays the source of truth, so a new
+// model still shows up without anyone editing YAML.
+func TestProviderCatalogFallsBackToDiscoveryWhenUnconfigured(t *testing.T) {
+	t.Setenv("TEST_RELAY_TOKEN", "sk-relay-test")
+	relayServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"data":[{"id":"claude-opus-4-5-20251101"}]}`)
+	}))
+	defer relayServer.Close()
+	relayCfg := config.RelayConfig{
+		Enabled:      true,
+		BaseURL:      relayServer.URL + "/api",
+		AuthTokenEnv: "TEST_RELAY_TOKEN",
+	}
+	relayExec := executor.NewRelayExecutor(relayCfg)
+	if _, err := relayExec.SyncModels(context.Background()); err != nil {
+		t.Fatalf("relay SyncModels: %v", err)
+	}
+
+	h := &AdminHandler{
+		configPath: filepath.Join(t.TempDir(), "config.yaml"),
+		cfg:        &config.Config{Relay: relayCfg},
+		router:     router.New(),
+		relayExec:  relayExec,
+	}
+
+	if got := h.providerCatalog("relay"); !slices.Equal(got, []string{"claude-opus-4-5-20251101"}) {
+		t.Fatalf("catalog = %v, want the discovered list", got)
+	}
+}
