@@ -782,13 +782,58 @@ function enhanceSelect(sel) {
   sync();
 }
 
-// dropEnhanced removes the body-level panels belonging to selects inside host,
-// which must be called before host is emptied — innerHTML = '' drops the
-// triggers but cannot reach the portalled panels.
+// dropEnhanced removes the body-level panels belonging to the selects and
+// suggest-inputs inside host, which must be called before host is emptied —
+// innerHTML = '' drops the triggers but cannot reach the portalled panels.
 function dropEnhanced(host) {
-  host.querySelectorAll('select').forEach(sel => {
-    if (sel._ddPanel) sel._ddPanel.remove();
+  host.querySelectorAll('select, input.mdl-upstream').forEach(node => {
+    if (node._ddPanel) node._ddPanel.remove();
   });
+}
+
+// attachSuggest gives a free-text input the dashboard's own dropdown instead of
+// the browser's <datalist>, whose popup is drawn by the OS in its own light
+// theme and cannot be styled at all. Reuses the .dd-panel markup enhanceSelect
+// produces, so both dropdowns stay identical without sharing their behaviour:
+// this one filters as you type and never forces a value, because the catalog
+// behind it is a suggestion rather than a whitelist.
+function attachSuggest(input, options, onPick) {
+  const panel = document.createElement('div');
+  panel.className = 'dd-panel dd-suggest hidden';
+  document.body.appendChild(panel);
+  // Same reasoning as enhanceSelect's portalled panel: the config page rebuilds
+  // its chains on every edit, so the panel has to die with its input rather
+  // than with the DOM node that happened to contain it.
+  input._ddPanel = panel;
+
+  const close = () => panel.classList.add('hidden');
+  const paint = () => {
+    const typed = input.value.trim().toLowerCase();
+    const shown = options.filter(o => !typed || o.toLowerCase().includes(typed));
+    panel.innerHTML = '';
+    if (!shown.length) { close(); return; }
+    shown.forEach(value => {
+      const opt = el('div', 'dd-opt' + (value === input.value.trim() ? ' sel' : ''), value);
+      // mousedown, not click: the input's blur would tear the panel down first.
+      opt.onmousedown = e => { e.preventDefault(); onPick(value); close(); };
+      panel.appendChild(opt);
+    });
+    const r = input.getBoundingClientRect();
+    panel.style.position = 'fixed';
+    panel.style.top = (r.bottom + 4) + 'px';
+    panel.style.left = r.left + 'px';
+    panel.style.minWidth = r.width + 'px';
+    panel.classList.remove('hidden');
+  };
+
+  input.addEventListener('focus', paint);
+  input.addEventListener('input', paint);
+  input.addEventListener('blur', close);
+  input.addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+  // The document-level closeAllDD fires on the same click that focused the
+  // input, so without this the panel opens and shuts in one gesture. Closing
+  // the other dropdowns first keeps only one open at a time, as before.
+  input.addEventListener('click', e => { e.stopPropagation(); closeAllDD(); paint(); });
 }
 
 function escAttr(s) { return String(s).replace(/"/g, '&quot;'); }
@@ -1400,23 +1445,11 @@ function renderChain(list, opts) {
       inp.value = ref.upstream || '';
       inp.placeholder = opts.published || 'upstream id';
       inp.spellcheck = false;
-      // Offer the provider's discovered catalog as suggestions. A datalist, not
-      // a <select>: the catalog is a hint, not a rule. Vertex has no discovery
-      // endpoint at all, and a provider can serve an id it does not advertise,
-      // so the box has to keep accepting anything typed into it.
+      // Offer the provider's discovered catalog as suggestions, but keep the
+      // control an <input>: the catalog is a hint, not a rule. Vertex has no
+      // discovery endpoint at all, and a provider can serve an id it does not
+      // advertise, so the box has to keep accepting anything typed into it.
       const catalog = meta.catalog || [];
-      if (catalog.length) {
-        const listID = `up-${opts.published || 'series'}-${ref.provider}-${i}`.replace(/[^\w-]/g, '_');
-        const dl = document.createElement('datalist');
-        dl.id = listID;
-        catalog.forEach(id => {
-          const opt = document.createElement('option');
-          opt.value = id;
-          dl.appendChild(opt);
-        });
-        map.appendChild(dl);
-        inp.setAttribute('list', listID);
-      }
       // Warn when the id that will actually go on the wire — the rename, or the
       // published name when the box is blank — is absent from the catalog. It
       // is the typo the box used to swallow until a real request failed.
@@ -1433,6 +1466,14 @@ function renderChain(list, opts) {
       inp.oninput = () => { ref.upstream = inp.value; sync(); setPanelDirty('models', true); };
       sync();
       map.appendChild(inp);
+      if (catalog.length) {
+        attachSuggest(inp, catalog, value => {
+          inp.value = value;
+          ref.upstream = value;
+          sync();
+          setPanelDirty('models', true);
+        });
+      }
       row.appendChild(map);
     }
 
