@@ -457,22 +457,30 @@ rect.cal-future{fill:transparent;}
 .mdl-newinput:focus{outline:none;border-color:var(--accent);}
 .mdl-newinput::placeholder{color:var(--text-2);}
 
-/* The rename slot is a ghost until it holds something or you reach for it: it
-   is a quirk of one upstream, not a property of the model, and an always-lit
-   empty field reads as a required one. */
-.mdl-map{display:flex;align-items:center;gap:6px;min-width:0;opacity:.22;transition:opacity .14s;}
-.mdl-link:hover .mdl-map,.mdl-map:focus-within,.mdl-map.has-map{opacity:1;}
-.mdl-map-mark{flex:0 0 auto;color:var(--accent-dim);font-family:var(--mono);font-size:12px;cursor:help;}
+/* The rename slot stays understated until it holds something or you reach for
+   it: it is a quirk of one upstream, not a property of the model, and an
+   always-lit empty field reads as a required one. The restraint is carried by
+   the missing border alone — a wrapper opacity used to multiply into the
+   placeholder's already-dim grey and sank the row's effective id out of sight,
+   which is the one thing this column exists to show. */
+.mdl-map{display:flex;align-items:center;gap:6px;min-width:0;}
+.mdl-map-mark{flex:0 0 auto;color:var(--text-2);font-family:var(--mono);font-size:12px;cursor:help;transition:color .14s;}
+.mdl-link:hover .mdl-map-mark,.mdl-map:focus-within .mdl-map-mark,.mdl-map.has-map .mdl-map-mark{color:var(--accent-dim);}
 .mdl-upstream{width:100%;background:var(--bg-0);border:1px solid var(--border);color:var(--text-0);border-radius:2px;padding:4px 8px;font-size:11.5px;font-family:var(--mono);}
 .mdl-upstream:focus{outline:none;border-color:var(--accent);}
-.mdl-upstream::placeholder{color:var(--text-2);}
+/* The placeholder is not filler here: it spells out the id the row will send
+   when the box is blank, so it has to stay readable rather than hint-grey. */
+.mdl-upstream::placeholder{color:var(--text-1);opacity:1;}
 .mdl-map:not(.has-map) .mdl-upstream{border-color:transparent;background:transparent;}
 .mdl-map:not(.has-map):focus-within .mdl-upstream{border-color:var(--accent);background:var(--bg-0);}
 /* The provider never listed this id: still saveable (catalogs can lag, and
    Vertex has none), but no longer silent until a request fails. */
-.mdl-map.is-unknown{opacity:1;}
 .mdl-map.is-unknown .mdl-map-mark{color:var(--yellow);}
 .mdl-map.is-unknown .mdl-upstream{border-color:rgba(255,204,77,0.55);color:var(--yellow);}
+/* A blank box warns through its placeholder, so that is the text that has to
+   turn yellow — colouring only the typed value left the commonest warning
+   (published name the provider never listed) looking like a normal empty row. */
+.mdl-map.is-unknown .mdl-upstream::placeholder{color:var(--yellow);opacity:.75;}
 
 .route-move{width:26px;height:24px;border:1px solid var(--border);border-radius:2px;background:transparent;color:var(--text-1);font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .14s;}
 .route-move:hover:not(:disabled),.route-move:focus-visible{border-color:var(--accent);color:var(--accent);background:var(--accent-soft);outline:none;}
