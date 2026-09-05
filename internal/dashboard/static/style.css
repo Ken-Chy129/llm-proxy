@@ -131,9 +131,7 @@ body::after{
 /* Catalog-only models are dimmed: they are what the upstream offers, not what
    this proxy serves, and the two must never read alike. */
 .model-tag.is-unrouted{color:var(--text-2);border-style:dashed;background:transparent;}
-.model-tag.is-new{border-color:var(--accent-dim);}
-.model-tag-new{font-style:normal;font-size:9px;letter-spacing:.6px;text-transform:uppercase;margin-left:6px;padding:1px 4px;border-radius:2px;background:var(--accent);color:var(--bg-0);}
-.backend-models-new{color:var(--accent);}
+.backend-models-add{color:var(--accent);}
 /* Publishing is a per-chip action, so the control lives in the chip. Hidden
    until the row is touched: 19 always-visible + buttons would read as clutter. */
 .model-tag-publish{margin-left:6px;padding:0 3px;border:0;border-radius:2px;background:transparent;color:var(--accent);font-family:var(--mono);font-size:12px;line-height:1;cursor:pointer;opacity:0;transition:opacity .12s ease;}

@@ -139,10 +139,10 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	}
 }
 
-// A provider card that lists only the routed models cannot tell an operator the
-// upstream gained a model — the case this covers. The card reads the discovered
-// catalog alongside the routing table, and says which entries are new.
-func TestProviderCardSurfacesUnroutedAndNewUpstreamModels(t *testing.T) {
+// A provider card that lists only the routed models cannot tell an operator
+// which models are available to add — the case this covers. The card reads the
+// discovered catalog alongside the routing table and marks what is unrouted.
+func TestProviderCardSurfacesUnroutedUpstreamModels(t *testing.T) {
 	app, err := staticFiles.ReadFile("static/app.js")
 	if err != nil {
 		t.Fatalf("read embedded app: %v", err)
@@ -152,8 +152,7 @@ func TestProviderCardSurfacesUnroutedAndNewUpstreamModels(t *testing.T) {
 		"renderBackendModels(b.models, b.catalog, b.name)",
 		"catalog?.models || []",
 		"is-unrouted",
-		"model-tag-new",
-		"more available",
+		"available to add",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("provider card catalog rendering missing %q", want)
@@ -165,7 +164,7 @@ func TestProviderCardSurfacesUnroutedAndNewUpstreamModels(t *testing.T) {
 		t.Fatalf("read embedded styles: %v", err)
 	}
 	styles := string(css)
-	for _, want := range []string{".model-tag.is-unrouted{", ".model-tag-new{"} {
+	for _, want := range []string{".model-tag.is-unrouted{", ".model-tag-publish{"} {
 		if !strings.Contains(styles, want) {
 			t.Errorf("catalog styles missing %q", want)
 		}

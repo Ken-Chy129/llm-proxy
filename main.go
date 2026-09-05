@@ -28,10 +28,6 @@ func main() {
 	tokenStore := auth.NewTokenStore(cfg.ClaudeOAuth.TokenDir, cfg.Server.AccountStrategy)
 	r.SetChecker(tokenStore)
 	auth.InitQuotaCache(tokenStore.Dir())
-	// Discovered model lists are remembered across restarts so the dashboard can
-	// say which models are *new* upstream rather than treating every one as new
-	// on every boot.
-	auth.InitModelCatalog(tokenStore.Dir())
 
 	statsDB, err := stats.Open(cfg.ClaudeOAuth.TokenDir)
 	if err != nil {

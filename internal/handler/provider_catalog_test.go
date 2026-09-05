@@ -11,9 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/Ken-Chy129/llm-proxy/internal/auth"
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
@@ -69,7 +67,6 @@ func catalogEntries(t *testing.T, view gin.H) []gin.H {
 // upstream added stayed invisible until someone read release notes. It now
 // reports the discovered catalog with each entry marked routed or not.
 func TestCatalogViewSeparatesRoutedModelsFromWhatTheUpstreamOffers(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gpt-5.5", "gpt-5.6-luna")
 
 	cfg := &config.Config{AnyGen: config.AnyGenConfig{Enabled: true}}
@@ -90,10 +87,6 @@ func TestCatalogViewSeparatesRoutedModelsFromWhatTheUpstreamOffers(t *testing.T)
 	if view["total"] != 2 || view["unrouted"] != 1 {
 		t.Fatalf("total=%v unrouted=%v, want 2 and 1", view["total"], view["unrouted"])
 	}
-	// Everything just discovered is new, which is exactly what should draw the eye.
-	if view["new"] != 2 {
-		t.Fatalf("new = %v, want 2", view["new"])
-	}
 
 	routed := map[string]bool{}
 	for _, entry := range catalogEntries(t, view) {
@@ -113,7 +106,6 @@ func TestCatalogViewSeparatesRoutedModelsFromWhatTheUpstreamOffers(t *testing.T)
 // upstream id, so matching published names alone would report it as unrouted and
 // invent work that is already done.
 func TestCatalogViewCountsUpstreamRenamesAsRouted(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "claude-sonnet-4-5-20250929")
 
 	cfg := &config.Config{AnyGen: config.AnyGenConfig{Enabled: true}}
@@ -129,30 +121,6 @@ func TestCatalogViewCountsUpstreamRenamesAsRouted(t *testing.T) {
 
 	if view := h.catalogView("anygen"); view["unrouted"] != 0 {
 		t.Fatalf("unrouted = %v, want 0 — the model is served under its upstream id", view["unrouted"])
-	}
-}
-
-// "New" has to expire, or the badge becomes permanent decoration. The age comes
-// from the persisted catalog, so this seeds one from a previous run.
-func TestCatalogViewStopsFlaggingModelsSeenLongAgo(t *testing.T) {
-	dir := t.TempDir()
-	old := time.Now().Add(-newModelWindow - time.Hour).Unix()
-	seeded, err := json.Marshal(map[string][]auth.CatalogEntry{
-		"anygen": {{ID: "gpt-5.5", FirstSeen: old}},
-	})
-	if err != nil {
-		t.Fatalf("marshal seed: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "model_catalog.json"), seeded, 0600); err != nil {
-		t.Fatalf("seed catalog: %v", err)
-	}
-	auth.InitModelCatalog(dir)
-
-	anygenExec := syncedAnyGen(t, "gpt-5.5")
-	h := &AdminHandler{cfg: &config.Config{}, router: router.New(), anygenExec: anygenExec}
-
-	if view := h.catalogView("anygen"); view["new"] != 0 {
-		t.Fatalf("new = %v, want 0 once the model is older than the window", view["new"])
 	}
 }
 
@@ -212,7 +180,6 @@ func publishRequest(t *testing.T, h *AdminHandler, provider, model string) *http
 // inherits the same failover chain its siblings already use — that is the whole
 // value over typing the name into the config page by hand.
 func TestPublishModelSeedsTheChainFromTheSeriesDefault(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "claude-opus-4-6")
 
 	configPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -255,7 +222,6 @@ func TestPublishModelSeedsTheChainFromTheSeriesDefault(t *testing.T) {
 // purely from the series default would publish a gemini model onto a chain that
 // never lists the provider that actually has it.
 func TestPublishModelAlwaysIncludesTheDiscoveringProvider(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gemini-3.5-flash")
 
 	cfg := &config.Config{
@@ -281,7 +247,6 @@ func TestPublishModelAlwaysIncludesTheDiscoveringProvider(t *testing.T) {
 // A series default naming a provider whose catalog lacks the model would add a
 // hop that always fails over, so it is left out.
 func TestPublishModelSkipsDefaultsThatCannotServeTheModel(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gpt-5.4-nano")
 
 	t.Setenv("TEST_RELAY_TOKEN", "sk-relay-test")
@@ -325,7 +290,6 @@ func TestPublishModelSkipsDefaultsThatCannotServeTheModel(t *testing.T) {
 // Republishing a name would silently rewrite that model's chain — an edit
 // nobody asked for.
 func TestPublishModelRefusesAnAlreadyPublishedName(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gpt-5.5")
 
 	cfg := &config.Config{AnyGen: config.AnyGenConfig{Enabled: true}}
@@ -354,7 +318,6 @@ func TestPublishModelRefusesAnAlreadyPublishedName(t *testing.T) {
 // A published model becomes servable without a restart: publishing re-applies
 // routing through the same path a config save uses.
 func TestPublishModelMakesTheModelServableImmediately(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gpt-5.4-nano")
 
 	cfg := &config.Config{
@@ -382,7 +345,6 @@ func TestPublishModelMakesTheModelServableImmediately(t *testing.T) {
 
 // The card stops offering to publish what it just published.
 func TestPublishedModelLeavesTheUnroutedList(t *testing.T) {
-	auth.InitModelCatalog(t.TempDir())
 	anygenExec := syncedAnyGen(t, "gpt-5.4-nano")
 
 	cfg := &config.Config{

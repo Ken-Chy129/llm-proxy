@@ -526,28 +526,18 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 	return nil
 }
 
-// newModelWindow is how long a model stays flagged as new after it first shows
-// up upstream. Long enough to survive a weekend away from the dashboard, short
-// enough that the badge still means "recent".
-const newModelWindow = 14 * 24 * time.Hour
-
 // catalogView describes what a provider *could* serve, next to what routing
 // actually publishes.
 //
 // The provider cards used to draw only the routed models, which meant a model
 // added upstream was invisible until someone happened to read release notes.
-// This reports the discovered catalog, marks the entries no route names, and
-// flags the ones that appeared recently — so a new model is noticed on the page
-// that is already open.
+// This reports the discovered catalog and marks the entries no route names, so
+// the models available to add are visible on the page that is already open.
 func (h *AdminHandler) catalogView(provider string) gin.H {
 	models := h.providerCatalog(provider)
 	if len(models) == 0 {
 		return nil
 	}
-	// Persisted, so "new" survives a restart; without it every model would look
-	// new on every boot, which is the same as none of them looking new.
-	entries := auth.ModelCatalog.Set(provider, models)
-
 	routed := make(map[string]bool, len(models))
 	for _, m := range h.router.ModelsByBackend(provider) {
 		routed[m] = true
@@ -562,30 +552,19 @@ func (h *AdminHandler) catalogView(provider string) gin.H {
 		}
 	}
 
-	cutoff := time.Now().Add(-newModelWindow).Unix()
-	list := make([]gin.H, 0, len(entries))
-	unrouted, fresh := 0, 0
-	for _, entry := range entries {
-		isRouted := routed[entry.ID]
-		isNew := entry.FirstSeen >= cutoff
+	list := make([]gin.H, 0, len(models))
+	unrouted := 0
+	for _, id := range models {
+		isRouted := routed[id]
 		if !isRouted {
 			unrouted++
 		}
-		if isNew {
-			fresh++
-		}
-		list = append(list, gin.H{
-			"id":         entry.ID,
-			"routed":     isRouted,
-			"new":        isNew,
-			"first_seen": entry.FirstSeen,
-		})
+		list = append(list, gin.H{"id": id, "routed": isRouted})
 	}
 	return gin.H{
 		"models":   list,
 		"total":    len(list),
 		"unrouted": unrouted,
-		"new":      fresh,
 	}
 }
 

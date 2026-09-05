@@ -260,11 +260,10 @@ function tokenChips(t) {
 }
 
 // A provider card answers two different questions, and conflating them is what
-// made a new upstream model invisible: "what does this proxy publish here"
-// (the routing table) and "what could it publish" (the discovered catalog).
-// Routed models are drawn plainly; catalog-only ones are dimmed, and the ones
-// that appeared upstream recently carry a NEW badge — that badge is the whole
-// reason this reads the catalog at all.
+// made an upstream model invisible: "what does this proxy publish here" (the
+// routing table) and "what could it publish" (the discovered catalog). Routed
+// models are drawn plainly; the ones no route names yet are dimmed and carry
+// the control that publishes them.
 function renderBackendModels(models, catalog, provider) {
   const routed = models || [];
   const entries = catalog?.models || [];
@@ -281,24 +280,22 @@ function renderBackendModels(models, catalog, provider) {
 function renderModelTagList(entries, routedCount, catalog, provider) {
   if (!entries.length) return '<div class="backend-models"></div>';
   const tags = entries.map(e => {
-    const cls = 'model-tag' + (e.routed ? '' : ' is-unrouted') + (e.new ? ' is-new' : '');
+    const cls = 'model-tag' + (e.routed ? '' : ' is-unrouted');
     const title = e.routed ? 'Published by this proxy' : 'Offered upstream — no model routes here yet';
     // Publishing is offered inline because that is where the decision is made:
-    // seeing a model the upstream gained is only useful if acting on it does
-    // not mean opening the config page and retyping the name.
+    // seeing a model the upstream offers is only useful if adding it does not
+    // mean opening the config page and retyping the name.
     const publish = e.routed ? ''
       : `<button class="model-tag-publish" title="Publish ${escapeHTML(e.id)} — routes it through this provider" onclick="publishModel('${escapeHTML(provider)}','${escapeHTML(e.id)}',event)">+</button>`;
-    return `<span class="${cls}" title="${escapeHTML(title)}">${escapeHTML(e.id)}${e.new ? '<i class="model-tag-new">new</i>' : ''}${publish}</span>`;
+    return `<span class="${cls}" title="${escapeHTML(title)}">${escapeHTML(e.id)}${publish}</span>`;
   }).join('');
   // The headline counts what the proxy serves; the extras say what is on the
   // table but unused, which is the number worth acting on.
-  const fresh = catalog?.new || 0;
   const unrouted = catalog?.unrouted || 0;
   const summary = `${routedCount} routed`
-    + (unrouted ? ` · ${unrouted} more available` : '')
-    + (fresh ? ` · <b class="backend-models-new">${fresh} new</b>` : '');
+    + (unrouted ? ` · <b class="backend-models-add">${unrouted} available to add</b>` : '');
   if (entries.length <= 8 && !unrouted) return `<div class="backend-models">${tags}</div>`;
-  return `<details class="backend-models-collapsible"${fresh ? ' open' : ''}><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
+  return `<details class="backend-models-collapsible"><summary><span>${summary}</span><span class="backend-models-action"><span class="backend-models-show">View list</span><span class="backend-models-hide">Hide list</span></span></summary><div class="backend-model-list">${tags}</div></details>`;
 }
 
 function formatIntegerString(value) {
