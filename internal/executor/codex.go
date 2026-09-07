@@ -9,6 +9,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +30,51 @@ const (
 // codexBaseURL is a var, not a const, so tests can point the executor at a stub
 // upstream. Nothing in production reassigns it.
 var codexBaseURL = "https://chatgpt.com/backend-api"
+
+// installationID is the client identity Codex expects to be stable for the life
+// of an installation. It was previously minted per request, which told upstream
+// every call came from a brand-new machine and cost us prompt-cache locality:
+// the cache is prefix-based, and a shifting client identity keeps a session from
+// landing on the prefix its own previous turn just wrote.
+//
+// It is persisted next to the OAuth tokens so a container restart does not
+// reset it. A read failure is never fatal: an in-memory UUID still holds the id
+// steady for this process, which is what the cache actually keys on.
+var (
+	installationIDOnce sync.Once
+	installationIDVal  string
+)
+
+func (e *CodexExecutor) installationID() string {
+	installationIDOnce.Do(func() {
+		var dir string
+		if e.oauth != nil && e.oauth.Store() != nil {
+			dir = e.oauth.Store().Dir()
+		}
+		installationIDVal = readInstallationID(dir)
+	})
+	return installationIDVal
+}
+
+// readInstallationID loads the persisted id, minting and storing one on first
+// use. An unusable directory is not an error: the caller memoises the result, so
+// a fresh uuid still presents one stable identity for this process.
+func readInstallationID(dir string) string {
+	if dir == "" {
+		return uuid.New().String()
+	}
+	path := filepath.Join(dir, "codex_installation_id")
+	if b, err := os.ReadFile(path); err == nil {
+		if id := strings.TrimSpace(string(b)); id != "" {
+			return id
+		}
+	}
+	id := uuid.New().String()
+	if err := os.WriteFile(path, []byte(id), 0o600); err != nil {
+		log.Printf("codex: could not persist installation id: %v", err)
+	}
+	return id
+}
 
 // Codex Responses API types
 
@@ -294,7 +341,7 @@ func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w 
 	httpReq.Header.Set("User-Agent", codexUserAgent)
 	httpReq.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
 	httpReq.Header.Set("x-openai-internal-codex-residency", "us")
-	httpReq.Header.Set("x-codex-installation-id", uuid.New().String())
+	httpReq.Header.Set("x-codex-installation-id", e.installationID())
 	httpReq.Header.Set("x-client-request-id", uuid.New().String())
 
 	resp, err := e.client().Do(httpReq)
@@ -354,7 +401,7 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 			return err
 		}
 
-		installationID := uuid.New().String()
+		installationID := e.installationID()
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
@@ -493,7 +540,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			return nil, err
 		}
 
-		installationID := uuid.New().String()
+		installationID := e.installationID()
 		httpReq.Header.Set("Authorization", "Bearer "+token)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
