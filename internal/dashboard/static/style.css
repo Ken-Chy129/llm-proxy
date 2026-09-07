@@ -259,6 +259,15 @@ tr:hover td{background:var(--accent-soft);}
 .dd-opt-l{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .dd-opt-n{color:var(--text-2);font-size:11px;font-variant-numeric:tabular-nums;}
 .dd-opt.sel .dd-opt-n{display:none;}
+/* A state tag on a dropdown row (currently "unpublished"). .dd-opt-l takes the
+   slack, so the tags line up on the right rather than trailing names of
+   differing length. Quiet by design: it qualifies the row without competing
+   with the model name, which is what is actually being picked. */
+.dd-opt-tag{margin-left:auto;flex-shrink:0;font-family:var(--display);font-size:8.5px;font-weight:600;letter-spacing:1px;text-transform:uppercase;color:var(--text-2);border:1px solid var(--border);border-radius:2px;padding:1px 5px;}
+.dd-opt:hover .dd-opt-tag{border-color:var(--text-2);color:var(--text-1);}
+/* The checkmark also claims margin-left:auto; give it the edge and let the tag
+   sit just inside it so a selected tagged row keeps both, in a stable order. */
+.dd-opt.sel .dd-opt-tag{margin-left:auto;color:var(--accent-dim);border-color:var(--accent-dim);}
 /* errors → red heatmap palette */
 rect.cal-e0{fill:var(--bg-3);}
 rect.cal-e1{fill:rgba(255,95,73,0.28);}

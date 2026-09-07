@@ -543,11 +543,20 @@ async function loadStatus() {
         // Unpublished always needs the explicit provider: there is no chain to
         // fall back on, so the name alone would not resolve at all.
         const value = isServing && !isUnpublished ? name : `${name}@${provider}`;
-        const suffix = isUnpublished
-          ? ' — unpublished, try via ' + providerLabel(provider)
-          : isServing ? '' : ' — via ' + providerLabel(provider);
-        return `<option value="${escapeHTML(value)}"${isServing && !isUnpublished ? '' : ' data-muted="1"'}>`
-          + `${escapeHTML(name)}${escapeHTML(suffix)}</option>`;
+        // The option's text is the model name alone. Which provider serves it
+        // is already the group it sits under, so repeating it per row was noise
+        // that pushed the names themselves out of alignment. "unpublished" is
+        // not a name, so it travels as a tag the dropdown draws on the right.
+        const tag = isUnpublished ? ' data-tag="unpublished"' : '';
+        // Collapsed, the group heading is not on screen, and the same model can
+        // appear under two providers — so the closed trigger has to name the
+        // provider or two different choices read identically. The rows
+        // themselves stay clean; only the trigger carries it.
+        const trigger = isServing && !isUnpublished
+          ? name
+          : `${name} · ${providerLabel(provider)}`;
+        return `<option value="${escapeHTML(value)}"${tag}`
+          + ` data-trigger="${escapeHTML(trigger)}">${escapeHTML(name)}</option>`;
       }).join('');
       return `<optgroup label="${escapeHTML(lbl)}">${opts}</optgroup>`;
     }).join('');
@@ -812,12 +821,31 @@ function enhanceSelect(sel) {
   // per render, and each still answers closeAllDD. Tie the panel's lifetime to
   // the select's instead of the DOM's.
   sel._ddPanel = panel;
-  const sync = () => { const o = sel.options[sel.selectedIndex]; label.textContent = o ? o.textContent : ''; };
+  // data-trigger lets an option read differently when collapsed than it does in
+  // the list: the chat picker keeps its rows to bare model names but has to
+  // disambiguate the closed state, where the group heading is not visible.
+  const sync = () => {
+    const o = sel.options[sel.selectedIndex];
+    label.textContent = o ? (o.dataset.trigger || o.textContent) : '';
+  };
   const addOpt = o => {
     const el = document.createElement('div');
     el.className = 'dd-opt' + (o.selected ? ' sel' : '') + (o.disabled ? ' dis' : '') +
       (o.dataset.muted ? ' muted' : '');
-    el.textContent = o.textContent;
+    // A tagged option keeps its label in its own node so the tag can sit hard
+    // right, which lines the tags up with each other instead of leaving them
+    // ragged at the end of names of differing length.
+    if (o.dataset.tag) {
+      const label = document.createElement('span');
+      label.className = 'dd-opt-l';
+      label.textContent = o.textContent;
+      const tag = document.createElement('span');
+      tag.className = 'dd-opt-tag';
+      tag.textContent = o.dataset.tag;
+      el.append(label, tag);
+    } else {
+      el.textContent = o.textContent;
+    }
     if (!o.disabled) el.onclick = e => {
       e.stopPropagation();
       sel.value = o.value; sync();

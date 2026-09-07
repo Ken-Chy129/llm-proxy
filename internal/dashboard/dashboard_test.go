@@ -411,6 +411,13 @@ func TestChatModelPickerOffersEveryProviderInAModelsChain(t *testing.T) {
 		// failover) is untouched; anything else is pinned explicitly.
 		"const isServing = serving.get(name) === provider",
 		"const value = isServing && !isUnpublished ? name : `${name}@${provider}`",
+		// A row's text is the model name alone: the provider is the group it sits
+		// under, and repeating it per row misaligned the names themselves.
+		"data-tag=\"unpublished\"",
+		"tag.className = 'dd-opt-tag'",
+		// Collapsed, the group heading is off screen and one model can appear
+		// under two providers, so the trigger still has to disambiguate.
+		"o.dataset.trigger || o.textContent",
 		// The override has to be understood locally too, or the chat tab would
 		// read streaming support off the wrong provider.
 		"function splitModelProvider(value)",
@@ -418,7 +425,6 @@ func TestChatModelPickerOffersEveryProviderInAModelsChain(t *testing.T) {
 		// reachability can be confirmed before deciding to publish.
 		"(b.catalog?.models || []).forEach(entry => {",
 		"group.unpublished.add(entry.id)",
-		"unpublished, try via",
 	} {
 		if !strings.Contains(script, want) {
 			t.Errorf("chat model picker missing %q", want)
@@ -427,5 +433,27 @@ func TestChatModelPickerOffersEveryProviderInAModelsChain(t *testing.T) {
 	// Grouping by the serving provider alone is the bug this covers.
 	if strings.Contains(script, "const key = m.provider || '';") {
 		t.Error("chat model picker still groups models by their serving provider only")
+	}
+}
+
+// The tag has to be a node of its own, right-aligned: as trailing text it sat
+// wherever each model name happened to end.
+func TestDropdownStateTagIsRightAligned(t *testing.T) {
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	styles := string(css)
+	if !strings.Contains(styles, ".dd-opt-tag{margin-left:auto") {
+		t.Error("dropdown state tag must be pushed right with margin-left:auto")
+	}
+	// Greying whole rows implied "unavailable"; these are selectable, and that
+	// was the point of offering them.
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	if strings.Contains(string(app), "isServing && !isUnpublished ? '' : ' data-muted=\"1\"'") {
+		t.Error("chat picker still dims selectable rows")
 	}
 }
