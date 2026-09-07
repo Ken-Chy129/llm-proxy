@@ -181,6 +181,11 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 			if h.tokenStore.IsAccountDisabled(provider.name, t.ID) {
 				acc.Status = "disabled"
 			}
+			// Upstream rejected these credentials: only a re-login fixes it, so
+			// it outranks both the expiry label and the rate-limit one below.
+			if h.tokenStore.IsRevoked(provider.name, t.ID) {
+				acc.Status = "revoked"
+			}
 
 			// Mirror Status's rate-limit logic: a reactive 429 cooldown or an
 			// exhausted session/weekly window whose reset is still ahead.
@@ -219,7 +224,7 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 			if until.After(now) {
 				acc.RateLimited = true
 				acc.RateLimitedUntil = formatLocalTime(until)
-				if acc.Status != "disabled" {
+				if acc.Status != "disabled" && acc.Status != "revoked" {
 					acc.Status = "rate_limited"
 				}
 			}
@@ -230,7 +235,7 @@ func (h *AdminHandler) Tray(c *gin.Context) {
 	// Aggregate the worst headroom across accounts that could actually serve
 	// traffic — a disabled or expired account's leftover quota is misleading.
 	for _, a := range resp.Accounts {
-		if a.Status == "disabled" || !a.HasRealData {
+		if a.Status == "disabled" || a.Status == "revoked" || !a.HasRealData {
 			continue
 		}
 		if a.SessionPercent != nil {

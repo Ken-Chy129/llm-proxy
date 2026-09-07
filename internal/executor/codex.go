@@ -20,11 +20,14 @@ import (
 )
 
 const (
-	codexBaseURL = "https://chatgpt.com/backend-api"
 	// Same identity we use to discover models, so we never ask for a model the
 	// version we claim is not supposed to know about.
 	codexUserAgent = auth.CodexUserAgent
 )
+
+// codexBaseURL is a var, not a const, so tests can point the executor at a stub
+// upstream. Nothing in production reassigns it.
+var codexBaseURL = "https://chatgpt.com/backend-api"
 
 // Codex Responses API types
 
@@ -61,6 +64,16 @@ type CodexExecutor struct {
 	modelsMu sync.RWMutex
 	models   []string
 	catalog  []string
+	// httpClient overrides the default fingerprinted client; tests set it to
+	// reach a plain-HTTP stub. Nil means "use the real one".
+	httpClient *http.Client
+}
+
+func (e *CodexExecutor) client() *http.Client {
+	if e.httpClient != nil {
+		return e.httpClient
+	}
+	return internaltls.NewAnthropicHTTPClient()
 }
 
 func NewCodexExecutor(oauth *auth.CodexOAuth, models []string) *CodexExecutor {
@@ -284,7 +297,7 @@ func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w 
 	httpReq.Header.Set("x-codex-installation-id", uuid.New().String())
 	httpReq.Header.Set("x-client-request-id", uuid.New().String())
 
-	resp, err := internaltls.NewAnthropicHTTPClient().Do(httpReq)
+	resp, err := e.client().Do(httpReq)
 	if err != nil {
 		return fmt.Errorf("codex image request: %w", err)
 	}
@@ -304,16 +317,29 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 	body, _ := json.Marshal(cr)
 
 	// One pass over the account pool: on 429, mark the account rate-limited
-	// (using the upstream reset time, or a 60s default) and try the next.
+	// (using the upstream reset time, or a 60s default) and try the next; on
+	// 401, refresh once and retry, then mark the account revoked and move on.
 	attempts := len(e.oauth.Store().AllForProvider("codex"))
 	if attempts < 1 {
 		attempts = 1
 	}
+	// Each account may consume a second attempt for its post-refresh retry.
+	budget := attempts * 2
 	var lastErr error
-	for i := 0; i < attempts; i++ {
+	refreshed := make(map[string]bool)
+	// Accounts already ruled out this pass (429 or revoked). Selection can hand
+	// the same account back once every account is blocked, so this is what stops
+	// the loop instead of a bare attempt counter.
+	exhausted := make(map[string]bool)
+	for i := 0; i < budget; i++ {
 		tokenData := e.oauth.GetTokenData(ctx)
 		if tokenData == nil {
 			return fmt.Errorf("codex not authenticated")
+		}
+		if exhausted[tokenData.ID] {
+			// Wrapped around to an account we already ruled out: the pool is
+			// spent, so report the failure that got us here.
+			break
 		}
 		recordAccount(ctx, tokenData.ID)
 		token := tokenData.AccessToken
@@ -338,7 +364,7 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 		httpReq.Header.Set("x-codex-installation-id", installationID)
 		httpReq.Header.Set("x-client-request-id", uuid.New().String())
 
-		resp, err := internaltls.NewAnthropicHTTPClient().Do(httpReq)
+		resp, err := e.client().Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("codex request: %w", err)
 			continue
@@ -360,15 +386,44 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
 			// Codex 429s are account-wide (all models share one quota) → model "".
 			e.oauth.Store().MarkRateLimited("codex", tokenData.ID, "", until, !known)
-			log.Printf("[failover] codex account %s rate-limited until %s (estimated=%t); %d/%d attempts used",
-				tokenData.ID, until.Format(time.RFC3339), !known, i+1, attempts)
-			if i < attempts-1 {
+			log.Printf("[failover] codex account %s rate-limited until %s (estimated=%t)",
+				tokenData.ID, until.Format(time.RFC3339), !known)
+			exhausted[tokenData.ID] = true
+			if len(exhausted) < attempts {
 				resp.Body.Close()
 				recordAccountFailover(ctx, tokenData.ID)
 				lastErr = fmt.Errorf("codex account %s rate-limited (429)", tokenData.ID)
 				continue
 			}
-			// Final attempt: surface the real 429 below.
+			// Every account is spent: surface the real 429 below.
+		}
+
+		// 401 means these credentials are no longer accepted. The access token
+		// may simply be stale (another client rotated it), so refresh once and
+		// retry the same account; if it fails again the grant itself is gone and
+		// only a re-login fixes it — mark the account and move to the next one.
+		if resp.StatusCode == http.StatusUnauthorized {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if !refreshed[tokenData.ID] {
+				refreshed[tokenData.ID] = true
+				if err := e.oauth.ForceRefresh(ctx, tokenData.ID); err == nil {
+					log.Printf("[auth] codex account %s got 401; refreshed token and retrying", tokenData.ID)
+					lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+					continue
+				} else {
+					log.Printf("[auth] codex account %s got 401 and refresh failed: %v", tokenData.ID, err)
+				}
+			}
+			e.oauth.Store().MarkRevoked("codex", tokenData.ID, string(respBody))
+			log.Printf("[auth] codex account %s revoked upstream; re-login required at /auth/codex", tokenData.ID)
+			exhausted[tokenData.ID] = true
+			lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+			if len(exhausted) < attempts {
+				recordAccountFailover(ctx, tokenData.ID)
+				continue
+			}
+			return lastErr
 		}
 
 		if resp.StatusCode != http.StatusOK {
@@ -388,11 +443,6 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 }
 
 func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error) {
-	token, err := e.oauth.GetToken(ctx)
-	if err != nil {
-		return nil, err
-	}
-
 	var reqMap map[string]interface{}
 	json.Unmarshal(body, &reqMap)
 	reqMap["stream"] = true
@@ -403,33 +453,116 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	stripForeignInputIDs(reqMap)
 	patchedBody, _ := json.Marshal(reqMap)
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(patchedBody))
-	if err != nil {
-		return nil, err
+	// Same account walk as doStream: a 401 gets one refresh-and-retry, then the
+	// account is marked revoked and the next one is tried. Without this a single
+	// invalidated token would fail every /v1/responses call until someone
+	// noticed by hand.
+	accounts := len(e.oauth.Store().AllForProvider("codex"))
+	if accounts < 1 {
+		accounts = 1
 	}
+	refreshed := make(map[string]bool)
+	exhausted := make(map[string]bool)
+	var lastErr error
+	for i := 0; i < accounts*2; i++ {
+		tokenData := e.oauth.GetTokenData(ctx)
+		if tokenData == nil {
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, fmt.Errorf("codex not authenticated (%d accounts), visit /auth/codex to login", accounts)
+		}
+		if exhausted[tokenData.ID] {
+			break
+		}
+		recordAccount(ctx, tokenData.ID)
 
-	installationID := uuid.New().String()
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "text/event-stream")
-	httpReq.Header.Set("User-Agent", codexUserAgent)
-	httpReq.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
-	httpReq.Header.Set("x-openai-internal-codex-residency", "us")
-	httpReq.Header.Set("x-codex-installation-id", installationID)
-	httpReq.Header.Set("x-client-request-id", uuid.New().String())
+		token := tokenData.AccessToken
+		if tokenData.IsExpired() {
+			refreshedToken, err := e.oauth.GetToken(ctx)
+			if err != nil {
+				lastErr = err
+				exhausted[tokenData.ID] = true
+				continue
+			}
+			token = refreshedToken
+		}
 
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("codex request: %w", err)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(patchedBody))
+		if err != nil {
+			return nil, err
+		}
+
+		installationID := uuid.New().String()
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+		httpReq.Header.Set("User-Agent", codexUserAgent)
+		httpReq.Header.Set("OpenAI-Beta", "responses_websockets=2026-02-06")
+		httpReq.Header.Set("x-openai-internal-codex-residency", "us")
+		httpReq.Header.Set("x-codex-installation-id", installationID)
+		httpReq.Header.Set("x-client-request-id", uuid.New().String())
+
+		resp, err := e.client().Do(httpReq)
+		if err != nil {
+			return nil, fmt.Errorf("codex request: %w", err)
+		}
+
+		if quota := auth.ParseCodexRateLimitHeaders(resp.Header); quota != nil {
+			quota.AccountID = tokenData.ID
+			quota.Email = tokenData.Email
+			auth.QuotaCache.Set("codex:"+tokenData.ID, quota)
+		}
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+			if !refreshed[tokenData.ID] {
+				refreshed[tokenData.ID] = true
+				if err := e.oauth.ForceRefresh(ctx, tokenData.ID); err == nil {
+					log.Printf("[auth] codex account %s got 401; refreshed token and retrying", tokenData.ID)
+					continue
+				} else {
+					log.Printf("[auth] codex account %s got 401 and refresh failed: %v", tokenData.ID, err)
+				}
+			}
+			e.oauth.Store().MarkRevoked("codex", tokenData.ID, string(respBody))
+			log.Printf("[auth] codex account %s revoked upstream; re-login required at /auth/codex", tokenData.ID)
+			exhausted[tokenData.ID] = true
+			if len(exhausted) < accounts {
+				recordAccountFailover(ctx, tokenData.ID)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
+			e.oauth.Store().MarkRateLimited("codex", tokenData.ID, "", until, !known)
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+			exhausted[tokenData.ID] = true
+			if len(exhausted) < accounts {
+				recordAccountFailover(ctx, tokenData.ID)
+				continue
+			}
+			return nil, lastErr
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			defer resp.Body.Close()
+			respBody, _ := io.ReadAll(resp.Body)
+			return nil, &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+		}
+
+		return resp.Body, nil
 	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		respBody, _ := io.ReadAll(resp.Body)
-		return nil, &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("codex: no accounts available")
 	}
-
-	return resp.Body, nil
+	return nil, lastErr
 }
 
 // stripForeignInputIDs drops item ids upstream will not accept.

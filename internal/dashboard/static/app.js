@@ -369,9 +369,12 @@ async function loadStatus() {
   const backendCard = b => {
     // A manually paused backend reads "Paused", not "Offline" (which means
     // unconfigured/unreachable).
-    const bc = b.disabled ? 'badge-inactive' : b.status === 'active' ? 'badge-active' : b.status === 'expired' ? 'badge-expired' : 'badge-inactive';
-    const bl = b.disabled ? 'Paused' : b.status === 'active' ? 'Active' : b.status === 'expired' ? 'Expired' : 'Offline';
-    const dc = b.disabled ? 'dot-gray' : b.status === 'active' ? 'dot-green' : b.status === 'expired' ? 'dot-yellow' : 'dot-gray';
+    // "Revoked" means every account was rejected upstream — a re-login is the
+    // only fix, so it gets its own red badge rather than hiding behind Expired
+    // (which resolves itself on the next refresh).
+    const bc = b.disabled ? 'badge-inactive' : b.status === 'active' ? 'badge-active' : b.status === 'revoked' ? 'badge-revoked' : b.status === 'expired' ? 'badge-expired' : 'badge-inactive';
+    const bl = b.disabled ? 'Paused' : b.status === 'active' ? 'Active' : b.status === 'revoked' ? 'Re-login' : b.status === 'expired' ? 'Expired' : 'Offline';
+    const dc = b.disabled ? 'dot-gray' : b.status === 'active' ? 'dot-green' : b.status === 'revoked' ? 'dot-red' : b.status === 'expired' ? 'dot-yellow' : 'dot-gray';
     const isOAuth = !!b.account;
     // Accounts and tokens are stored under their own key ("claude"), which is
     // not the routing name ("claude_oauth"). Every account-scoped URL below must
@@ -380,11 +383,18 @@ async function loadStatus() {
     let accts = '';
     if (b.accounts && b.accounts.length) {
       accts = b.accounts.map(a => {
-        // Operational dot: gray=paused, red=rate-limited, green=usable. An
-        // expired OAuth access token is NOT flagged — it auto-refreshes on next
-        // use, so surfacing it as a warning would be noise.
+        // Operational dot: gray=paused, red=revoked or rate-limited, green=
+        // usable. An expired OAuth access token is NOT flagged — it auto-
+        // refreshes on next use, so surfacing it as a warning would be noise.
         let dotClass = 'dot-green', dotStyle = '', title = 'Active';
         if (a.disabled) { dotClass = 'dot-gray'; title = 'Paused'; }
+        else if (a.revoked) {
+          // Revoked outranks rate-limited: waiting does not help, the account
+          // needs a re-login before it can serve anything again.
+          dotClass = ''; dotStyle = 'background:var(--red)';
+          title = escapeHTML('Revoked upstream' + (a.revoked_at ? ' at ' + a.revoked_at : '') + ' — re-login required'
+            + (a.revoked_reason ? ': ' + a.revoked_reason : ''));
+        }
         else if (a.rate_limited) {
           dotClass = ''; dotStyle = 'background:var(--red)';
           title = a.rate_limited_estimated ? 'Rate-limited upstream — no reset time, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until;
@@ -392,10 +402,14 @@ async function loadStatus() {
           title = a.token_expired ? 'Active — access token refreshes on next use' : (a.expires ? 'Active — access token valid until ' + a.expires : 'Active');
         }
         const toggleAccBtn = `<button class="btn-delete" style="font-size:10px;color:${a.disabled ? 'var(--green)' : 'var(--yellow)'}" title="${a.disabled ? 'Resume' : 'Pause'}" onclick="toggleAccount('${acctKey}','${a.id}')">${a.disabled ? '▶' : '⏸'}</button>`;
-        const rlBadge = a.rate_limited
+        const revokedBadge = a.revoked
+          ? `<span class="exp" style="color:var(--red)" title="${escapeHTML('Upstream rejected this account' + (a.revoked_reason ? ': ' + a.revoked_reason : '') + '. Re-login to restore it.')}">re-login needed${a.revoked_at ? ' · since ' + a.revoked_at : ''}</span>`
+          : '';
+        const rlBadge = !a.revoked && a.rate_limited
           ? `<span class="exp" style="color:var(--red)" title="${a.rate_limited_estimated ? 'Rate-limited upstream — no reset time provided, re-checking periodically' : 'Rate-limited upstream until ' + a.rate_limited_until}">limited${a.rate_limited_estimated ? '' : ' · until ' + a.rate_limited_until}</span>`
           : '';
         return `<div class="account-row" style="${a.disabled ? 'opacity:0.4' : ''}"><span class="dot ${dotClass}" style="${dotStyle}" title="${title}"></span><span class="email">${a.email}</span>`
+          + revokedBadge
           + rlBadge
           + toggleAccBtn
           + `<button class="btn-delete" title="Remove" onclick="removeAccount('${acctKey}','${a.id}')">&times;</button></div>`;

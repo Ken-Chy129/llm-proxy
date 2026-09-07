@@ -62,6 +62,36 @@ func formatLocalTime(t time.Time) string {
 	return t.Format("01-02 15:04")
 }
 
+// summarizeRevokeReason turns the upstream's raw 401 body into one short line
+// for the dashboard tooltip. The body is usually a JSON error envelope, so the
+// message field alone carries the useful part; anything unparseable is passed
+// through truncated rather than dropped, since it is the only clue available.
+func summarizeRevokeReason(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "upstream rejected the stored credentials"
+	}
+	var envelope struct {
+		Error struct {
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(raw), &envelope); err == nil {
+		if msg := strings.TrimSpace(envelope.Error.Message); msg != "" {
+			if code := strings.TrimSpace(envelope.Error.Code); code != "" {
+				return fmt.Sprintf("%s (%s)", msg, code)
+			}
+			return msg
+		}
+	}
+	const max = 160
+	if len(raw) > max {
+		return raw[:max] + "…"
+	}
+	return raw
+}
+
 func (h *AdminHandler) Status(c *gin.Context) {
 	backends := []gin.H{}
 
@@ -197,14 +227,21 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		accounts := allAccounts[p.account]
 		status := "not_authenticated"
 		activeCount := 0
+		revokedCount := 0
 		var accountList []gin.H
 		for _, t := range accounts {
 			info := t.Email
 			if info == "" {
 				info = t.ID
 			}
+			// A revoked account was rejected by the upstream itself, so it never
+			// counts as active no matter what the local expiry says.
+			revokedAt, revokeReason, accRevoked := h.tokenStore.RevokedInfo(p.account, t.ID)
 			accStatus := t.StatusLabel()
-			if accStatus == "active" {
+			if accRevoked {
+				accStatus = "revoked"
+				revokedCount++
+			} else if accStatus == "active" {
 				activeCount++
 			}
 			expireInfo := ""
@@ -224,6 +261,18 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				"expires":       expireInfo,
 				"token_expired": t.IsExpired(),
 				"disabled":      accDisabled,
+			}
+			// A revoked account can only be fixed by a re-login, so that badge
+			// outranks the rate-limit one below: neither a quota reset nor a
+			// token refresh will bring the account back on its own.
+			if accRevoked {
+				acc["revoked"] = true
+				acc["revoked_reason"] = summarizeRevokeReason(revokeReason)
+				if !revokedAt.IsZero() {
+					acc["revoked_at"] = formatLocalTime(revokedAt)
+				}
+				accountList = append(accountList, acc)
+				continue
 			}
 			// An account is shown "limited" when it isn't currently selectable:
 			// either a reactive 429 cooldown is active, or fresh quota shows its
@@ -261,10 +310,17 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		}
 		if activeCount > 0 {
 			status = "active"
+		} else if revokedCount > 0 {
+			// Nothing can serve and the reason is credentials, not quota: say so
+			// on the card instead of the generic "expired".
+			status = "revoked"
 		} else if len(accounts) > 0 {
 			status = "expired"
 		}
 		info := fmt.Sprintf("%d/%d active", activeCount, len(accounts))
+		if revokedCount > 0 {
+			info = fmt.Sprintf("%s · %d need re-login", info, revokedCount)
+		}
 		disabled := h.tokenStore.IsBackendDisabled(p.name)
 		if disabled {
 			status = "disabled"

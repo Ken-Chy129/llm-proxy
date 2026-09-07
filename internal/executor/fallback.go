@@ -25,9 +25,11 @@ type Link struct {
 // listed behind an OAuth subscription is overflow capacity, tried only once the
 // subscription answers "no quota left".
 //
-// Client errors (4xx other than 429) are the caller's fault and are passed
-// straight through — retrying them elsewhere would just spend another
-// provider's budget on a request that cannot succeed.
+// Client errors (4xx other than 429 and 401) are the caller's fault and are
+// passed straight through — retrying them elsewhere would just spend another
+// provider's budget on a request that cannot succeed. A 401 is the exception:
+// it says the provider's own credentials are broken, not the request, so the
+// next provider gets a chance.
 //
 // Per-account failover inside a provider runs first and is unaware of this type;
 // by the time a provider returns 429 it has already tried each of its accounts.
@@ -67,11 +69,16 @@ func (e *Chain) SupportsStreaming() bool {
 // shouldFallOver reports whether a primary result means "primary has no capacity
 // for this request". 429 is the quota signal; 5xx and transport errors mean the
 // primary could not answer at all. Everything else belongs to the client.
+//
+// 401 counts too: the request was fine, the provider's stored credentials were
+// not (revoked or expired OAuth grant). Passing that back to the caller would
+// strand a model on a broken account while a healthy paid provider sits unused
+// later in the chain.
 func shouldFallOver(status int, err error) bool {
 	if err != nil {
 		return true
 	}
-	return status == http.StatusTooManyRequests || status >= 500
+	return status == http.StatusTooManyRequests || status == http.StatusUnauthorized || status >= 500
 }
 
 // ExecuteAnthropicRaw walks the chain, skipping providers that cannot speak the

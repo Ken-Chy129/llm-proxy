@@ -102,6 +102,25 @@ func TestFallbackDoesNotSwitchOnClientError(t *testing.T) {
 	}
 }
 
+// A 401 is about the provider's own credentials, not the request, so the chain
+// must keep going instead of stranding the model on a revoked account.
+func TestFallbackSwitchesOnUnauthorized(t *testing.T) {
+	primary := &stubAnthropic{name: "primary", status: 401, body: `{"error":{"code":"token_revoked"}}`}
+	secondary := &stubAnthropic{name: "secondary", status: 200, body: "{}"}
+	fb := NewChain([]Link{{Provider: "codex", Exec: primary}, {Provider: "anygen", Exec: secondary}})
+
+	_, status, err := fb.ExecuteAnthropicRaw(context.Background(), []byte("{}"), nil)
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	if status != 200 {
+		t.Fatalf("status=%d, want 200 from the fallback provider", status)
+	}
+	if secondary.rawCalls != 1 {
+		t.Fatalf("secondary called %d times, want 1 (401 means the primary's credentials are dead)", secondary.rawCalls)
+	}
+}
+
 func TestFallbackRecordsWhichBackendServed(t *testing.T) {
 	primary := &stubAnthropic{name: "primary", status: 429, body: "{}"}
 	secondary := &stubAnthropic{name: "secondary", status: 200, body: "{}"}

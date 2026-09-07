@@ -19,11 +19,14 @@ import (
 
 const (
 	CodexAuthURL      = "https://auth.openai.com/oauth/authorize"
-	CodexTokenURL     = "https://auth.openai.com/oauth/token"
 	CodexClientID     = "app_EMoamEEZ73f0CkXaXp7hrann"
 	CodexRedirectURI  = "http://localhost:1455/auth/callback"
 	CodexCallbackPort = 1455
 )
+
+// CodexTokenURL is a var, not a const, so tests can redirect token refreshes at
+// a stub server. Nothing in production reassigns it.
+var CodexTokenURL = "https://auth.openai.com/oauth/token"
 
 type codexTokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -110,6 +113,10 @@ func NewCodexOAuth(store *TokenStore) *CodexOAuth {
 	return &CodexOAuth{store: store, httpClient: internaltls.NewAnthropicHTTPClient(), ServerPort: 9090}
 }
 
+// SetHTTPClient replaces the client used for token refreshes. Tests use it to
+// reach a stub token endpoint over plain HTTP.
+func (o *CodexOAuth) SetHTTPClient(c *http.Client) { o.httpClient = c }
+
 // Store exposes the underlying token store (for rate-limit failover bookkeeping).
 func (o *CodexOAuth) Store() *TokenStore { return o.store }
 
@@ -184,6 +191,13 @@ func (o *CodexOAuth) refresh(ctx context.Context, token *TokenData) (string, err
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		// 400/401 from the token endpoint means the refresh token itself is no
+		// longer valid (revoked, rotated away by another client, password
+		// change). That is terminal until someone logs in again, so record it
+		// instead of retrying this account forever.
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+			o.store.MarkRevoked("codex", token.ID, fmt.Sprintf("refresh rejected (%d): %s", resp.StatusCode, string(body)))
+		}
 		return "", fmt.Errorf("codex refresh failed (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -209,6 +223,9 @@ func (o *CodexOAuth) refresh(ctx context.Context, token *TokenData) (string, err
 		newToken.ID = newToken.Email
 	}
 	o.store.Add(newToken)
+	// A refresh that succeeds proves the credentials work again, so any earlier
+	// revocation mark is stale.
+	o.store.ClearRevoked("codex", newToken.ID)
 	fmt.Printf("codex token refreshed for %s\n", newToken.ID)
 	return newToken.AccessToken, nil
 }
