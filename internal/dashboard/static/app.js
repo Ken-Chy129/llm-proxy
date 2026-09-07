@@ -490,27 +490,69 @@ async function loadStatus() {
     syncKeyedHTML(qGrid, quotaCards);
   }
 
-  // Grouped by the provider currently serving each model rather than by backend
-  // catalogue: a model belongs to one chain, and listing it once per provider in
-  // that chain would offer the same name three times.
+  // Grouped by chain membership, not by which provider happens to be serving:
+  // a model whose chain is [relay, anygen] is servable by either, and listing it
+  // only under the head made every non-preferred provider unreachable from here.
+  // A name under its serving provider sends the plain model (normal routing,
+  // failover intact); under any other provider in its chain it sends
+  // "model@provider", the router's own per-request override.
   const sel = document.getElementById('chat-model');
   const prevModel = sel.value;
+  const serving = new Map();
+  (d.models || []).forEach(m => serving.set(m.name, m.provider || ''));
+  // backends[].models is every model naming that provider anywhere in its
+  // chain, which is exactly the set that provider can be asked to serve.
   const byProvider = new Map();
-  (d.models || []).forEach(m => {
-    const key = m.provider || '';
-    if (!byProvider.has(key)) byProvider.set(key, []);
-    byProvider.get(key).push(m.name);
+  (d.backends || []).forEach(b => {
+    const usable = !b.disabled && b.status === 'active';
+    const group = { usable, models: [], unpublished: new Set() };
+    (b.models || []).forEach(name => group.models.push(name));
+    // Models the upstream advertises but nothing routes here yet. They are
+    // offered so reachability can be confirmed before publishing — the answer
+    // is what decides whether publishing is worth it. The server only honours
+    // these for a logged-in session, and only for ids the provider listed.
+    (b.catalog?.models || []).forEach(entry => {
+      if (entry.routed || group.models.includes(entry.id)) return;
+      group.models.push(entry.id);
+      group.unpublished.add(entry.id);
+    });
+    if (group.models.length) byProvider.set(b.name, group);
   });
+  // A model no provider can serve right now still gets shown, disabled: it is
+  // published, and silently dropping it looks like the model vanished.
+  const orphans = (d.models || [])
+    .filter(m => ![...byProvider.values()].some(g => g.models.includes(m.name)))
+    .map(m => m.name);
+  if (orphans.length) byProvider.set('', { usable: false, models: orphans, unpublished: new Set() });
+
   const modelOptions = [...byProvider.entries()]
     .sort((a, b) => (a[0] ? 0 : 1) - (b[0] ? 0 : 1) || (a[0] < b[0] ? -1 : 1))
-    .map(([provider, models]) => {
-      const lbl = provider ? providerLabel(provider) + ' (✓)' : 'Unserved (✗)';
-      return `<optgroup label="${escapeHTML(lbl)}">${models.map(m =>
-        `<option value="${escapeHTML(m)}"${provider ? '' : ' disabled'}>${escapeHTML(m)}</option>`
-      ).join('')}</optgroup>`;
+    .map(([provider, group]) => {
+      const lbl = provider
+        ? providerLabel(provider) + (group.usable ? ' (✓)' : ' (offline)')
+        : 'Unserved (✗)';
+      const opts = [...group.models].sort().map(name => {
+        if (!provider || !group.usable) {
+          return `<option value="${escapeHTML(name)}" disabled>${escapeHTML(name)}</option>`;
+        }
+        // The serving provider is what plain routing already picks, so its
+        // entry stays a bare name — pinning it with @ would needlessly disable
+        // failover for the common case.
+        const isServing = serving.get(name) === provider;
+        const isUnpublished = group.unpublished.has(name);
+        // Unpublished always needs the explicit provider: there is no chain to
+        // fall back on, so the name alone would not resolve at all.
+        const value = isServing && !isUnpublished ? name : `${name}@${provider}`;
+        const suffix = isUnpublished
+          ? ' — unpublished, try via ' + providerLabel(provider)
+          : isServing ? '' : ' — via ' + providerLabel(provider);
+        return `<option value="${escapeHTML(value)}"${isServing && !isUnpublished ? '' : ' data-muted="1"'}>`
+          + `${escapeHTML(name)}${escapeHTML(suffix)}</option>`;
+      }).join('');
+      return `<optgroup label="${escapeHTML(lbl)}">${opts}</optgroup>`;
     }).join('');
   if (syncHTML(sel, modelOptions)) {
-    const prev = prevModel && sel.querySelector(`option[value="${prevModel}"]:not([disabled])`);
+    const prev = prevModel && sel.querySelector(`option[value="${CSS.escape(prevModel)}"]:not([disabled])`);
     if (prev) prev.selected = true;
     else { const first = sel.querySelector('option:not([disabled])'); if (first) first.selected = true; }
     if (sel._sync) sel._sync();
@@ -542,16 +584,29 @@ function showChatStatus(model) {
   chatStatusTimer = setInterval(updateElapsed, 100);
 }
 
+// splitModelProvider mirrors router.SplitModelProvider: the picker sends
+// "model@provider" when a model is aimed at a provider that is not the head of
+// its chain, and everything local (streaming support, the status line) has to
+// reason about the two halves separately.
+function splitModelProvider(value) {
+  const i = String(value || '').lastIndexOf('@');
+  return i > 0 ? [value.slice(0, i), value.slice(i + 1)] : [value, ''];
+}
+
 async function sendChat() {
   const model = document.getElementById('chat-model').value;
-  const supportsStreaming = modelBackends.get(model) !== 'anygen';
+  const [modelName, forcedProvider] = splitModelProvider(model);
+  // An explicit provider decides who serves, so it — not the chain head — is
+  // what streaming support has to be read from.
+  const provider = forcedProvider || modelBackends.get(modelName);
+  const supportsStreaming = provider !== 'anygen';
   const input = document.getElementById('chat-input').value.trim();
   if (!input) return;
   const output = document.getElementById('chat-output');
   const sendBtn = document.getElementById('chat-send');
   output.textContent = '';
   output.classList.add('waiting');
-  showChatStatus(model);
+  showChatStatus(forcedProvider ? `${modelName} via ${providerLabel(forcedProvider)}` : modelName);
   sendBtn.disabled = true; sendBtn.textContent = 'Working';
   let hasVisibleText = false;
   try {

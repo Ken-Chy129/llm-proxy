@@ -340,3 +340,63 @@ func TestModelsByBackendListsPausedModelsToo(t *testing.T) {
 		t.Errorf("ModelsByBackend() = %v, want [claude-opus-5]", got)
 	}
 }
+
+// Probing exists so an operator can answer "is this model actually reachable
+// here?" before publishing it. It must stay strictly separate from Resolve:
+// production traffic is still decided by the routing table alone.
+func TestResolveProbeReachesCataloguedModelsWithoutTouchingRouting(t *testing.T) {
+	r := New()
+	r.SetProvider("anygen", &stubExecutor{})
+	r.SetProvider("relay", &stubAnthropicExecutor{})
+	r.SetRoutes([]Route{{Model: "gpt-5.4", Providers: []string{"anygen"}}})
+	catalog := func(provider string) []string {
+		if provider == "anygen" {
+			return []string{"gpt-5.4", "minimax-m3"}
+		}
+		return nil // relay has no discovery endpoint
+	}
+
+	// An unpublished but advertised model resolves, and reports the bare name so
+	// nothing downstream sees the "@provider" suffix.
+	exec, model, err := r.ResolveProbe("minimax-m3@anygen", catalog)
+	if err != nil || exec == nil {
+		t.Fatalf("probe of a catalogued model failed: %v", err)
+	}
+	if model != "minimax-m3" {
+		t.Errorf("probe model = %q, want the bare id", model)
+	}
+
+	// Ordinary Resolve still refuses it: publishing is what makes a model
+	// servable, and probing must not have changed that.
+	if _, err := r.Resolve("minimax-m3@anygen"); err == nil {
+		t.Error("Resolve accepted an unpublished model; probing must not widen normal routing")
+	}
+	if len(r.Routes()) != 1 {
+		t.Errorf("probing mutated the routing table: %+v", r.Routes())
+	}
+
+	// A provider with no catalog (Vertex-like) has nothing to check against, so
+	// the operator's word is all there is — same rule as the config rename box.
+	if _, _, err := r.ResolveProbe("claude-opus-5@relay", catalog); err != nil {
+		t.Errorf("probe on a catalog-less provider = %v, want it allowed", err)
+	}
+
+	// Everything else stays refused.
+	for _, bad := range []string{"minimax-m3", "not-listed@anygen", "minimax-m3@nosuch"} {
+		if _, _, err := r.ResolveProbe(bad, catalog); err == nil {
+			t.Errorf("ResolveProbe(%q) succeeded, want a refusal", bad)
+		}
+	}
+}
+
+// A paused provider must not be probeable either: "paused" is an operator
+// saying stop sending it traffic, and a probe is still traffic.
+func TestResolveProbeRespectsPausedProviders(t *testing.T) {
+	r := New()
+	r.SetProvider("anygen", &stubExecutor{})
+	r.SetChecker(pausedProviders{"anygen": true})
+	catalog := func(string) []string { return []string{"minimax-m3"} }
+	if _, _, err := r.ResolveProbe("minimax-m3@anygen", catalog); err == nil {
+		t.Error("probed a paused provider, want a refusal")
+	}
+}

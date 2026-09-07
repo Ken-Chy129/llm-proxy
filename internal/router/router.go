@@ -238,6 +238,67 @@ func (r *Router) resolveLocked(model string, accept func(executor.Executor) bool
 	return executor.NewChain(chain), nil
 }
 
+// ResolveProbe resolves "model@provider" for a provider that can serve the
+// model even though the routing table has not published it there — the model is
+// in that provider's catalog, or the provider has no catalog to check against.
+//
+// This deliberately sits beside Resolve rather than inside it. The routing table
+// stays the only thing that decides who serves production traffic; this is the
+// dashboard's "try before publishing" path, so an operator can confirm a model
+// is actually reachable on a provider and use that to decide whether to publish
+// it. It is reachable only from an authenticated dashboard session, never with a
+// managed /v1 API key.
+//
+// A provider is required: without one there is no chain to speak of, and
+// guessing would silently pick a provider the caller never asked for.
+func (r *Router) ResolveProbe(model string, catalog func(provider string) []string) (executor.Executor, string, error) {
+	name, provider := SplitModelProvider(model)
+	if provider == "" {
+		return nil, "", fmt.Errorf("probing %q needs an explicit provider (model@provider)", name)
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	// A published model on this provider is ordinary routing, so let the normal
+	// path answer: it keeps the upstream rename the chain configured.
+	if route, ok := r.routes[name]; ok {
+		for _, p := range route.Providers {
+			if p == provider {
+				exec, err := r.pinnedExecutorLocked(route, provider, nil)
+				return exec, name, err
+			}
+		}
+	}
+	exec, ok := r.providers[provider]
+	if !ok {
+		return nil, "", fmt.Errorf("provider %q is not available", provider)
+	}
+	if r.checker != nil && r.checker.IsBackendDisabled(provider) {
+		return nil, "", fmt.Errorf("provider %q is paused", provider)
+	}
+	if !providerReady(exec) {
+		return nil, "", fmt.Errorf("provider %q has no usable credentials", provider)
+	}
+	// The catalog is the guard: it is what the provider itself said it serves,
+	// so probing cannot be used to send arbitrary strings upstream. Providers
+	// without a discovery endpoint (Vertex) report none, and there the operator's
+	// word is all there is — same reasoning as the config page's rename box.
+	if catalog != nil {
+		if known := catalog(provider); len(known) > 0 {
+			listed := false
+			for _, id := range known {
+				if id == name {
+					listed = true
+					break
+				}
+			}
+			if !listed {
+				return nil, "", fmt.Errorf("provider %q does not list model %q", provider, name)
+			}
+		}
+	}
+	return executor.NewChain([]executor.Link{{Provider: provider, Exec: exec}}), name, nil
+}
+
 func (r *Router) pinnedExecutorLocked(route Route, provider string, accept func(executor.Executor) bool) (executor.Executor, error) {
 	for _, p := range route.Providers {
 		if p != provider {

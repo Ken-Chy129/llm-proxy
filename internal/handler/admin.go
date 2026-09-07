@@ -592,6 +592,13 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 	return nil
 }
 
+// ProviderCatalog exposes the catalog lookup to other handlers. The chat
+// handler needs it to bound its dashboard-only probe path to models a provider
+// actually advertises.
+func (h *AdminHandler) ProviderCatalog(name string) []string {
+	return h.providerCatalog(name)
+}
+
 // catalogView reports what a provider's upstream says it can serve, marking the
 // entries this proxy has published.
 //

@@ -121,6 +121,11 @@ func APIKeyAuth(keyStore *auth.KeyStore) gin.HandlerFunc {
 		// Fall back to session cookie (for dashboard chat test)
 		if cookie, err := c.Cookie("session"); err == nil && sessions.Valid(cookie) {
 			c.Set("api_key_name", "dashboard")
+			// Marks the admin plane specifically. Handlers must not infer this
+			// from api_key_name: a managed key could be named "dashboard" too,
+			// and this flag gates capabilities a /v1 key must never have (see
+			// handler.dashboardSession).
+			c.Set("dashboard_session", true)
 			c.Next()
 			return
 		}

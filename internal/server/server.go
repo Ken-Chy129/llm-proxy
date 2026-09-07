@@ -29,6 +29,11 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
 	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec)
+	// The probe path lets the dashboard chat tab try a provider's unpublished
+	// catalog models, which is how an operator confirms reachability before
+	// deciding to publish. Wired here because the catalog lives on the admin
+	// handler; a nil source would simply leave probing off.
+	chatHandler.SetCatalogSource(adminHandler.ProviderCatalog)
 	imagesHandler := handler.NewImagesHandler(r, statsDB)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 

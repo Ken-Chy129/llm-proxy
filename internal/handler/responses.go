@@ -90,6 +90,19 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		})
 		return
 	}
+	// Routing has consumed any "@provider" override; downstream only ever sees
+	// the published name. The raw body is forwarded verbatim on the passthrough
+	// path, so the suffix has to come out of it too.
+	if name, provider := router.SplitModelProvider(req.Model); provider != "" {
+		rewritten, rewriteErr := rewriteBodyModel(body, name)
+		if rewriteErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{"message": rewriteErr.Error(), "type": "invalid_request_error"},
+			})
+			return
+		}
+		body, req.Model = rewritten, name
+	}
 
 	start := time.Now()
 

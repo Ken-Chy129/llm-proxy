@@ -140,7 +140,12 @@ func TestAnyGenAppearsAsDynamicAPIBackend(t *testing.T) {
 	script := string(app)
 	for _, want := range []string{
 		"anygen: 'AnyGen'",
-		"modelBackends.get(model) !== 'anygen'",
+		// AnyGen has no streaming endpoint, so the chat tab must ask for a
+		// non-streamed completion. The provider is read from an explicit
+		// "model@provider" choice when there is one, since that — not the head
+		// of the chain — is who will serve.
+		"const provider = forcedProvider || modelBackends.get(modelName)",
+		"provider !== 'anygen'",
 		"function renderBackendModels(models, catalog, provider)",
 		"backend-models-collapsible",
 		"q.kind === 'credits'",
@@ -382,5 +387,45 @@ func TestModelRoutingEditorIsWiredToTheConfigAPI(t *testing.T) {
 		if !strings.Contains(styles, want) {
 			t.Errorf("routing editor styles missing %q", want)
 		}
+	}
+}
+
+// The chat picker used to be grouped by each model's *serving* provider, which
+// is the head of its chain. That made every other provider in a chain
+// unreachable: claude-sonnet-4-5 on [relay, anygen] could only ever be sent to
+// relay, even though anygen serves it too. The picker is now grouped by chain
+// membership, and a model aimed at a non-head provider carries the router's
+// "model@provider" override.
+func TestChatModelPickerOffersEveryProviderInAModelsChain(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		// backends[].models is the per-provider view of the routing table: every
+		// model naming that provider anywhere in its chain.
+		"(d.backends || []).forEach(b => {",
+		"(b.models || []).forEach(name => group.models.push(name))",
+		// The serving provider gets the bare name so ordinary routing (and its
+		// failover) is untouched; anything else is pinned explicitly.
+		"const isServing = serving.get(name) === provider",
+		"const value = isServing && !isUnpublished ? name : `${name}@${provider}`",
+		// The override has to be understood locally too, or the chat tab would
+		// read streaming support off the wrong provider.
+		"function splitModelProvider(value)",
+		// A provider's advertised-but-unpublished models are offered as well, so
+		// reachability can be confirmed before deciding to publish.
+		"(b.catalog?.models || []).forEach(entry => {",
+		"group.unpublished.add(entry.id)",
+		"unpublished, try via",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("chat model picker missing %q", want)
+		}
+	}
+	// Grouping by the serving provider alone is the bug this covers.
+	if strings.Contains(script, "const key = m.provider || '';") {
+		t.Error("chat model picker still groups models by their serving provider only")
 	}
 }

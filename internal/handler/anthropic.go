@@ -58,6 +58,17 @@ func (h *AnthropicHandler) Messages(c *gin.Context) {
 		anthropicError(c, http.StatusNotFound, "not_found_error", err.Error())
 		return
 	}
+	// The "@provider" override is routing's alone. This path forwards the body
+	// as received, so the suffix has to be stripped from the bytes as well as
+	// from the name used for logging and pricing.
+	if name, provider := router.SplitModelProvider(meta.Model); provider != "" {
+		rewritten, rewriteErr := rewriteBodyModel(body, name)
+		if rewriteErr != nil {
+			anthropicError(c, http.StatusBadRequest, "invalid_request_error", rewriteErr.Error())
+			return
+		}
+		body, meta.Model = rewritten, name
+	}
 
 	start := time.Now()
 
