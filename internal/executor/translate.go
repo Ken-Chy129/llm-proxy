@@ -248,10 +248,28 @@ func buildAssistantBlocks(msg types.ChatMessage) []types.AnthropicContentBlock {
 			Type:  "tool_use",
 			ID:    tc.ID,
 			Name:  tc.Function.Name,
-			Input: json.RawMessage(tc.Function.Arguments),
+			Input: toolUseInput(tc.Function.Arguments),
 		})
 	}
 	return blocks
+}
+
+// toolUseInput normalises OpenAI tool-call arguments into something Anthropic
+// will accept as a tool_use block's `input`.
+//
+// Anthropic requires the field on every tool_use block, but two shapes of
+// OpenAI input break that: a parameterless tool call arrives with arguments
+// "" (or "null"), which `json:"input,omitempty"` then strips from the body
+// entirely, and a truncated argument stream arrives as invalid JSON, which
+// makes json.Marshal fail for the whole message. Both surface as an upstream
+// 400 ("tool_use.input: Field required"), so an empty object stands in — it is
+// the accurate encoding of "this call takes no arguments".
+func toolUseInput(arguments string) json.RawMessage {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" || trimmed == "null" || !json.Valid([]byte(trimmed)) {
+		return json.RawMessage(`{}`)
+	}
+	return json.RawMessage(trimmed)
 }
 
 func FromAnthropicResponse(resp *types.AnthropicResponse, model string) *types.ChatCompletionResponse {
