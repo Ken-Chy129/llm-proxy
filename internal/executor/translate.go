@@ -86,7 +86,63 @@ func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.A
 		ar.StopSequences = stop
 	}
 
+	dropTrailingAssistantPrefill(ar)
+
 	return ar
+}
+
+// dropTrailingAssistantPrefill removes a trailing assistant turn that carries no
+// tool calls.
+//
+// Anthropic reads a conversation ending in an assistant message as a *prefill*:
+// "continue this text". Most models allow it, but several (Opus 4.6 and the
+// other reasoning models among them) reject the request outright with
+// "This model does not support assistant message prefill. The conversation must
+// end with a user message."
+//
+// Clients on /v1/responses produce exactly this shape whenever a turn is
+// interrupted — the aborted partial answer stays in the transcript and is
+// replayed as the last input item on the retry. That made the failure look
+// random: the same session would fail while a fresh query succeeded, because
+// only the interrupted transcript ends this way.
+//
+// A prefill is dropped rather than padded with an empty user message: the text
+// is a partial answer the model is about to produce again, so replaying it as
+// context is at best redundant. An assistant turn holding tool_use blocks is
+// left alone — it is not a prefill, and the tool_result that answers it is
+// already carried as a user message after it.
+func dropTrailingAssistantPrefill(ar *types.AnthropicRequest) {
+	original := ar.Messages
+	for len(ar.Messages) > 0 {
+		last := ar.Messages[len(ar.Messages)-1]
+		if last.Role != "assistant" || containsToolUse(last.Content) {
+			return
+		}
+		ar.Messages = ar.Messages[:len(ar.Messages)-1]
+	}
+	// Every message was a prefill, and Anthropic rejects an empty conversation
+	// too. Keep the original and let the upstream decide: an unusual request is
+	// better than one we know is invalid.
+	if len(original) > 0 {
+		ar.Messages = original
+	}
+}
+
+// containsToolUse reports whether a message's content holds a tool_use block,
+// which makes an assistant turn part of a tool exchange rather than a prefill.
+func containsToolUse(raw json.RawMessage) bool {
+	var blocks []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 // ApplyCacheBreakpoints marks prompt-caching breakpoints on a translated request.

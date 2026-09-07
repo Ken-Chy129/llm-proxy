@@ -93,12 +93,16 @@ func TestToAnthropicRequestPassesThroughStringContent(t *testing.T) {
 		Messages: []types.ChatMessage{
 			{Role: "user", Content: json.RawMessage(`"hello"`)},
 			{Role: "assistant", Content: json.RawMessage(`"hi there"`)},
+			// A trailing assistant turn would be dropped as a prefill, which is
+			// not what this test is about — keep a user turn last so the
+			// assistant message survives to be inspected.
+			{Role: "user", Content: json.RawMessage(`"and again"`)},
 		},
 	}
 
 	ar := ToAnthropicRequest(req, req.Model)
-	if len(ar.Messages) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(ar.Messages))
+	if len(ar.Messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d", len(ar.Messages))
 	}
 	if got := string(ar.Messages[0].Content); got != `"hello"` {
 		t.Errorf("user content = %s, want \"hello\"", got)
