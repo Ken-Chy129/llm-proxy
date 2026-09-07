@@ -222,10 +222,9 @@ func (o *CodexOAuth) refresh(ctx context.Context, token *TokenData) (string, err
 	if newToken.ID == "" {
 		newToken.ID = newToken.Email
 	}
+	// Add clears any revoked mark: storing a working token is what proves the
+	// account is healthy again.
 	o.store.Add(newToken)
-	// A refresh that succeeds proves the credentials work again, so any earlier
-	// revocation mark is stale.
-	o.store.ClearRevoked("codex", newToken.ID)
 	fmt.Printf("codex token refreshed for %s\n", newToken.ID)
 	return newToken.AccessToken, nil
 }

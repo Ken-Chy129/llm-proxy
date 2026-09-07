@@ -86,3 +86,68 @@ func TestRevokedStatePersistsAcrossRestart(t *testing.T) {
 		t.Fatal("expected the cleared state to persist too")
 	}
 }
+
+// Re-authenticating must clear the mark. Account ids are emails, so a re-login
+// stores credentials under the same key the revocation was recorded against —
+// without this, a freshly authenticated account stays sidelined and the
+// dashboard keeps demanding a re-login that was already done.
+func TestReLoginClearsRevokedMark(t *testing.T) {
+	dir := t.TempDir()
+	InitQuotaCache(dir)
+	store := NewTokenStore(dir, StrategyRoundRobin)
+
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+	acc := &TokenData{ID: "a@b.com", Provider: "codex", AccessToken: "old", ExpiresAt: future}
+	if err := store.Add(acc); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := store.MarkRevoked("codex", "a@b.com", "token_revoked"); err != nil {
+		t.Fatalf("mark revoked: %v", err)
+	}
+
+	// The OAuth callback stores the new token through Add, same as a refresh.
+	if err := store.Add(&TokenData{
+		ID: "a@b.com", Provider: "codex", AccessToken: "fresh", ExpiresAt: future,
+	}); err != nil {
+		t.Fatalf("re-login: %v", err)
+	}
+
+	if store.IsRevoked("codex", "a@b.com") {
+		t.Fatal("a re-login must clear the revoked mark")
+	}
+	if got := store.Get("codex", ""); got == nil || got.AccessToken != "fresh" {
+		t.Fatalf("expected the re-authenticated account to be selectable, got %+v", got)
+	}
+	if NewTokenStore(dir, StrategyRoundRobin).IsRevoked("codex", "a@b.com") {
+		t.Fatal("the cleared state must be persisted")
+	}
+}
+
+// Removing an account must drop its revoked mark too, or adding the same
+// address back inherits the state of credentials that no longer exist.
+func TestRemoveThenReAddDoesNotInheritRevokedMark(t *testing.T) {
+	dir := t.TempDir()
+	InitQuotaCache(dir)
+	store := NewTokenStore(dir, StrategyRoundRobin)
+
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+	if err := store.Add(&TokenData{ID: "a@b.com", Provider: "codex", AccessToken: "old", ExpiresAt: future}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := store.MarkRevoked("codex", "a@b.com", "token_revoked"); err != nil {
+		t.Fatalf("mark revoked: %v", err)
+	}
+	if err := store.Remove("codex", "a@b.com"); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if store.IsRevoked("codex", "a@b.com") {
+		t.Fatal("removing an account must drop its revoked mark")
+	}
+
+	if err := store.Add(&TokenData{ID: "a@b.com", Provider: "codex", AccessToken: "fresh", ExpiresAt: future}); err != nil {
+		t.Fatalf("re-add: %v", err)
+	}
+	if store.IsRevoked("codex", "a@b.com") {
+		t.Fatal("a re-added account must start clean")
+	}
+}

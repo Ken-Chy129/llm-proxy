@@ -269,6 +269,13 @@ func (s *TokenStore) MarkRevoked(provider, id, reason string) error {
 func (s *TokenStore) ClearRevoked(provider, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.clearRevokedLocked(provider, id)
+}
+
+// clearRevokedLocked drops the revoked mark for an account. Callers hold s.mu,
+// which is why this is separate from ClearRevoked: Add and Remove need it while
+// already holding the lock.
+func (s *TokenStore) clearRevokedLocked(provider, id string) error {
 	key := provider + "/" + id
 	for i, r := range s.disabled.Revoked {
 		if r.Account == key {
@@ -507,6 +514,14 @@ func (s *TokenStore) Add(data *TokenData) error {
 	if !found {
 		s.accounts[data.Provider] = append(list, data)
 	}
+	// Storing credentials means someone just logged in (or a refresh produced a
+	// new token), so whatever the upstream rejected before is no longer what we
+	// hold. Leaving the mark would keep a freshly re-authenticated account
+	// sidelined and showing "re-login needed" forever, since account ids are
+	// emails and a re-login reuses the same id.
+	if err := s.clearRevokedLocked(data.Provider, data.ID); err != nil {
+		return err
+	}
 	return s.save(data)
 }
 
@@ -526,7 +541,10 @@ func (s *TokenStore) Remove(provider, id string) error {
 				os.Remove(filepath.Join(s.dir, s.filename(provider, id)))
 				os.Remove(filepath.Join(s.dir, id)) // legacy format
 			}
-			return nil
+			// Drop the revoked mark too, or re-adding the same account (ids are
+			// emails, so it comes back with the same key) would inherit the
+			// state of the credentials that were just deleted.
+			return s.clearRevokedLocked(provider, id)
 		}
 	}
 	return fmt.Errorf("account %s/%s not found", provider, id)
