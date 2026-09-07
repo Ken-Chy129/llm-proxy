@@ -45,6 +45,20 @@ func (t *TokenData) StatusLabel() string {
 type DisabledState struct {
 	Backends []string `json:"backends,omitempty"`
 	Accounts []string `json:"accounts,omitempty"` // "provider/id"
+	// Revoked lists accounts the upstream rejected with a 401 ("provider/id").
+	// Unlike Accounts (a manual pause) this is set by the proxy itself and can
+	// only be cleared by a successful re-login or refresh.
+	Revoked []RevokedAccount `json:"revoked,omitempty"`
+}
+
+// RevokedAccount records an account whose credentials the upstream rejected, so
+// the dashboard can say which account needs a re-login and since when. It is
+// persisted: a restart must not resurrect an account as "active" when the
+// upstream has already invalidated its token.
+type RevokedAccount struct {
+	Account string `json:"account"` // "provider/id"
+	At      string `json:"at"`      // RFC3339, when the 401 was observed
+	Reason  string `json:"reason,omitempty"`
 }
 
 // Account-selection strategies for TokenStore.Get.
@@ -225,6 +239,77 @@ func (s *TokenStore) IsAccountDisabled(provider, id string) bool {
 	return s.isAccountDisabledLocked(provider, id)
 }
 
+// MarkRevoked records that the upstream rejected this account's credentials
+// (HTTP 401). A revoked account is skipped by selection and surfaced in the
+// dashboard, since only a re-login can bring it back. Re-marking an already
+// revoked account keeps the original timestamp, so the UI shows how long it
+// has been broken rather than the time of the latest failed attempt.
+func (s *TokenStore) MarkRevoked(provider, id, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := provider + "/" + id
+	for _, r := range s.disabled.Revoked {
+		if r.Account == key {
+			return nil
+		}
+	}
+	if len(reason) > 300 {
+		reason = reason[:300]
+	}
+	s.disabled.Revoked = append(s.disabled.Revoked, RevokedAccount{
+		Account: key,
+		At:      time.Now().Format(time.RFC3339),
+		Reason:  reason,
+	})
+	return s.saveDisabled()
+}
+
+// ClearRevoked removes the revoked mark, called when a refresh or re-login
+// produces working credentials for the account again.
+func (s *TokenStore) ClearRevoked(provider, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := provider + "/" + id
+	for i, r := range s.disabled.Revoked {
+		if r.Account == key {
+			s.disabled.Revoked = append(s.disabled.Revoked[:i], s.disabled.Revoked[i+1:]...)
+			return s.saveDisabled()
+		}
+	}
+	return nil
+}
+
+// RevokedInfo reports whether an account is marked revoked, and if so when it
+// was first seen and what the upstream said.
+func (s *TokenStore) RevokedInfo(provider, id string) (at time.Time, reason string, revoked bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	r, ok := s.revokedLocked(provider, id)
+	if !ok {
+		return time.Time{}, "", false
+	}
+	at, _ = time.Parse(time.RFC3339, r.At)
+	return at, r.Reason, true
+}
+
+// IsRevoked reports whether the upstream has rejected this account's credentials.
+func (s *TokenStore) IsRevoked(provider, id string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	_, ok := s.revokedLocked(provider, id)
+	return ok
+}
+
+func (s *TokenStore) revokedLocked(provider, id string) (RevokedAccount, bool) {
+	key := provider + "/" + id
+	for _, r := range s.disabled.Revoked {
+		if r.Account == key {
+			return r, true
+		}
+	}
+	return RevokedAccount{}, false
+}
+
 func (s *TokenStore) isAccountDisabledLocked(provider, id string) bool {
 	key := provider + "/" + id
 	for _, a := range s.disabled.Accounts {
@@ -257,6 +342,9 @@ func (s *TokenStore) Get(provider, model string) *TokenData {
 	start := int(s.counter.Add(1)) % n
 
 	notBlocked := func(t *TokenData) bool {
+		if _, revoked := s.revokedLocked(provider, t.ID); revoked {
+			return false
+		}
 		return !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID, model)
 	}
 
@@ -284,6 +372,12 @@ func (s *TokenStore) Get(provider, model string) *TokenData {
 	}
 	for _, t := range list {
 		if !s.isAccountDisabledLocked(provider, t.ID) {
+			// A revoked account is never worth trying: its token can only be
+			// fixed by a re-login, so returning it would spend the request on a
+			// guaranteed 401 instead of failing over to another provider.
+			if _, revoked := s.revokedLocked(provider, t.ID); revoked {
+				continue
+			}
 			return t
 		}
 	}
@@ -444,6 +538,9 @@ func (s *TokenStore) ActiveCount(provider string) int {
 	defer s.mu.RUnlock()
 	count := 0
 	for _, t := range s.accounts[provider] {
+		if _, revoked := s.revokedLocked(provider, t.ID); revoked {
+			continue
+		}
 		if !t.IsExpired() {
 			count++
 		}
