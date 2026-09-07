@@ -2,6 +2,7 @@ package types
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -78,6 +79,97 @@ func (r *ChatCompletionResponse) HasUsableAssistantOutput() bool {
 		}
 	}
 	return false
+}
+
+// EmptyOutputReason explains why HasUsableAssistantOutput failed, in a form
+// short enough to put in an error body. It returns "" when the response does
+// have usable output, so callers can use it as the sole check.
+//
+// The distinctions matter operationally: a content filter, a reasoning-only
+// reply and a truncated-before-any-text reply all look identical ("empty
+// content") without this breakdown, but need completely different fixes.
+func (r *ChatCompletionResponse) EmptyOutputReason() string {
+	if r == nil {
+		return "response body was empty"
+	}
+	if r.HasUsableAssistantOutput() {
+		return ""
+	}
+	if len(r.Choices) == 0 {
+		return "upstream returned zero choices"
+	}
+
+	reasons := make([]string, 0, len(r.Choices))
+	for _, choice := range r.Choices {
+		reasons = append(reasons, choice.emptyReason())
+	}
+	if len(reasons) == 1 {
+		return reasons[0]
+	}
+	return fmt.Sprintf("all %d choices unusable: %s", len(reasons), strings.Join(reasons, "; "))
+}
+
+func (c ChatCompletionChoice) emptyReason() string {
+	if c.Message == nil {
+		return "choice carried no message"
+	}
+	detail := "empty content and no tool calls"
+	if strings.TrimSpace(c.Message.ReasoningContent) != "" {
+		detail = "only reasoning_content, no content or tool calls"
+	}
+	if c.FinishReason == nil {
+		return detail
+	}
+	if reason := strings.TrimSpace(*c.FinishReason); reason != "" {
+		return fmt.Sprintf("%s (finish_reason=%s)", detail, reason)
+	}
+	return detail
+}
+
+// EmptyOutputIsDeterministic reports whether an unusable response would come
+// back unusable from any other provider serving the same request.
+//
+// The distinction drives failover: a truncated, filtered or reasoning-only
+// reply is a property of the request or the model, so retrying it down the
+// chain burns a second provider's quota to reproduce the same emptiness. A
+// malformed reply (no choices, no message) is a misbehaving upstream, and the
+// next provider genuinely may answer.
+//
+// It reports false when the response is usable, and requires *every* choice to
+// be deterministically empty — one salvageable choice makes a retry worthwhile.
+func (r *ChatCompletionResponse) EmptyOutputIsDeterministic() bool {
+	if r == nil || r.HasUsableAssistantOutput() || len(r.Choices) == 0 {
+		return false
+	}
+	for _, choice := range r.Choices {
+		if !choice.emptyDeterministically() {
+			return false
+		}
+	}
+	return true
+}
+
+func (c ChatCompletionChoice) emptyDeterministically() bool {
+	if c.Message == nil {
+		return false
+	}
+	// A model that spent its budget thinking will do so again elsewhere.
+	if strings.TrimSpace(c.Message.ReasoningContent) != "" {
+		return true
+	}
+	if c.FinishReason == nil {
+		return false
+	}
+	switch strings.TrimSpace(*c.FinishReason) {
+	case "length":
+		// max_tokens travels with the request, so every provider truncates.
+		return true
+	case "content_filter":
+		return true
+	default:
+		// "stop" with empty content is sampling luck; a retry may well differ.
+		return false
+	}
 }
 
 type ChatCompletionChoice struct {

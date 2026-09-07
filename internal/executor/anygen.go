@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -20,6 +21,24 @@ const (
 	defaultAnyGenAPIKeyEnv = "ANYGEN_LLM_KEY"
 	defaultAnyGenVerifyURL = "https://www.anygen.io/v1/openapi/key/verify"
 )
+
+// maxAnyGenLogBody caps how much of an upstream body reaches the log. Bodies
+// that trip the empty-output check are tiny, so this only bounds the
+// pathological case rather than routinely truncating.
+const maxAnyGenLogBody = 2048
+
+// truncateForLog renders an upstream body as a single-line, length-bounded
+// string suitable for a log line or error body.
+func truncateForLog(body []byte, max int) string {
+	trimmed := strings.TrimSpace(string(body))
+	if trimmed == "" {
+		return "<empty>"
+	}
+	if len(trimmed) > max {
+		return trimmed[:max] + "…(truncated)"
+	}
+	return trimmed
+}
 
 // AnyGenCredits is returned by AnyGen's platform-native key verification API.
 // Credits is a string on the wire, so it stays a string here to avoid silently
@@ -188,13 +207,28 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 	}
 	var result types.ChatCompletionResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("decode anygen response: %w", err)
+		return nil, fmt.Errorf("decode anygen response: %w (raw body: %s)", err, truncateForLog(body, maxAnyGenLogBody))
 	}
 	if !result.HasUsableAssistantOutput() {
+		reason := result.EmptyOutputReason()
+		// A deterministic emptiness (truncated, filtered, reasoning-only) will
+		// reproduce on every provider, so report it as a client-side 422 that
+		// the chain passes straight through instead of a 502 that triggers a
+		// full, futile walk down the remaining providers.
+		status := http.StatusBadGateway
+		if result.EmptyOutputIsDeterministic() {
+			status = http.StatusUnprocessableEntity
+		}
+		// The 2xx body is the only evidence of what went wrong upstream, and
+		// it is discarded once we return an error, so log it here. Empty
+		// responses are small by definition; the cap only guards against an
+		// upstream that pads them.
+		log.Printf("[anygen] empty output for model %s (upstream model %s): %s; returning %d; raw body: %s",
+			req.Model, upstream.Model, reason, status, truncateForLog(body, maxAnyGenLogBody))
 		return nil, &HTTPError{
 			Backend: "anygen",
-			Status:  http.StatusBadGateway,
-			Body:    "successful response contained no usable assistant output",
+			Status:  status,
+			Body:    "successful response contained no usable assistant output: " + reason,
 		}
 	}
 	result.Model = req.Model

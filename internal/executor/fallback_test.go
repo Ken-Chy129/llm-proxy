@@ -219,3 +219,82 @@ func (s *stubExecutorOnly) Execute(context.Context, *types.ChatCompletionRequest
 func (s *stubExecutorOnly) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
 	return &types.Usage{}, nil
 }
+
+// countingExecutor records how many times the chain called it, so a test can
+// prove a second provider was never charged for a hopeless request.
+type countingExecutor struct {
+	calls int
+	resp  *types.ChatCompletionResponse
+	err   error
+}
+
+func (c *countingExecutor) Models() []string { return []string{"m"} }
+func (c *countingExecutor) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	c.calls++
+	return c.resp, c.err
+}
+func (c *countingExecutor) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
+	c.calls++
+	return &types.Usage{}, c.err
+}
+
+// An empty answer that every provider would reproduce must not walk the chain:
+// the retry costs a second provider's quota and returns the same emptiness.
+func TestChainDoesNotRetryDeterministicEmptyOutput(t *testing.T) {
+	primary := &countingExecutor{err: &HTTPError{
+		Backend: "anygen",
+		Status:  http.StatusUnprocessableEntity,
+		Body:    "successful response contained no usable assistant output: only reasoning_content, no content or tool calls (finish_reason=length)",
+	}}
+	backup := &countingExecutor{resp: &types.ChatCompletionResponse{
+		Choices: []types.ChatCompletionChoice{{Message: &types.ChatResult{Content: "hi"}}},
+	}}
+
+	chain := NewChain([]Link{
+		{Provider: "anygen", Exec: primary},
+		{Provider: "codex", Exec: backup},
+	})
+	_, err := chain.Execute(context.Background(), &types.ChatCompletionRequest{Model: "m"})
+
+	if err == nil {
+		t.Fatal("Execute() succeeded, want the deterministic emptiness surfaced")
+	}
+	if got := StatusFromError(err); got != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 passed through; err=%v", got, err)
+	}
+	if primary.calls != 1 {
+		t.Fatalf("primary calls = %d, want 1", primary.calls)
+	}
+	if backup.calls != 0 {
+		t.Fatalf("backup calls = %d, want 0 — a hopeless request must not spend another provider's quota", backup.calls)
+	}
+}
+
+// A malformed empty response is the upstream misbehaving rather than a property
+// of the request, so the chain should still try the next provider.
+func TestChainRetriesNonDeterministicEmptyOutput(t *testing.T) {
+	primary := &countingExecutor{err: &HTTPError{
+		Backend: "anygen",
+		Status:  http.StatusBadGateway,
+		Body:    "successful response contained no usable assistant output: upstream returned zero choices",
+	}}
+	backup := &countingExecutor{resp: &types.ChatCompletionResponse{
+		Choices: []types.ChatCompletionChoice{{Message: &types.ChatResult{Content: "hi"}}},
+	}}
+
+	chain := NewChain([]Link{
+		{Provider: "anygen", Exec: primary},
+		{Provider: "codex", Exec: backup},
+	})
+	resp, err := chain.Execute(context.Background(), &types.ChatCompletionRequest{Model: "m"})
+
+	if err != nil {
+		t.Fatalf("Execute() = %v, want the backup provider to answer", err)
+	}
+	if !resp.HasUsableAssistantOutput() {
+		t.Fatal("chain returned an unusable response from the backup provider")
+	}
+	if backup.calls != 1 {
+		t.Fatalf("backup calls = %d, want 1", backup.calls)
+	}
+}

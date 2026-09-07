@@ -103,14 +103,40 @@ func TestAnyGenExecutorRejectsSuccessfulResponseWithoutUsableOutput(t *testing.T
 	tests := []struct {
 		name string
 		body string
+		want string
+		// status encodes retryability: 502 invites the chain to try the next
+		// provider, 422 says every provider would return the same emptiness.
+		status int
 	}{
 		{
-			name: "no choices",
-			body: `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[]}`,
+			name:   "no choices",
+			body:   `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[]}`,
+			want:   "zero choices",
+			status: http.StatusBadGateway,
 		},
 		{
-			name: "empty message",
-			body: `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`,
+			name:   "empty message",
+			body:   `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"stop"}]}`,
+			want:   "finish_reason=stop",
+			status: http.StatusBadGateway,
+		},
+		{
+			name:   "reasoning only",
+			body:   `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","reasoning_content":"hmm"},"finish_reason":"length"}]}`,
+			want:   "only reasoning_content",
+			status: http.StatusUnprocessableEntity,
+		},
+		{
+			name:   "truncated before any text",
+			body:   `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"length"}]}`,
+			want:   "finish_reason=length",
+			status: http.StatusUnprocessableEntity,
+		},
+		{
+			name:   "content filtered",
+			body:   `{"id":"chatcmpl-anygen","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":""},"finish_reason":"content_filter"}]}`,
+			want:   "finish_reason=content_filter",
+			status: http.StatusUnprocessableEntity,
 		},
 	}
 
@@ -130,11 +156,16 @@ func TestAnyGenExecutorRejectsSuccessfulResponseWithoutUsableOutput(t *testing.T
 			if err == nil {
 				t.Fatal("Execute() succeeded, want empty upstream response rejected")
 			}
-			if got := StatusFromError(err); got != http.StatusBadGateway {
-				t.Fatalf("status = %d, want 502; err=%v", got, err)
+			if got := StatusFromError(err); got != tt.status {
+				t.Fatalf("status = %d, want %d; err=%v", got, tt.status, err)
 			}
 			if !strings.Contains(err.Error(), "no usable assistant output") {
 				t.Fatalf("error = %q, want usable-output explanation", err)
+			}
+			// The diagnosis is the point: a bare "no usable output" sends
+			// operators back to the upstream to guess what happened.
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want it to mention %q", err, tt.want)
 			}
 		})
 	}

@@ -74,6 +74,11 @@ func (e *Chain) SupportsStreaming() bool {
 // not (revoked or expired OAuth grant). Passing that back to the caller would
 // strand a model on a broken account while a healthy paid provider sits unused
 // later in the chain.
+//
+// Note the inverse case: an executor that receives a 2xx carrying no usable
+// output reports 422 when the emptiness is deterministic (truncated, filtered,
+// reasoning-only). That lands in the "client's fault" bucket on purpose — the
+// next provider would reproduce the same empty answer at additional cost.
 func shouldFallOver(status int, err error) bool {
 	if err != nil {
 		return true

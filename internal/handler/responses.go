@@ -931,8 +931,8 @@ func writeChatCompletionAsResponsesSSE(resp *types.ChatCompletionResponse, reque
 	if resp == nil {
 		return fmt.Errorf("non-streaming executor returned an empty response")
 	}
-	if !resp.HasUsableAssistantOutput() {
-		return fmt.Errorf("non-streaming executor returned no usable assistant output")
+	if reason := resp.EmptyOutputReason(); reason != "" {
+		return fmt.Errorf("non-streaming executor returned no usable assistant output: %s", reason)
 	}
 
 	flusher, canFlush := w.(interface{ Flush() })
