@@ -17,11 +17,14 @@ import (
 
 const (
 	ClaudeAuthURL      = "https://claude.com/cai/oauth/authorize"
-	ClaudeTokenURL     = "https://platform.claude.com/v1/oauth/token"
 	ClaudeClientID     = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 	ClaudeRedirectURI  = "https://platform.claude.com/oauth/code/callback"
 	ClaudeCallbackPort = 54545
 )
+
+// ClaudeTokenURL is a var, not a const, so tests can redirect refreshes at a
+// stub. Nothing in production reassigns it.
+var ClaudeTokenURL = "https://platform.claude.com/v1/oauth/token"
 
 type claudeTokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -59,8 +62,24 @@ func NewClaudeOAuth(store *TokenStore) *ClaudeOAuth {
 	}
 }
 
+// SetHTTPClient replaces the client used for token refreshes, so tests can
+// reach a stub token endpoint over plain HTTP.
+func (o *ClaudeOAuth) SetHTTPClient(c *http.Client) { o.httpClient = c }
+
 // Store exposes the underlying token store (for rate-limit failover bookkeeping).
 func (o *ClaudeOAuth) Store() *TokenStore { return o.store }
+
+// ForceRefresh refreshes one account regardless of its local expiry, for when
+// the upstream rejects a token we still believe is valid (a 401 after another
+// client rotated the grant).
+func (o *ClaudeOAuth) ForceRefresh(ctx context.Context, accountID string) error {
+	token := o.store.GetByID("claude", accountID)
+	if token == nil {
+		return fmt.Errorf("account %s not found", accountID)
+	}
+	_, err := o.refreshToken(ctx, token, true)
+	return err
+}
 
 func (o *ClaudeOAuth) GetToken(ctx context.Context) (string, error) {
 	token, _, err := o.GetTokenWithAccount(ctx, "")
@@ -85,13 +104,26 @@ func (o *ClaudeOAuth) GetTokenWithAccount(ctx context.Context, model string) (st
 }
 
 func (o *ClaudeOAuth) refresh(ctx context.Context, token *TokenData) (string, error) {
+	return o.refreshToken(ctx, token, false)
+}
+
+// refreshToken exchanges the refresh token for a new access token. force skips
+// the "someone else already refreshed this" shortcut, which a caller reacting
+// to an upstream 401 needs: the stored token looks valid locally and is exactly
+// what was just rejected.
+func (o *ClaudeOAuth) refreshToken(ctx context.Context, token *TokenData, force bool) (string, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
 	// Double-check: maybe another goroutine refreshed this specific account
 	current := o.store.GetByID("claude", token.ID)
-	if current != nil && !current.IsExpired() {
+	if !force && current != nil && !current.IsExpired() {
 		return current.AccessToken, nil
+	}
+	if current != nil {
+		// Refresh whatever is stored now, not the possibly stale copy the caller
+		// captured before waiting on the lock.
+		token = current
 	}
 
 	if token.RefreshToken == "" {
@@ -120,6 +152,13 @@ func (o *ClaudeOAuth) refresh(ctx context.Context, token *TokenData) (string, er
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
+		// 400/401 here means the refresh token is finished — expired, revoked,
+		// or rotated away by another client. No amount of retrying fixes that,
+		// so record it: the account is skipped from selection and the dashboard
+		// asks for a re-login instead of showing a healthy green dot.
+		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+			o.store.MarkRevoked("claude", token.ID, fmt.Sprintf("refresh rejected (%d): %s", resp.StatusCode, string(body)))
+		}
 		return "", fmt.Errorf("refresh failed (%d): %s", resp.StatusCode, string(body))
 	}
 
@@ -129,6 +168,10 @@ func (o *ClaudeOAuth) refresh(ctx context.Context, token *TokenData) (string, er
 	}
 
 	newToken := &TokenData{
+		// Carry the existing id forward. Add falls back to the email, and a
+		// refresh response that omits it would otherwise mint a second account
+		// instead of updating this one — and leave the old id looking revoked.
+		ID:               token.ID,
 		Provider:         "claude",
 		AccessToken:      tokenResp.AccessToken,
 		RefreshToken:     tokenResp.RefreshToken,
@@ -137,8 +180,12 @@ func (o *ClaudeOAuth) refresh(ctx context.Context, token *TokenData) (string, er
 		OrganizationName: tokenResp.Organization.Name,
 		ExpiresAt:        time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second).Format(time.RFC3339),
 	}
+	if newToken.Email == "" {
+		newToken.Email = token.Email
+	}
+	// Add clears any revoked mark: a working token is the proof of recovery.
 	o.store.Add(newToken)
-	fmt.Printf("claude token refreshed for %s\n", newToken.Email)
+	fmt.Printf("claude token refreshed for %s\n", newToken.ID)
 	return newToken.AccessToken, nil
 }
 
@@ -432,6 +479,10 @@ func parseClaudeModels(body []byte) ([]string, error) {
 }
 
 // FetchAllQuotas fetches Claude account usage limits for every active account.
+//
+// The refresh below doubles as the startup health check: an account whose grant
+// is finished gets marked revoked here, so the dashboard reports it from the
+// first page load instead of waiting for a request to fail.
 func (o *ClaudeOAuth) FetchAllQuotas(ctx context.Context) {
 	for _, acc := range o.store.AllForProvider("claude") {
 		if acc.IsExpired() {

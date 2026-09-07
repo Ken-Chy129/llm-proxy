@@ -155,10 +155,25 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 		attempts = 1
 	}
 	var lastErr error
-	for i := 0; i < attempts; i++ {
+	// A 401 may cost an extra attempt per account for its refresh-and-retry.
+	refreshed := make(map[string]bool)
+	// Accounts ruled out this pass. Selection can hand the same account back
+	// once every one is blocked, so this is what ends the loop.
+	exhausted := make(map[string]bool)
+	for i := 0; i < attempts*2; i++ {
 		token, accountID, err := e.oauth.GetTokenWithAccount(ctx, model)
 		if err != nil {
-			return nil, err
+			// A refresh that failed with 400/401 has already marked the account
+			// revoked, so the next pass will pick a different one. Keep going
+			// while another account might still serve.
+			lastErr = err
+			if len(exhausted) >= attempts {
+				return nil, err
+			}
+			continue
+		}
+		if exhausted[accountID] {
+			break
 		}
 		recordAccount(ctx, accountID)
 		req, err := makeReq(token)
@@ -169,6 +184,32 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 		if err != nil {
 			lastErr = err
 			continue
+		}
+		// 401: the credentials were rejected, not the request. Refresh once and
+		// retry the same account — an access token rotated away by another
+		// client is the common case — then mark it revoked and move on, so one
+		// dead account cannot take the whole provider down.
+		if resp.StatusCode == http.StatusUnauthorized {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			lastErr = &HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)}
+			if !refreshed[accountID] {
+				refreshed[accountID] = true
+				if err := e.oauth.ForceRefresh(ctx, accountID); err == nil {
+					log.Printf("[auth] claude account %s got 401; refreshed token and retrying", accountID)
+					continue
+				} else {
+					log.Printf("[auth] claude account %s got 401 and refresh failed: %v", accountID, err)
+				}
+			}
+			e.oauth.Store().MarkRevoked("claude", accountID, string(respBody))
+			log.Printf("[auth] claude account %s revoked upstream; re-login required at /auth/claude", accountID)
+			exhausted[accountID] = true
+			if len(exhausted) < attempts {
+				recordAccountFailover(ctx, accountID)
+				continue
+			}
+			return nil, lastErr
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
@@ -184,7 +225,8 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 			}
 			log.Printf("[failover] claude account %s rate-limited until %s (estimated=%t); %d/%d attempts used",
 				accountID, until.Format(time.RFC3339), !known, i+1, attempts)
-			if i < attempts-1 {
+			exhausted[accountID] = true
+			if len(exhausted) < attempts {
 				resp.Body.Close()
 				recordAccountFailover(ctx, accountID)
 				lastErr = fmt.Errorf("claude account %s rate-limited (429)", accountID)
