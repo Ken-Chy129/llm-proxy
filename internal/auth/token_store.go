@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -153,6 +154,28 @@ func (s *TokenStore) isRateLimitedLocked(provider, id, model string) bool {
 		}
 	}
 	return false
+}
+
+// ClearRateLimit drops every cooldown recorded for an account, account-wide and
+// per-model alike, and reports whether anything was actually removed.
+//
+// A cooldown and the quota snapshot are independent state: the 429 handler
+// records "unavailable until T" from the upstream's reset hint, and nothing
+// revisits that hint if the quota is topped up early. Refreshing an account
+// upstream would otherwise leave it sidelined until the original T elapsed,
+// with the dashboard showing a "limited" badge no button could clear.
+func (s *TokenStore) ClearRateLimit(provider, id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prefix := provider + "/" + id + "/"
+	cleared := false
+	for key := range s.rateLimited {
+		if strings.HasPrefix(key, prefix) {
+			delete(s.rateLimited, key)
+			cleared = true
+		}
+	}
+	return cleared
 }
 
 func (s *TokenStore) disabledPath() string {

@@ -46,8 +46,29 @@ func (w *RateWindow) Exhausted(now time.Time) bool {
 	return w.ResetUnix <= 0 || time.Unix(w.ResetUnix, 0).After(now)
 }
 
+// HasHeadroom reports whether a freshly-fetched snapshot shows the account can
+// serve traffic again: real data, with no exhausted window.
+//
+// This is what lets a quota refresh retire a cooldown. Only snapshots with
+// HasRealData count — a placeholder written after a failed fetch says nothing
+// about the account and must never be read as "recovered".
+func (q *QuotaInfo) HasHeadroom(now time.Time) bool {
+	if q == nil || !q.HasRealData {
+		return false
+	}
+	if q.Primary.Exhausted(now) || q.Secondary.Exhausted(now) {
+		return false
+	}
+	for _, a := range q.Additional {
+		if a.Primary.Exhausted(now) {
+			return false
+		}
+	}
+	return true
+}
+
 type AdditionalRL struct {
-	Name    string     `json:"name"`
+	Name    string      `json:"name"`
 	Primary *RateWindow `json:"primary,omitempty"`
 }
 

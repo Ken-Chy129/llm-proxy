@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -552,6 +553,9 @@ func (o *ClaudeOAuth) fetchQuotaForAccount(ctx context.Context, acc *TokenData) 
 	info.PlanType = planType
 	info.HasRealData = true
 	QuotaCache.Set("claude:"+acc.ID, info)
+	if o.store != nil && info.HasHeadroom(time.Now()) && o.store.ClearRateLimit("claude", acc.ID) {
+		log.Printf("[failover] claude account %s has quota again; cooldown lifted", acc.ID)
+	}
 	return nil
 }
 
