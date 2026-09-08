@@ -457,3 +457,61 @@ func TestDropdownStateTagIsRightAligned(t *testing.T) {
 		t.Error("chat picker still dims selectable rows")
 	}
 }
+
+// The Quota tab and the Providers tab describe the same accounts. A card for an
+// account that cannot serve must not render as ordinary green headroom, or the
+// tab reads as spare capacity that does not exist.
+func TestQuotaCardsReflectWhetherTheAccountCanServe(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"const tier = tierOf(q);",
+		"const blocked = tier === 'blocked';",
+		"const waiting = tier === 'waiting';",
+		"const stale = !!q.stale;",
+		"const muted = blocked || stale;",
+		// The bar colour is the whole point: an account needing a re-login must
+		// lose its green, while one merely waiting out a limit stays amber rather
+		// than being greyed out like a dead one.
+		"muted ? 'var(--text-2)' : waiting ? 'var(--yellow)'",
+		"quota-state",
+		// Ordering is the other half of the distinction: self-healing accounts
+		// must not bury the ones that need a person.
+		"const TIER_ORDER = { serving: 0, waiting: 1, blocked: 2 };",
+		"allQuotas.sort(",
+		"needs attention",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("quota card ignores account serving state: missing %q", want)
+		}
+	}
+
+	css, err := staticFiles.ReadFile("static/style.css")
+	if err != nil {
+		t.Fatalf("read embedded styles: %v", err)
+	}
+	styles := string(css)
+	for _, want := range []string{
+		".quota-card.is-blocked",
+		".quota-card.is-waiting",
+		".quota-state.is-blocked",
+		".quota-state.is-waiting",
+		".quota-state.is-stale",
+		".quota-stamp.is-stale",
+	} {
+		if !strings.Contains(styles, want) {
+			t.Errorf("quota card styling missing %q", want)
+		}
+	}
+
+	index, err := staticFiles.ReadFile("static/index.html")
+	if err != nil {
+		t.Fatalf("read embedded index: %v", err)
+	}
+	if !strings.Contains(string(index), `id="quota-serving"`) {
+		t.Error("quota tab has no serving-count readout")
+	}
+}

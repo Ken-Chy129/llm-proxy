@@ -62,6 +62,102 @@ func formatLocalTime(t time.Time) string {
 	return t.Format("01-02 15:04")
 }
 
+// quotaStaleAfter is when a cached quota snapshot stops describing the present.
+// The shortest window a card reports is the 5h session, so a snapshot older
+// than one full window can no longer be assumed to reflect the account — its
+// percentages are history, not headroom.
+const quotaStaleAfter = 6 * time.Hour
+
+// The three tiers a quota card can fall into. The distinction that matters to
+// an operator is not "usable / unusable" but what it would take to change that:
+// nothing, waiting, or a person.
+const (
+	// quotaTierServing: the router can pick this account right now.
+	quotaTierServing = "serving"
+	// quotaTierWaiting: temporarily out of headroom, recovers on its own at a
+	// known time. Nothing to do but wait.
+	quotaTierWaiting = "waiting"
+	// quotaTierBlocked: cannot recover on its own — a re-login, a resume, or
+	// some other human action is required.
+	quotaTierBlocked = "blocked"
+)
+
+// quotaView decorates a cached quota snapshot with the operational state of the
+// account it belongs to.
+//
+// The two used to be rendered from unrelated sources: the Providers tab knew an
+// account was paused or needed a re-login, while the Quota tab drew that same
+// account's last-known percentages as full green bars. The result claimed
+// headroom on accounts that could not serve a single request. Reachability is
+// part of what a quota reading means, so it travels with it.
+type quotaView struct {
+	*auth.QuotaInfo
+	// Serving is the one question the card exists to answer: can this account
+	// take a request right now.
+	Serving bool `json:"serving"`
+	// Tier separates the two very different ways of not serving: a rate-limited
+	// account fixes itself at a known time, a revoked or paused one waits on a
+	// person. Collapsing them hides the only actionable half.
+	Tier string `json:"tier"`
+	// AccountState mirrors the Providers tab vocabulary: active, disabled,
+	// revoked, rate_limited, expired.
+	AccountState string `json:"account_state"`
+	// StateDetail explains a non-serving state in the operator's terms, e.g.
+	// "re-login needed · since 09-07 15:00".
+	StateDetail string `json:"state_detail,omitempty"`
+	// Stale marks a snapshot too old to describe the account's current headroom.
+	Stale bool `json:"stale"`
+	// StaleAge is a human-readable age ("13d") for any snapshot that has one.
+	StaleAge string `json:"stale_age,omitempty"`
+}
+
+// humanAge renders a snapshot age at the coarsest unit that still says
+// something useful — minutes for fresh data, days for abandoned data.
+func humanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours())/24)
+	}
+}
+
+// quotaTierFor maps an account state onto what the operator would have to do
+// about it. Rate limits are the only self-healing failure; everything else that
+// stops an account needs a human.
+func quotaTierFor(state string) string {
+	switch state {
+	case "active":
+		return quotaTierServing
+	case "rate_limited":
+		return quotaTierWaiting
+	default:
+		return quotaTierBlocked
+	}
+}
+
+// newQuotaView pairs a snapshot with the account state the Providers tab
+// already derived, so both tabs can never disagree about the same account.
+func newQuotaView(q *auth.QuotaInfo, state, detail string, now time.Time) quotaView {
+	tier := quotaTierFor(state)
+	v := quotaView{
+		QuotaInfo:    q,
+		AccountState: state,
+		StateDetail:  detail,
+		Tier:         tier,
+		Serving:      tier == quotaTierServing,
+	}
+	if age, ok := q.Age(now); ok {
+		v.StaleAge = humanAge(age)
+		v.Stale = age > quotaStaleAfter
+	}
+	return v
+}
+
 // summarizeRevokeReason turns the upstream's raw 401 body into one short line
 // for the dashboard tooltip. The body is usually a JSON error envelope, so the
 // message field alone carries the useful part; anything unparseable is passed
@@ -193,6 +289,22 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		if disabled {
 			status = "disabled"
 		}
+		// The balance card obeys the same rule as the account cards: a paused or
+		// unverified backend must not present its last-known balance as spendable.
+		if creditsQuota != nil {
+			switch {
+			case disabled:
+				creditsQuota["serving"] = false
+				creditsQuota["tier"] = quotaTierBlocked
+				creditsQuota["account_state"] = "disabled"
+				creditsQuota["state_detail"] = "paused on the Providers tab"
+			case status != "active":
+				creditsQuota["serving"] = false
+				creditsQuota["tier"] = quotaTierBlocked
+				creditsQuota["account_state"] = "expired"
+				creditsQuota["state_detail"] = "key not verified"
+			}
+		}
 		entry := gin.H{
 			"name":     "anygen",
 			"status":   status,
@@ -229,6 +341,10 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		activeCount := 0
 		revokedCount := 0
 		var accountList []gin.H
+		// The state each account is in, keyed by account id, so the quota cards
+		// below describe exactly the same accounts this loop just judged.
+		type acctState struct{ state, detail string }
+		states := map[string]acctState{}
 		for _, t := range accounts {
 			info := t.Email
 			if info == "" {
@@ -271,6 +387,11 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				if !revokedAt.IsZero() {
 					acc["revoked_at"] = formatLocalTime(revokedAt)
 				}
+				detail := "re-login needed"
+				if !revokedAt.IsZero() {
+					detail += " · since " + formatLocalTime(revokedAt)
+				}
+				states[t.ID] = acctState{"revoked", detail}
 				accountList = append(accountList, acc)
 				continue
 			}
@@ -306,6 +427,21 @@ func (h *AdminHandler) Status(c *gin.Context) {
 				acc["rate_limited_until"] = formatLocalTime(until)
 				acc["rate_limited_estimated"] = estimated
 			}
+			switch {
+			case accDisabled:
+				states[t.ID] = acctState{"disabled", "paused on the Providers tab"}
+			case accStatus == "rate_limited":
+				if estimated {
+					states[t.ID] = acctState{"rate_limited", "limited · reset time unknown"}
+				} else {
+					states[t.ID] = acctState{"rate_limited", "limited · until " + formatLocalTime(until)}
+				}
+			default:
+				// A merely expired access token still serves: it refreshes on the
+				// next request. Treating it as unusable here would contradict the
+				// green dot the Providers tab shows for the same account.
+				states[t.ID] = acctState{"active", ""}
+			}
 			accountList = append(accountList, acc)
 		}
 		if activeCount > 0 {
@@ -340,10 +476,14 @@ func (h *AdminHandler) Status(c *gin.Context) {
 		}
 		// Per-account quotas
 		if p.account == "claude" || p.account == "codex" {
-			var quotas []*auth.QuotaInfo
+			var quotas []quotaView
 			for _, a := range accounts {
 				if q := auth.QuotaCache.Get(p.account + ":" + a.ID); q != nil {
-					quotas = append(quotas, q)
+					st := states[a.ID]
+					if st.state == "" {
+						st.state = "active"
+					}
+					quotas = append(quotas, newQuotaView(q, st.state, st.detail, time.Now()))
 				}
 			}
 			if len(quotas) > 0 {
@@ -987,6 +1127,11 @@ func anyGenCreditsQuota(credits executor.AnyGenCredits) gin.H {
 		"has_real_data": credits.Verified && strings.TrimSpace(credits.Credits) != "",
 		"verified":      credits.Verified,
 		"credits":       credits.Credits,
+		// Callers that know better (a paused backend, an unverified key) override
+		// these; defaulting to serving keeps a healthy balance card unchanged.
+		"serving":       true,
+		"tier":          quotaTierServing,
+		"account_state": "active",
 	}
 }
 

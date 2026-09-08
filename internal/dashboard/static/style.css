@@ -517,9 +517,27 @@ rect.cal-future{fill:transparent;}
 .quota-section h3{font-family:var(--display);font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-1);}
 .quota-section h3::before{content:'// ';color:var(--accent-dim);}
 .quota-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;}
+.quota-serving{font-family:var(--mono);font-size:11px;color:var(--text-2);letter-spacing:.3px;}
+/* Something in the grid needs a person: the count says so without shouting. */
+.quota-serving.has-blocked{color:var(--red);}
 .quota-card{position:relative;background:linear-gradient(180deg,var(--bg-1),var(--bg-0));border:1px solid var(--border);padding:15px;}
 .quota-card-header{display:flex;align-items:center;gap:7px;margin-bottom:11px;font-family:var(--mono);font-size:13px;}
 .quota-card-header .plan-badge{font-family:var(--display);font-size:10px;font-weight:600;padding:2px 8px;border-radius:2px;letter-spacing:.5px;text-transform:uppercase;}
+/* Blocked: needs a person, and nothing improves until then. Pushed to the
+   background — numbers stay readable (they matter again once it recovers) but
+   must not compete with accounts actually carrying traffic. */
+.quota-card.is-blocked{background:var(--bg-0);border-style:dashed;}
+.quota-card.is-blocked .quota-card-header,.quota-card.is-blocked .plan-badge,.quota-card.is-blocked .quota-row,.quota-card.is-blocked .quota-credit{opacity:.55;}
+/* Waiting: a healthy account that is merely out of headroom for now. It keeps
+   full contrast — there is nothing wrong with it — and is marked by an amber
+   edge rather than being faded out like a blocked one. */
+.quota-card.is-waiting{border-color:rgba(255,204,77,0.35);}
+.quota-state{font-family:var(--mono);font-size:11px;padding:3px 7px;margin-bottom:9px;border:1px solid transparent;border-radius:2px;}
+.quota-state.is-blocked{background:var(--red-bg);color:var(--red);border-color:rgba(255,95,73,0.35);}
+.quota-state.is-waiting{background:var(--yellow-bg);color:var(--yellow);border-color:rgba(255,204,77,0.35);}
+.quota-state.is-stale{background:var(--bg-3);color:var(--text-1);border-color:var(--border);}
+.quota-stamp{font-size:10px;color:var(--text-2);margin-left:auto;white-space:nowrap;}
+.quota-stamp.is-stale{color:var(--yellow);}
 .plan-team{background:var(--accent-soft);color:var(--accent);}
 .plan-pro{background:var(--yellow-bg);color:var(--yellow);}
 .plan-plus{background:var(--green-bg);color:var(--green);}

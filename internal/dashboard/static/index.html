@@ -67,7 +67,10 @@
   <div id="tab-quota">
     <div class="quota-section">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-        <h3 style="margin:0">Account Quota</h3>
+        <div style="display:flex;align-items:baseline;gap:10px">
+          <h3 style="margin:0">Account Quota</h3>
+          <span id="quota-serving" class="quota-serving"></span>
+        </div>
         <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
       </div>
       <div id="quota-grid" class="quota-grid"></div>

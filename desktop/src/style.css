@@ -277,7 +277,10 @@ main { padding: 8px 10px 4px; display: flex; flex-direction: column; gap: 8px; }
 .acct-name { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .acct-plan { font-size: 9.5px; color: var(--fg-faint); flex-shrink: 0; }
 .badge { font-size: 9px; padding: 1px 5px; border-radius: 4px; flex-shrink: 0; font-weight: 600; }
-.badge.limited { background: rgba(242,99,95,.16); color: var(--bad); }
+/* 限流：到点自己恢复，用琥珀色而不是红色——它不是故障，只是要等 */
+.badge.limited { background: rgba(245,181,68,.16); color: var(--warn); }
+/* 需要人工处理（重新登录）：实心红，跟"等一会自己好"的限流区分开 */
+.badge.blocked { background: var(--bad); color: #fff; }
 .badge.disabled { background: var(--bg-hover); color: var(--fg-faint); }
 .badge.nodata { background: rgba(245,181,68,.14); color: var(--warn); }
 

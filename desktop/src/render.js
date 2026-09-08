@@ -126,6 +126,20 @@ export function trayTitle(d) {
  */
 export function alertFor(d, threshold = 20) {
   const accounts = (d && d.accounts) || [];
+
+  // 需要重新登录的排在限流前面：限流等一会自己就好，被 upstream 拒掉的账号
+  // 不管等多久都不会回来，是这份数据里唯一真正需要你动手的东西。原先这里
+  // 完全没检查 revoked，于是最该提醒的一种情况反而永远静默。
+  const revoked = accounts.filter((a) => a.status === 'revoked');
+  if (revoked.length > 0) {
+    const names = revoked.map((a) => (a.email || '').split('@')[0]).filter(Boolean);
+    return {
+      key: `revoked:${revoked.map((a) => a.email).sort().join(',')}`,
+      title: 'LLM Proxy 账号需重新登录',
+      body: revoked.length === 1 ? `${names[0]} 已失效` : `${revoked.length} 个账号已失效`,
+    };
+  }
+
   const limited = accounts.filter((a) => a.status === 'rate_limited');
 
   if (limited.length > 0) {
@@ -176,6 +190,26 @@ export function alertFor(d, threshold = 20) {
   }
 
   return null;
+}
+
+/**
+ * 账号分档：这个号现在能不能用，以及"恢复它需要什么"。
+ *
+ * 和网页端 Quota 卡片用的是同一套词汇（serving / waiting / blocked），因为两边
+ * 描述的是同一批账号，各写一套迟早会互相矛盾。真正要区分的不是"能用/不能用"，
+ * 而是**要不要你动手**：
+ *   serving — 现在就能服务。
+ *   waiting — 限流中，到点自己恢复，你什么都不用做。
+ *   blocked — 被 upstream 拒绝或手动停用，不重新登录/恢复就一直是这样。
+ *
+ * 挂件原先只认 rate_limited 和 disabled，被 revoke 的号连个标记都没有，看起来
+ * 跟正常号一模一样——那正是最该提醒你的一种。
+ */
+export function accountTier(a) {
+  if (!a) return 'serving';
+  if (a.status === 'revoked' || a.status === 'disabled') return 'blocked';
+  if (a.status === 'rate_limited') return 'waiting';
+  return 'serving';
 }
 
 /**
@@ -324,10 +358,18 @@ function renderAccounts(container, accounts, todayISO) {
 
     const right = el('div');
     right.style.cssText = 'display:flex;align-items:center;gap:5px;flex-shrink:0';
-    if (a.status === 'rate_limited') {
+    // 徽章按"要不要你动手"分档，跟网页端 Quota 卡片同一套判断（accountTier）。
+    // blocked 用红色实心，waiting 用琥珀色：限流等一会就好，需要重登的才值得
+    // 你现在放下手里的事。
+    const tier = accountTier(a);
+    if (tier === 'blocked') {
+      right.appendChild(
+        a.status === 'revoked'
+          ? el('span', 'badge blocked', '需重新登录')
+          : el('span', 'badge disabled', '已停用'),
+      );
+    } else if (tier === 'waiting') {
       right.appendChild(el('span', 'badge limited', a.rate_limited_until ? `限流至 ${a.rate_limited_until}` : '限流'));
-    } else if (a.status === 'disabled') {
-      right.appendChild(el('span', 'badge disabled', '已停用'));
     } else if (!a.has_real_data) {
       right.appendChild(el('span', 'badge nodata', '无数据'));
     }

@@ -14,7 +14,7 @@ const src = readFileSync(resolve(__dirname, '../src/render.js'), 'utf8');
 const mod = await import(
   'data:text/javascript;base64,' + Buffer.from(src).toString('base64')
 );
-const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset, bindingWindow, poolWindow, nextReset, fmtEta } = mod;
+const { fmtNum, fmtCompact, pctDelta, pctClass, fmtIdle, trayTitle, alertFor, shortReset, bindingWindow, poolWindow, nextReset, fmtEta, accountTier } = mod;
 
 test('fmtNum 加千分位，空值不显示 NaN', () => {
   assert.equal(fmtNum(25969045), '25,969,045');
@@ -498,4 +498,36 @@ test('heatDayLines 有请求但没 token 记录时不谎报"无用量"', () => {
   // 请求数是可数的次数，压成 "1.2K 请求" 反而丢了精度感
   const busy = heatDayLines({ key: '2026-08-04', requests: 779, tokens: 1000, cache: 900 });
   assert.deepEqual(busy.rows, [['请求', '779'], ['tokens', '1K'], ['缓存', '90%']]);
+});
+
+// ---------- accountTier ----------
+// 分档要区分的不是"能不能用"，而是"要不要你动手"：限流到点自愈，被拒的号
+// 不重新登录就永远回不来。两者混为一谈，真正需要处理的那个就被埋了。
+test('accountTier 把自愈的限流和需要人工的失效分开', () => {
+  assert.equal(accountTier(acct({ status: 'active' })), 'serving');
+  assert.equal(accountTier(acct({ status: 'rate_limited' })), 'waiting');
+  assert.equal(accountTier(acct({ status: 'revoked' })), 'blocked');
+  assert.equal(accountTier(acct({ status: 'disabled' })), 'blocked');
+  // 没有账号对象时不能抛异常：渲染路径上任何一处抛错都会让整个挂件空白
+  assert.equal(accountTier(null), 'serving');
+});
+
+// 被 upstream 拒掉的账号是这份数据里唯一"不动手就永远不会好"的情况，
+// 原先 alertFor 完全没检查它，于是最该提醒的一种反而静默。
+test('alertFor 优先提醒需要重新登录的账号', () => {
+  const a = alertFor({ accounts: [acct({ status: 'revoked', email: 'dead@example.com' })] }, 20);
+  assert.equal(a.title, 'LLM Proxy 账号需重新登录');
+  assert.match(a.body, /dead/);
+
+  // 同时存在限流和失效时，先报失效：限流会自己好，失效不会
+  const both = alertFor({
+    accounts: [
+      acct({ status: 'rate_limited', email: 'limited@example.com', rate_limited_until: '17:00' }),
+      acct({ status: 'revoked', email: 'dead@example.com' }),
+    ],
+  }, 20);
+  assert.equal(both.title, 'LLM Proxy 账号需重新登录');
+
+  // 去重键要认账号，同一批失效账号不重复打扰
+  assert.equal(a.key, 'revoked:dead@example.com');
 });

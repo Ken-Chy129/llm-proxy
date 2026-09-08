@@ -456,19 +456,57 @@ async function loadStatus() {
     // Quota lives per account, so these cards address the account store key.
     if (b.quotas) allQuotas = allQuotas.concat(b.quotas.map(q => ({...q, provider: b.account || b.name})));
   });
+  // Three tiers, in the order an operator acts on them: what is spendable now,
+  // what comes back by itself, and what is waiting on a person. Sorting only by
+  // "can it serve" buried the last group behind rate limits that clear
+  // themselves in an hour. Order within a tier is left as the server sent it,
+  // so cards do not shuffle between polls.
+  const TIER_ORDER = { serving: 0, waiting: 1, blocked: 2 };
+  const tierOf = q => q.tier || (q.serving === false ? 'blocked' : 'serving');
+  allQuotas.sort((a, b) => (TIER_ORDER[tierOf(a)] ?? 0) - (TIER_ORDER[tierOf(b)] ?? 0));
   const qGrid = document.getElementById('quota-grid');
   const qEmpty = document.getElementById('quota-empty');
   qEmpty.style.display = allQuotas.length ? 'none' : '';
+  // The headline answers "what can I spend now"; the blocked count is called out
+  // separately because it is the only part that needs someone to do something.
+  const qServing = document.getElementById('quota-serving');
+  if (qServing) {
+    const count = tier => allQuotas.filter(q => tierOf(q) === tier).length;
+    const waiting = count('waiting');
+    const blocked = count('blocked');
+    const parts = [`${count('serving')}/${allQuotas.length} serving`];
+    if (waiting) parts.push(`${waiting} waiting`);
+    if (blocked) parts.push(`${blocked} needs attention`);
+    qServing.textContent = allQuotas.length ? parts.join(' · ') : '';
+    qServing.className = 'quota-serving' + (blocked ? ' has-blocked' : '');
+  }
   {
     const quotaCards = allQuotas.map(q => {
       const planCls = q.plan_type?.toLowerCase().includes('pro') ? 'plan-pro' : q.plan_type?.toLowerCase().includes('plus') ? 'plan-plus' : 'plan-team';
       const planLabel = q.plan_type || 'Unknown';
       const displayName = q.email || q.display_name || q.account_id;
+      // Three states, because they call for three different reactions:
+      //   serving — spendable now.
+      //   waiting — out of headroom but self-healing at a known time. Still a
+      //             real account, so it keeps its colour and only says when.
+      //   blocked — needs a person (re-login, resume). Drained of colour and
+      //             sent to the back, since nothing improves until you act.
+      // Percentages stay on every card: they are the truth about the window and
+      // matter again the moment the account returns.
+      const tier = tierOf(q);
+      const blocked = tier === 'blocked';
+      const waiting = tier === 'waiting';
+      // A snapshot older than the shortest window it reports describes a past
+      // the account has already left, so its numbers stop being load-bearing.
+      const stale = !!q.stale;
+      const muted = blocked || stale;
       const renderRow = (w) => {
         if (!w) return '';
         const pct = Math.round(w.remaining_percent || 0);
-        const barColor = w.limit_reached ? 'var(--red)' : pct < 20 ? 'var(--yellow)' : 'var(--green)';
-        return `<div class="quota-row"><div class="quota-row-header"><span class="quota-row-label">${w.label}</span><span class="quota-row-value"><span class="pct">${pct}%</span>${w.reset_at || ''}</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:${Math.min(pct, 100)}%;background:${barColor}"></div></div></div>`;
+        // A waiting account's bar goes yellow rather than gray: the number is
+        // still live, it is the clock that is the problem.
+        const barColor = muted ? 'var(--text-2)' : waiting ? 'var(--yellow)' : w.limit_reached ? 'var(--red)' : pct < 20 ? 'var(--yellow)' : 'var(--green)';
+        return `<div class="quota-row"><div class="quota-row-header"><span class="quota-row-label">${escapeHTML(w.label || '')}</span><span class="quota-row-value"><span class="pct">${pct}%</span>${escapeHTML(w.reset_at || '')}</span></div><div class="quota-bar"><div class="quota-bar-fill" style="width:${Math.min(pct, 100)}%;background:${barColor}"></div></div></div>`;
       };
       let rows = '';
       if (q.kind === 'credits' && q.has_real_data) {
@@ -480,11 +518,26 @@ async function loadStatus() {
         rows = `<div style="font-size:12px;color:var(--text-2);padding:4px 0">No quota data yet — click <span style="color:var(--accent);cursor:pointer" onclick="refreshQuota('${q.provider}','${q.account_id}')">&#8635; refresh</span> to fetch</div>`;
       }
       const refreshBtn = `<button class="btn-delete" style="font-size:11px;color:var(--accent)" onclick="refreshQuota('${q.provider}','${q.account_id}')">&#8635;</button>`;
-      const fetchedAt = q.fetched_at ? `<span style="font-size:10px;color:var(--text-2);margin-left:auto">cached ${q.fetched_at}</span>` : '';
+      // The absolute timestamp answers "when", the age answers "does this still
+      // count" — which is the question a stale card provokes.
+      const stamp = q.fetched_at
+        ? `${q.fetched_at}${q.stale_age ? ' · ' + q.stale_age : ''}`
+        : '';
+      const fetchedAt = stamp
+        ? `<span class="quota-stamp${stale ? ' is-stale' : ''}" title="${escapeHTML(stale ? 'This reading is too old to describe current headroom — refresh it' : 'Last successful quota fetch')}">cached ${escapeHTML(stamp)}</span>`
+        : '';
+      // One banner, carrying the most actionable fact: a paused account's stale
+      // reading is not news, its being paused is. A waiting card gets a clock so
+      // it reads as a delay rather than a fault.
+      const stateBadge = (blocked || waiting)
+        ? `<div class="quota-state ${waiting ? 'is-waiting' : 'is-blocked'}">${waiting ? '\u23f2 ' : ''}${escapeHTML(q.state_detail || q.account_state || 'not serving')}</div>`
+        : stale
+          ? `<div class="quota-state is-stale">stale reading · refresh to confirm</div>`
+          : '';
       const label = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
       return {
         key: JSON.stringify([q.provider || '', q.account_id || '']),
-        html: `<div class="quota-card" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${planLabel}</span>${fetchedAt}</div>${rows}</div>`,
+        html: `<div class="quota-card${blocked ? ' is-blocked' : waiting ? ' is-waiting' : ''}" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(displayName || '')}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${escapeHTML(planLabel)}</span>${fetchedAt}</div>${stateBadge}${rows}</div>`,
       };
     });
     syncKeyedHTML(qGrid, quotaCards);

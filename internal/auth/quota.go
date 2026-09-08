@@ -12,16 +12,35 @@ import (
 )
 
 type QuotaInfo struct {
-	AccountID   string         `json:"account_id"`
-	Email       string         `json:"email,omitempty"`
-	PlanType    string         `json:"plan_type,omitempty"`
-	Primary     *RateWindow    `json:"primary,omitempty"`
-	Secondary   *RateWindow    `json:"secondary,omitempty"`
-	Additional  []AdditionalRL `json:"additional,omitempty"`
-	Credits     *Credits       `json:"credits,omitempty"`
-	FetchedAt   string         `json:"fetched_at,omitempty"`
-	FetchedTime time.Time      `json:"-"`
-	HasRealData bool           `json:"has_real_data"`
+	AccountID  string         `json:"account_id"`
+	Email      string         `json:"email,omitempty"`
+	PlanType   string         `json:"plan_type,omitempty"`
+	Primary    *RateWindow    `json:"primary,omitempty"`
+	Secondary  *RateWindow    `json:"secondary,omitempty"`
+	Additional []AdditionalRL `json:"additional,omitempty"`
+	Credits    *Credits       `json:"credits,omitempty"`
+	FetchedAt  string         `json:"fetched_at,omitempty"`
+	// FetchedUnix is the machine-readable form of FetchedAt. FetchedAt alone
+	// carries no year ("01/02 15:04"), so a reload could not reconstruct the
+	// real age of a snapshot — every entry came back as year zero and looked
+	// infinitely stale. Persisting the epoch keeps staleness meaningful across
+	// restarts. 0 = unknown (a cache file written before this field existed).
+	FetchedUnix int64     `json:"fetched_unix,omitempty"`
+	FetchedTime time.Time `json:"-"`
+	HasRealData bool      `json:"has_real_data"`
+}
+
+// Age reports how long ago this snapshot was fetched. ok is false when the
+// snapshot carries no usable timestamp, so callers can avoid presenting a
+// fabricated age.
+func (q *QuotaInfo) Age(now time.Time) (d time.Duration, ok bool) {
+	if q == nil || q.FetchedTime.IsZero() {
+		return 0, false
+	}
+	if d = now.Sub(q.FetchedTime); d < 0 {
+		d = 0
+	}
+	return d, true
 }
 
 type RateWindow struct {
@@ -107,8 +126,10 @@ func (c *quotaCache) Get(key string) *QuotaInfo {
 func (c *quotaCache) Set(key string, info *QuotaInfo) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	info.FetchedTime = time.Now()
-	info.FetchedAt = time.Now().Format("01/02 15:04")
+	now := time.Now()
+	info.FetchedTime = now
+	info.FetchedUnix = now.Unix()
+	info.FetchedAt = now.Format("01/02 15:04")
 	c.data[key] = info
 	c.persist()
 }
@@ -179,8 +200,12 @@ func (c *quotaCache) load() {
 	}
 	for _, e := range entries {
 		if e.Info != nil {
-			if e.Info.FetchedAt != "" {
-				e.Info.FetchedTime, _ = time.Parse("01/02 15:04", e.Info.FetchedAt)
+			// FetchedAt has no year, so parsing it yields year 0 and makes every
+			// reloaded snapshot look ancient. Prefer the epoch we now persist and
+			// leave FetchedTime zero when it is absent — "unknown age" is honest,
+			// a fabricated one is not.
+			if e.Info.FetchedUnix > 0 {
+				e.Info.FetchedTime = time.Unix(e.Info.FetchedUnix, 0)
 			}
 			c.data[e.Key] = e.Info
 		}
