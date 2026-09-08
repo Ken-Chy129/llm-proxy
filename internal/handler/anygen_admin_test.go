@@ -2,10 +2,12 @@ package handler
 
 import (
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
@@ -20,9 +22,26 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
+// AnyGen cannot stream, but a streaming client should still get a stream: the
+// chain runs the request non-streaming and replays the completed answer as
+// chunks. Before this, the request was rejected with a 400 — and worse, a
+// chain that failed over from a streaming provider onto AnyGen returned 502.
+func TestChatCompletionsAdaptsAnyGenStreamingViaNonStreamingCall(t *testing.T) {
 	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	var upstreamStream *bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream bool `json:"stream"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		upstreamStream = &req.Stream
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"gpt-5.6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"hello from AnyGen"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}`)
+	}))
+	defer server.Close()
 	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		Enabled:   true,
+		BaseURL:   server.URL + "/api/v1",
 		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
 	})
 	anygenExec.SetServed([]string{"gpt-5.6-luna"})
@@ -32,7 +51,7 @@ func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
 	h := NewChatHandler(r, nil)
 
 	gin.SetMode(gin.TestMode)
-	w := httptest.NewRecorder()
+	w := newStreamRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(`{
 		"model":"gpt-5.6-luna",
@@ -42,11 +61,20 @@ func TestChatCompletionsRejectsAnyGenStreamingBeforeStartingSSE(t *testing.T) {
 	c.Request.Header.Set("Content-Type", "application/json")
 	h.ChatCompletions(c)
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
 	}
-	if got := w.Header().Get("Content-Type"); got == "text/event-stream" {
-		t.Fatalf("unsupported stream started SSE response: %q", got)
+	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+	if upstreamStream == nil || *upstreamStream {
+		t.Fatal("AnyGen upstream request must be non-streaming")
+	}
+	body := w.Body.String()
+	for _, want := range []string{`"object":"chat.completion.chunk"`, `"content":"hello from AnyGen"`, `"finish_reason":"stop"`, `"total_tokens":16`, "data: [DONE]"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("stream missing %q:\n%s", want, body)
+		}
 	}
 }
 

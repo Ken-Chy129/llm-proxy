@@ -106,12 +106,10 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 	start := time.Now()
 
 	if req.Stream {
-		if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": gin.H{"message": "the selected backend supports non-streaming Chat Completions only", "type": "invalid_request_error"},
-			})
-			return
-		}
+		// No capability check here: the chain serves a non-streaming provider
+		// through Execute and replays the result as chunks, so a streaming
+		// client gets a valid (if bursty) stream from every provider in the
+		// chain, including one reached only after failover.
 		h.handleStream(c, exec, &req, start)
 		return
 	}

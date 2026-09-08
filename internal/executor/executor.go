@@ -151,9 +151,11 @@ type Executor interface {
 }
 
 // StreamingSupport is optional. Executors that omit it are assumed to support
-// streaming for backward compatibility. Chat Completions rejects streaming for
-// a backend that returns false; the Responses handler instead calls Execute and
-// adapts the completed result into typed Responses API SSE events.
+// streaming for backward compatibility. A Chain never forwards a stream request
+// to an executor that returns false: it calls Execute instead and replays the
+// completed result as Chat Completions chunks, so the decision is made per
+// provider at the moment that provider is actually tried — including after a
+// failover from a provider that does stream.
 type StreamingSupport interface {
 	SupportsStreaming() bool
 }

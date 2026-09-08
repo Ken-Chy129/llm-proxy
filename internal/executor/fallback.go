@@ -56,14 +56,16 @@ func (e *Chain) Providers() []string {
 // requires it.
 func (e *Chain) Models() []string { return nil }
 
-// SupportsStreaming reports what the first link supports. Handlers use it to
-// pick an adaptation strategy before the request starts, so it can only speak
-// for the provider that will actually be tried first.
+// SupportsStreaming reports what the first link supports, because that is the
+// provider that will serve unless it fails, and handlers use the answer to pick
+// the best-fitting adaptation for the common case (real incremental output when
+// the head streams; a completed-response translation when it does not).
+//
+// It is a hint, not a contract: ExecuteStream re-checks every link it actually
+// tries and serves a non-streaming one through Execute, so a failover from a
+// streaming head onto a non-streaming tail still yields a valid stream.
 func (e *Chain) SupportsStreaming() bool {
-	if s, ok := e.links[0].Exec.(StreamingSupport); ok {
-		return s.SupportsStreaming()
-	}
-	return true
+	return supportsStreaming(e.links[0].Exec)
 }
 
 // shouldFallOver reports whether a primary result means "primary has no capacity
@@ -193,6 +195,12 @@ func (e *Chain) Execute(ctx context.Context, req *types.ChatCompletionRequest) (
 // ExecuteStream buffers nothing, so a mid-stream failure cannot be retried
 // without duplicating already-sent bytes. Only a failure to start is eligible
 // for failover, which is what firstWriteTracker detects.
+//
+// Streaming capability is re-checked per link rather than once for the chain:
+// a chain like relay -> anygen has a streaming head and a non-streaming tail,
+// and asking only the head would send anygen a stream request it must reject.
+// A non-streaming link is served via Execute and replayed as chunks, which
+// also keeps failover safe because nothing is written until it has succeeded.
 func (e *Chain) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) (*types.Usage, error) {
 	var usage *types.Usage
 	var err error
@@ -202,7 +210,11 @@ func (e *Chain) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequ
 		}
 		recordBackend(ctx, link.Provider)
 		tracked := &firstWriteTracker{w: w}
-		usage, err = link.Exec.ExecuteStream(ctx, req, tracked)
+		if supportsStreaming(link.Exec) {
+			usage, err = link.Exec.ExecuteStream(ctx, req, tracked)
+		} else {
+			usage, err = executeAsStream(ctx, link.Exec, req, tracked)
+		}
 		if err == nil || tracked.wrote() {
 			return usage, err
 		}
