@@ -332,6 +332,8 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	var hasToolCalls bool
+	var sawContent bool
+	var terminated bool
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -341,6 +343,18 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
+		}
+
+		// Anthropic can accept the request with a 200 and then report an
+		// overload or fault as an in-band error event. Surfacing it as an
+		// HTTPError lets the chain fall over instead of handing the caller a
+		// successful-looking stream with nothing in it.
+		if errType, message, isErr := anthropicStreamError(data); isErr {
+			return &usage, &HTTPError{
+				Backend: "claude oauth",
+				Status:  anthropicStreamErrorStatus(errType),
+				Body:    message,
+			}
 		}
 
 		var event types.AnthropicStreamEvent
@@ -382,6 +396,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 
 				switch delta.Type {
 				case "text_delta":
+					sawContent = true
 					writeSSEChunk(w, types.ChatCompletionChunk{
 						ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 						Choices: []types.ChatCompletionChoice{
@@ -419,6 +434,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 					finishReason = mapStopReason(d.StopReason)
 				}
 			}
+			terminated = true
 			writeSSEChunk(w, types.ChatCompletionChunk{
 				ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 				Choices: []types.ChatCompletionChoice{
@@ -426,6 +442,14 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 				},
 			})
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return &usage, err
+	}
+	// See the relay translator: a stream with no stop reason cannot become a
+	// valid Responses stream, so it must fail while failover is still possible.
+	if !terminated {
+		return &usage, incompleteStreamError("claude oauth", sawContent)
 	}
 
 	fmt.Fprint(w, "data: [DONE]\n\n")

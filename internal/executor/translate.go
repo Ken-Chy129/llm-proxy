@@ -3,6 +3,7 @@ package executor
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -461,6 +462,65 @@ func parseStop(raw json.RawMessage) []string {
 		return arr
 	}
 	return nil
+}
+
+// anthropicStreamError decodes an Anthropic-style `error` SSE event. An
+// Anthropic stream can open with 200 OK and then report the real failure
+// (overloaded_error, invalid model, gateway trouble) as an in-band event, so a
+// translator that only knows the happy-path event types would treat a failed
+// stream as a successful empty one.
+func anthropicStreamError(data string) (string, string, bool) {
+	var payload struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal([]byte(data), &payload) != nil || payload.Type != "error" {
+		return "", "", false
+	}
+	message := strings.TrimSpace(payload.Error.Message)
+	if message == "" {
+		message = strings.TrimSpace(data)
+	}
+	return strings.TrimSpace(payload.Error.Type), message, true
+}
+
+// anthropicStreamErrorStatus maps an in-band error type onto the HTTP status it
+// would have carried had the upstream failed before sending headers. The status
+// is what decides retryability in the chain: overload and internal faults are
+// another provider's chance, while a bad request would fail identically
+// everywhere.
+func anthropicStreamErrorStatus(errType string) int {
+	switch errType {
+	case "overloaded_error":
+		return http.StatusTooManyRequests
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "authentication_error", "permission_error":
+		return http.StatusUnauthorized
+	case "invalid_request_error", "not_found_error", "request_too_large":
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// incompleteStreamError describes a stream that ended without the terminal
+// event carrying a stop reason. Callers translate this into a Responses stream,
+// which cannot be terminated without one, so an incomplete stream has to be an
+// error rather than a silently truncated success.
+func incompleteStreamError(backend string, sawContent bool) error {
+	detail := "no content and no stop reason"
+	if sawContent {
+		detail = "content arrived but the stop reason never did"
+	}
+	return &HTTPError{
+		Backend: backend,
+		Status:  http.StatusBadGateway,
+		Body:    "upstream stream ended without a terminal message_delta: " + detail,
+	}
 }
 
 func mapStopReason(reason string) string {

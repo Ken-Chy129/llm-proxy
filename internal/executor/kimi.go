@@ -420,12 +420,25 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	// See claude_oauth.go: usage arrives in two events, accumulate then convert.
 	var au types.AnthropicUsage
 	var hasToolCalls bool
+	var sawContent bool
+	var terminated bool
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
 		data, ok := sseData(scanner.Text())
 		if !ok || data == "[DONE]" {
 			continue
+		}
+		// An in-band error ends the stream: the upstream accepted the request
+		// with a 200 and is only now reporting that it cannot serve it. Return
+		// it as an HTTPError so the chain can treat it exactly like a
+		// pre-header failure and move on to the next provider.
+		if errType, message, isErr := anthropicStreamError(data); isErr {
+			return &usage, &HTTPError{
+				Backend: e.Backend(),
+				Status:  anthropicStreamErrorStatus(errType),
+				Body:    message,
+			}
 		}
 		var event types.AnthropicStreamEvent
 		if json.Unmarshal([]byte(data), &event) != nil {
@@ -466,6 +479,7 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 			}
 			switch delta.Type {
 			case "text_delta":
+				sawContent = true
 				writeSSEChunk(w, types.ChatCompletionChunk{
 					ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 					Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{Content: delta.Text}}},
@@ -501,6 +515,7 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 					finishReason = mapStopReason(delta.StopReason)
 				}
 			}
+			terminated = true
 			writeSSEChunk(w, types.ChatCompletionChunk{
 				ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 				Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{}, FinishReason: &finishReason}},
@@ -510,6 +525,12 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	}
 	if err := scanner.Err(); err != nil {
 		return &usage, err
+	}
+	// No finish_reason means the translated stream cannot be terminated. Report
+	// it here, where the chain can still fall over, rather than letting the
+	// caller discover the unusable stream after the chain has returned.
+	if !terminated {
+		return &usage, incompleteStreamError(e.Backend(), sawContent)
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	return &usage, nil
