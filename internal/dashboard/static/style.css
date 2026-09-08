@@ -547,7 +547,13 @@ rect.cal-future{fill:transparent;}
 .quota-state.is-blocked{background:var(--red-bg);color:var(--red);border-color:rgba(255,95,73,0.35);}
 .quota-state.is-waiting{background:var(--yellow-bg);color:var(--yellow);border-color:rgba(255,204,77,0.35);}
 .quota-state.is-stale{background:var(--bg-3);color:var(--text-1);border-color:var(--border);}
-.quota-stamp{font-size:10px;color:var(--text-2);margin-left:auto;white-space:nowrap;}
+/* The plan name is the flexible part of this row: an enterprise plan id like
+   self_serve_business_prolite is wider than the card, and it is the thing to
+   clip (full name on hover). The timestamp stays whole — a cut-off "3m" says
+   nothing, while "…prolite" still reads. */
+.quota-plan-row{display:flex;align-items:center;gap:6px;margin-bottom:8px;min-width:0;}
+.quota-plan-row .plan-badge{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.quota-stamp{font-size:10px;color:var(--text-2);margin-left:auto;white-space:nowrap;flex:none;}
 .quota-stamp.is-stale{color:var(--yellow);}
 .plan-team{background:var(--accent-soft);color:var(--accent);}
 .plan-pro{background:var(--yellow-bg);color:var(--yellow);}
