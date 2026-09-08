@@ -240,20 +240,27 @@ func (e *Chain) SupportsResponses() bool {
 	return false
 }
 
-// HasMixedResponsesSupport reports whether this chain combines providers that
-// speak native Responses with providers that need the Chat Completions adapter.
-// The Responses handler must preserve the configured order in that case instead
-// of choosing one protocol for the whole chain.
-func (e *Chain) HasMixedResponsesSupport() bool {
-	native, adapted := false, false
+// NeedsResponsesAdapter reports whether serving a Responses request on this
+// chain requires translating at least one provider's Chat Completions output.
+//
+// Every such chain must be served through OpenResponsesStreamWithAdapter, not
+// only the ones that mix protocols. The adapter path buffers each provider's
+// translated stream and validates it before returning, so a provider that
+// produces an unusable stream — an upstream error event, or a stream that ends
+// with no stop reason — fails while the chain can still move to the next
+// provider. Serving the same chain through ExecuteStream instead defeats that:
+// the translator writes its opening chunk immediately, so firstWriteTracker
+// treats the attempt as committed and refuses to fall over, and the missing
+// stop reason is only noticed by the caller once the chain has already
+// returned. That is how a claude_oauth -> relay chain turned a relay failure
+// into a 500 rather than trying the rest of the chain.
+func (e *Chain) NeedsResponsesAdapter() bool {
 	for _, link := range e.links {
-		if _, ok := link.Exec.(ResponsesExecutor); ok {
-			native = true
-		} else {
-			adapted = true
+		if _, ok := link.Exec.(ResponsesExecutor); !ok {
+			return true
 		}
 	}
-	return native && adapted
+	return false
 }
 
 // OpenResponsesStream forwards the native Responses protocol. Like the

@@ -119,7 +119,7 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 	// ended up serving.
 	c.Request = c.Request.WithContext(ctx)
 
-	if chain, ok := exec.(*executor.Chain); ok && chain.HasMixedResponsesSupport() {
+	if chain, ok := exec.(*executor.Chain); ok && chain.NeedsResponsesAdapter() {
 		var chatReq *types.ChatCompletionRequest
 		var conversionErr error
 		var adaptedUsage *types.Usage
