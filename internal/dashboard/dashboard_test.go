@@ -94,7 +94,7 @@ func TestStatusRefreshPatchesRenderedListsInsteadOfReplacingThem(t *testing.T) {
 		"function syncKeyedHTML(",
 		"syncKeyedHTML(oauthEl,",
 		"syncKeyedHTML(apiEl,",
-		"syncKeyedHTML(qGrid,",
+		"syncKeyedHTML(grid, cards)",
 		"syncHTML(sel,",
 	} {
 		if !strings.Contains(script, want) {
@@ -513,5 +513,19 @@ func TestQuotaCardsReflectWhetherTheAccountCanServe(t *testing.T) {
 	}
 	if !strings.Contains(string(index), `id="quota-serving"`) {
 		t.Error("quota tab has no serving-count readout")
+	}
+	// The tiers are sections, not just sort positions: each needs its own grid
+	// so a reader can see where one state ends and the next begins.
+	for _, want := range []string{
+		`id="quota-grid-serving"`,
+		`id="quota-grid-waiting"`,
+		`id="quota-grid-blocked"`,
+	} {
+		if !strings.Contains(string(index), want) {
+			t.Errorf("quota tab does not split tiers into sections: missing %q", want)
+		}
+	}
+	if !strings.Contains(script, "quota-tier-${tier}") {
+		t.Error("quota renderer does not populate the per-tier sections")
 	}
 }

@@ -73,7 +73,18 @@
         </div>
         <button class="btn btn-secondary" style="padding:3px 10px;font-size:11px" onclick="syncModels()">Refresh</button>
       </div>
-      <div id="quota-grid" class="quota-grid"></div>
+      <div class="quota-tier" id="quota-tier-serving" style="display:none">
+        <h4 class="quota-tier-head is-serving"><span class="quota-tier-name">Serving</span><span class="quota-tier-count"></span><span class="quota-tier-hint">spendable now</span></h4>
+        <div id="quota-grid-serving" class="quota-grid"></div>
+      </div>
+      <div class="quota-tier" id="quota-tier-waiting" style="display:none">
+        <h4 class="quota-tier-head is-waiting"><span class="quota-tier-name">Waiting</span><span class="quota-tier-count"></span><span class="quota-tier-hint">rate-limited · comes back on its own</span></h4>
+        <div id="quota-grid-waiting" class="quota-grid"></div>
+      </div>
+      <div class="quota-tier" id="quota-tier-blocked" style="display:none">
+        <h4 class="quota-tier-head is-blocked"><span class="quota-tier-name">Needs attention</span><span class="quota-tier-count"></span><span class="quota-tier-hint">paused or revoked · needs you to act</span></h4>
+        <div id="quota-grid-blocked" class="quota-grid"></div>
+      </div>
       <div id="quota-empty" class="text-muted" style="display:none;font-size:13px;padding:8px 0">No quota or balance data yet.</div>
     </div>
   </div>

@@ -457,14 +457,15 @@ async function loadStatus() {
     if (b.quotas) allQuotas = allQuotas.concat(b.quotas.map(q => ({...q, provider: b.account || b.name})));
   });
   // Three tiers, in the order an operator acts on them: what is spendable now,
-  // what comes back by itself, and what is waiting on a person. Sorting only by
-  // "can it serve" buried the last group behind rate limits that clear
-  // themselves in an hour. Order within a tier is left as the server sent it,
-  // so cards do not shuffle between polls.
+  // what comes back by itself, and what is waiting on a person. Each tier gets
+  // its own section rather than a position in one grid: with six cards the eye
+  // could not tell where "serving" ended and "waiting" began, and the paused
+  // card read as one more dim tile instead of the one thing needing a hand.
+  // Order within a tier is left as the server sent it, so cards do not shuffle
+  // between polls.
   const TIER_ORDER = { serving: 0, waiting: 1, blocked: 2 };
   const tierOf = q => q.tier || (q.serving === false ? 'blocked' : 'serving');
   allQuotas.sort((a, b) => (TIER_ORDER[tierOf(a)] ?? 0) - (TIER_ORDER[tierOf(b)] ?? 0));
-  const qGrid = document.getElementById('quota-grid');
   const qEmpty = document.getElementById('quota-empty');
   qEmpty.style.display = allQuotas.length ? 'none' : '';
   // The headline answers "what can I spend now"; the blocked count is called out
@@ -540,7 +541,19 @@ async function loadStatus() {
         html: `<div class="quota-card${blocked ? ' is-blocked' : waiting ? ' is-waiting' : ''}" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(displayName || '')}</span>${refreshBtn}</div><div style="display:flex;align-items:center;gap:6px;margin-bottom:8px"><span class="plan-badge ${planCls}">${escapeHTML(planLabel)}</span>${fetchedAt}</div>${stateBadge}${rows}</div>`,
       };
     });
-    syncKeyedHTML(qGrid, quotaCards);
+    // One section per tier; a tier with nothing in it disappears entirely so
+    // the healthy case is a single "Serving" block, not three headers with two
+    // empty ones.
+    Object.keys(TIER_ORDER).forEach(tier => {
+      const section = document.getElementById(`quota-tier-${tier}`);
+      const grid = document.getElementById(`quota-grid-${tier}`);
+      if (!section || !grid) return;
+      const cards = quotaCards.filter((_, i) => tierOf(allQuotas[i]) === tier);
+      section.style.display = cards.length ? '' : 'none';
+      const count = section.querySelector('.quota-tier-count');
+      if (count) count.textContent = cards.length ? `(${cards.length})` : '';
+      syncKeyedHTML(grid, cards);
+    });
   }
 
   // Grouped by chain membership, not by which provider happens to be serving:

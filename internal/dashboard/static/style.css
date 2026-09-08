@@ -517,6 +517,17 @@ rect.cal-future{fill:transparent;}
 .quota-section h3{font-family:var(--display);font-size:13px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-1);}
 .quota-section h3::before{content:'// ';color:var(--accent-dim);}
 .quota-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:12px;}
+.quota-tier{margin-bottom:22px;}
+.quota-tier:last-of-type{margin-bottom:0;}
+.quota-tier-head{display:flex;align-items:baseline;gap:8px;margin:0 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border);font-family:var(--display);font-size:11px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--text-1);}
+.quota-tier-head::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--text-2);align-self:center;flex:none;}
+.quota-tier-head.is-serving::before{background:var(--green);box-shadow:0 0 6px var(--green);}
+.quota-tier-head.is-waiting::before{background:var(--yellow);}
+.quota-tier-head.is-blocked::before{background:var(--red);}
+.quota-tier-head.is-waiting .quota-tier-name{color:var(--yellow);}
+.quota-tier-head.is-blocked .quota-tier-name{color:var(--red);}
+.quota-tier-count{font-family:var(--mono);color:var(--text-2);letter-spacing:0;}
+.quota-tier-hint{font-family:var(--mono);font-size:10px;font-weight:400;letter-spacing:.3px;text-transform:none;color:var(--text-2);margin-left:auto;}
 .quota-serving{font-family:var(--mono);font-size:11px;color:var(--text-2);letter-spacing:.3px;}
 /* Something in the grid needs a person: the count says so without shouting. */
 .quota-serving.has-blocked{color:var(--red);}
