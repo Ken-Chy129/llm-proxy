@@ -210,3 +210,21 @@ func TestQuotaTierSeparatesSelfHealingFromHumanAction(t *testing.T) {
 		}
 	}
 }
+
+// Real caches on disk predate the persisted epoch. Those snapshots have real
+// numbers but no verifiable age, and showing them as ordinary green bars would
+// recreate exactly the false confidence this change removes.
+func TestUndatedSnapshotIsNotPresentedAsCurrent(t *testing.T) {
+	h, _ := quotaStatusFixture(t)
+	legacy := auth.QuotaCache.Get("claude:dead@example.com")
+	legacy.FetchedTime = time.Time{}
+	legacy.FetchedUnix = 0
+
+	card := quotaFor(t, statusQuotas(t, h), "dead@example.com")
+	if card["stale"] != true {
+		t.Errorf("undated snapshot stale = %v, want true", card["stale"])
+	}
+	if age, _ := card["stale_age"].(string); age != "age unknown" {
+		t.Errorf("stale_age = %q, want \"age unknown\"", age)
+	}
+}

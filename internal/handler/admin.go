@@ -154,6 +154,14 @@ func newQuotaView(q *auth.QuotaInfo, state, detail string, now time.Time) quotaV
 	if age, ok := q.Age(now); ok {
 		v.StaleAge = humanAge(age)
 		v.Stale = age > quotaStaleAfter
+	} else if q.HasRealData {
+		// A snapshot with real numbers but no timestamp comes from a cache written
+		// before the epoch was persisted, which by definition predates this build.
+		// Treating "age unknown" as fresh would paint the oldest readings in the
+		// file as ordinary green bars — the exact false confidence this change
+		// exists to remove. Unverifiable is not the same as current.
+		v.Stale = true
+		v.StaleAge = "age unknown"
 	}
 	return v
 }
