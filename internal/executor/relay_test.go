@@ -3,6 +3,7 @@ package executor
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,38 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/tidwall/gjson"
 )
+
+func countTopLevelCacheBreakpoints(body []byte) int {
+	var value interface{}
+	if json.Unmarshal(body, &value) != nil {
+		return 0
+	}
+	var count func(interface{}) int
+	count = func(value interface{}) int {
+		switch value := value.(type) {
+		case map[string]interface{}:
+			n := 0
+			if value["cache_control"] != nil {
+				n++
+			}
+			for key, child := range value {
+				if key != "cache_control" {
+					n += count(child)
+				}
+			}
+			return n
+		case []interface{}:
+			n := 0
+			for _, child := range value {
+				n += count(child)
+			}
+			return n
+		default:
+			return 0
+		}
+	}
+	return count(value)
+}
 
 func TestRelayServesNothingUntilRoutingAssignsModels(t *testing.T) {
 	exec := NewRelayExecutor(config.RelayConfig{})
@@ -85,6 +118,85 @@ func TestRelayExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
 	forwarded, _ := json.Marshal(gotBody)
 	if strings.Contains(string(forwarded), `"cache_control"`) {
 		t.Fatal("native Messages passthrough must not invent cache breakpoints")
+	}
+}
+
+func TestRelayPassthroughBridgesLongPromptCacheLookback(t *testing.T) {
+	assistantBlocks := make([]map[string]interface{}, 0, 22)
+	for i := 0; i < 22; i++ {
+		assistantBlocks = append(assistantBlocks, map[string]interface{}{
+			"type":      "text",
+			"text":      fmt.Sprintf("block-%d", i),
+			"extension": fmt.Sprintf("keep-%d", i),
+		})
+	}
+	body, err := json.Marshal(map[string]interface{}{
+		"model":      "claude-fable-5-1",
+		"max_tokens": 32,
+		"context_management": map[string]interface{}{
+			"edits": []interface{}{},
+		},
+		"tools": []map[string]interface{}{{
+			"name": "shell", "input_schema": map[string]string{"type": "object"},
+			"cache_control": map[string]string{"type": "ephemeral"},
+		}},
+		"system": []map[string]interface{}{{
+			"type": "text", "text": "system",
+			"cache_control": map[string]string{"type": "ephemeral"},
+		}},
+		"messages": []map[string]interface{}{
+			{"role": "user", "content": []map[string]interface{}{{"type": "text", "text": "previous request tail"}}},
+			{"role": "assistant", "content": assistantBlocks},
+			{"role": "user", "content": []map[string]interface{}{{
+				"type": "tool_result", "tool_use_id": "toolu_21", "content": "done",
+				"cache_control": map[string]string{"type": "ephemeral"},
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := addRelayCacheLookbackBridge(body)
+	if count := countTopLevelCacheBreakpoints(got); count != 4 {
+		t.Fatalf("cache breakpoints = %d, want 4: %s", count, got)
+	}
+	if bridge := gjson.GetBytes(got, "messages.0.content.0.cache_control.type").String(); bridge != "ephemeral" {
+		t.Fatalf("bridge cache breakpoint = %q, want ephemeral: %s", bridge, got)
+	}
+	if tail := gjson.GetBytes(got, "messages.2.content.0.cache_control.type").String(); tail != "ephemeral" {
+		t.Fatalf("client tail cache breakpoint was lost: %s", got)
+	}
+	if extension := gjson.GetBytes(got, "messages.1.content.1.extension").String(); extension != "keep-1" {
+		t.Fatalf("unmodelled content field was lost: %s", got)
+	}
+	if !gjson.GetBytes(got, "context_management.edits").IsArray() {
+		t.Fatalf("top-level Claude Code extension was lost: %s", got)
+	}
+
+	exec := NewRelayExecutor(config.RelayConfig{})
+	exec.SetModels([]config.ModelConfig{{Name: "claude-fable-5-1", Model: "upstream-fable-5-1"}})
+	forwarded, err := exec.rewriteAnthropicModel(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model := gjson.GetBytes(forwarded, "model").String(); model != "upstream-fable-5-1" {
+		t.Fatalf("upstream model = %q", model)
+	}
+	if bridge := gjson.GetBytes(forwarded, "messages.0.content.0.cache_control.type").String(); bridge != "ephemeral" {
+		t.Fatalf("relay production path omitted bridge breakpoint: %s", forwarded)
+	}
+}
+
+func TestRelayPassthroughLeavesNearbyAndFullCacheBreakpointsAlone(t *testing.T) {
+	nearby := []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"},{"type":"text","text":"c","cache_control":{"type":"ephemeral"}}]}]}`)
+	if got := addRelayCacheLookbackBridge(nearby); string(got) != string(nearby) {
+		t.Fatalf("nearby breakpoint request changed:\n%s", got)
+	}
+
+	full := []byte(`{"model":"m","metadata":{"trace":"keep-me"},"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b","cache_control":{"type":"ephemeral"}},{"type":"text","text":"c","cache_control":{"type":"ephemeral"}},{"type":"text","text":"d","cache_control":{"type":"ephemeral"}}]}]}`)
+	if got := addRelayCacheLookbackBridge(full); string(got) != string(full) {
+		t.Fatalf("four-breakpoint request changed:\n%s", got)
 	}
 }
 

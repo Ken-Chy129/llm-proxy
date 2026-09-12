@@ -17,6 +17,8 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/google/uuid"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -798,7 +800,141 @@ func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model is required")
 	}
 	payload["model"], _ = json.Marshal(e.resolveModel(model))
-	return json.Marshal(payload)
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	if e.promptCaching {
+		rewritten = addRelayCacheLookbackBridge(rewritten)
+	}
+	return rewritten, nil
+}
+
+const (
+	maxAnthropicCacheBreakpoints = 4
+	cacheLookbackBlocks          = 20
+)
+
+// addRelayCacheLookbackBridge keeps long native Messages conversations inside
+// Anthropic's cache lookback window. Claude Code marks the growing tail, but a
+// tool-heavy turn can add more than 20 content blocks between two requests. In
+// that case the next tail marker cannot discover the preceding cached prefix
+// and the upstream rewrites the whole conversation on every turn.
+//
+// The last block before the newest assistant message is the previous request's
+// tail, so marking that exact prefix reconnects the current request to a cache
+// entry the client already created. Client-owned markers stay untouched,
+// unknown message/block fields are retained, and Anthropic's four-breakpoint
+// limit is never exceeded.
+func addRelayCacheLookbackBridge(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil {
+		return body
+	}
+	breakpointCount := countCacheControlsInArray(payload["tools"]) + countCacheControlsInArray(payload["system"])
+	var messages []json.RawMessage
+	if json.Unmarshal(payload["messages"], &messages) != nil {
+		return body
+	}
+
+	type blockLocation struct{ message, block int }
+	locations := make([]blockLocation, 0)
+	breakpoints := make([]int, 0)
+	contents := make([][]json.RawMessage, len(messages))
+	messageObjects := make([]map[string]json.RawMessage, len(messages))
+	roles := make([]string, len(messages))
+	for messageIndex, rawMessage := range messages {
+		var message map[string]json.RawMessage
+		if json.Unmarshal(rawMessage, &message) != nil {
+			return body
+		}
+		_ = json.Unmarshal(message["role"], &roles[messageIndex])
+		var blocks []json.RawMessage
+		if json.Unmarshal(message["content"], &blocks) != nil {
+			continue // String content has no block on which to hang cache_control.
+		}
+		messageObjects[messageIndex] = message
+		contents[messageIndex] = blocks
+		for blockIndex, block := range blocks {
+			locations = append(locations, blockLocation{messageIndex, blockIndex})
+			if gjson.GetBytes(block, "cache_control").Exists() {
+				breakpointCount++
+				breakpoints = append(breakpoints, len(locations)-1)
+			}
+		}
+	}
+	if breakpointCount >= maxAnthropicCacheBreakpoints {
+		return body
+	}
+	if len(breakpoints) == 0 {
+		return body // Do not opt a client into caching when it did not ask for it.
+	}
+
+	tail := breakpoints[len(breakpoints)-1]
+	if tail != len(locations)-1 || tail < cacheLookbackBlocks {
+		return body
+	}
+	if len(breakpoints) > 1 && tail-breakpoints[len(breakpoints)-2] <= cacheLookbackBlocks {
+		return body
+	}
+	lastAssistant := -1
+	for messageIndex := len(roles) - 1; messageIndex >= 0; messageIndex-- {
+		if roles[messageIndex] == "assistant" {
+			lastAssistant = messageIndex
+			break
+		}
+	}
+	if lastAssistant <= 0 {
+		return body
+	}
+	target := -1
+	for index := len(locations) - 1; index >= 0; index-- {
+		if locations[index].message < lastAssistant {
+			target = index
+			break
+		}
+	}
+	if target < 0 || tail-target <= cacheLookbackBlocks {
+		return body
+	}
+	location := locations[target]
+	block, err := sjson.SetRawBytes(contents[location.message][location.block], "cache_control", []byte(`{"type":"ephemeral"}`))
+	if err != nil {
+		return body
+	}
+	contents[location.message][location.block] = block
+	content, err := json.Marshal(contents[location.message])
+	if err != nil {
+		return body
+	}
+	messageObjects[location.message]["content"] = content
+	messages[location.message], err = json.Marshal(messageObjects[location.message])
+	if err != nil {
+		return body
+	}
+	payload["messages"], err = json.Marshal(messages)
+	if err != nil {
+		return body
+	}
+	bridged, err := json.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return bridged
+}
+
+func countCacheControlsInArray(raw json.RawMessage) int {
+	var items []json.RawMessage
+	if json.Unmarshal(raw, &items) != nil {
+		return 0
+	}
+	total := 0
+	for _, item := range items {
+		if gjson.GetBytes(item, "cache_control").Exists() {
+			total++
+		}
+	}
+	return total
 }
 
 func (e *KimiExecutor) executeAnthropicPassthroughRaw(ctx context.Context, body []byte, clientHeaders http.Header) ([]byte, int, error) {
