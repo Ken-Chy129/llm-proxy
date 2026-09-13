@@ -157,7 +157,10 @@ func TestRelayPassthroughBridgesLongPromptCacheLookback(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := addRelayCacheLookbackBridge(body)
+	got, diagnostic := addRelayCacheLookbackBridgeWithDiagnostic(body)
+	if diagnostic.Action != "bridged" || diagnostic.Reason != "lookback_gap" || diagnostic.Bridge != "message:0/block:0" {
+		t.Fatalf("unexpected bridge diagnostic: %s", diagnostic.String())
+	}
 	if count := countTopLevelCacheBreakpoints(got); count != 4 {
 		t.Fatalf("cache breakpoints = %d, want 4: %s", count, got)
 	}
@@ -195,8 +198,32 @@ func TestRelayPassthroughLeavesNearbyAndFullCacheBreakpointsAlone(t *testing.T) 
 	}
 
 	full := []byte(`{"model":"m","metadata":{"trace":"keep-me"},"messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b","cache_control":{"type":"ephemeral"}},{"type":"text","text":"c","cache_control":{"type":"ephemeral"}},{"type":"text","text":"d","cache_control":{"type":"ephemeral"}}]}]}`)
-	if got := addRelayCacheLookbackBridge(full); string(got) != string(full) {
+	got, diagnostic := addRelayCacheLookbackBridgeWithDiagnostic(full)
+	if string(got) != string(full) {
 		t.Fatalf("four-breakpoint request changed:\n%s", got)
+	}
+	if diagnostic.Action != "skip" || diagnostic.Reason != "breakpoint_limit" {
+		t.Fatalf("unexpected full-breakpoint diagnostic: %s", diagnostic.String())
+	}
+}
+
+func TestRelayCacheDiagnosticReportsShapeWithoutPromptContent(t *testing.T) {
+	body := []byte(`{"model":"claude-fable-5-1","tools":[{"name":"secret-tool","cache_control":{"type":"ephemeral"}}],"system":[{"type":"text","text":"secret-system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"secret-user"}]},{"role":"assistant","content":[{"type":"text","text":"secret-assistant"}]},{"role":"user","content":[{"type":"text","text":"secret-tail","cache_control":{"type":"ephemeral"}}]}]}`)
+
+	report := inspectRelayCacheRequest(body)
+	got := report.String()
+	for _, want := range []string{
+		"model=claude-fable-5-1", "messages=3", "blocks=3",
+		"shape=user:1,assistant:1,user:1", "breakpoints=tool:0,system:0,message:2/block:0",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("diagnostic %q missing %q", got, want)
+		}
+	}
+	for _, secret := range []string{"secret-tool", "secret-system", "secret-user", "secret-assistant", "secret-tail"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("diagnostic leaked prompt content %q: %s", secret, got)
+		}
 	}
 }
 

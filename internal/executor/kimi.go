@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -805,7 +806,9 @@ func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
 		return nil, err
 	}
 	if e.promptCaching {
-		rewritten = addRelayCacheLookbackBridge(rewritten)
+		var diagnostic relayCacheDiagnostic
+		rewritten, diagnostic = addRelayCacheLookbackBridgeWithDiagnostic(rewritten)
+		log.Printf("[relay-cache] %s", diagnostic.String())
 	}
 	return rewritten, nil
 }
@@ -826,15 +829,99 @@ const (
 // entry the client already created. Client-owned markers stay untouched,
 // unknown message/block fields are retained, and Anthropic's four-breakpoint
 // limit is never exceeded.
-func addRelayCacheLookbackBridge(body []byte) []byte {
+type relayCacheDiagnostic struct {
+	Model       string
+	Messages    int
+	Blocks      int
+	Shape       []string
+	Breakpoints []string
+	Action      string
+	Reason      string
+	Bridge      string
+}
+
+func (d relayCacheDiagnostic) String() string {
+	breakpoints := strings.Join(d.Breakpoints, ",")
+	if breakpoints == "" {
+		breakpoints = "none"
+	}
+	shape := strings.Join(d.Shape, ",")
+	if shape == "" {
+		shape = "none"
+	}
+	return fmt.Sprintf("model=%s messages=%d blocks=%d shape=%s breakpoints=%s action=%s reason=%s bridge=%s",
+		d.Model, d.Messages, d.Blocks, shape, breakpoints, d.Action, d.Reason, d.Bridge)
+}
+
+func inspectRelayCacheRequest(body []byte) relayCacheDiagnostic {
+	d := relayCacheDiagnostic{Action: "inspect", Reason: "pending", Bridge: "none"}
 	var payload map[string]json.RawMessage
 	if json.Unmarshal(body, &payload) != nil {
-		return body
+		d.Reason = "invalid_json"
+		return d
+	}
+	_ = json.Unmarshal(payload["model"], &d.Model)
+	for _, section := range []string{"tools", "system"} {
+		var items []json.RawMessage
+		if json.Unmarshal(payload[section], &items) != nil {
+			continue
+		}
+		for index, item := range items {
+			if gjson.GetBytes(item, "cache_control").Exists() {
+				d.Breakpoints = append(d.Breakpoints, fmt.Sprintf("%s:%d", strings.TrimSuffix(section, "s"), index))
+			}
+		}
+	}
+	var messages []json.RawMessage
+	if json.Unmarshal(payload["messages"], &messages) != nil {
+		d.Reason = "invalid_messages"
+		return d
+	}
+	d.Messages = len(messages)
+	for messageIndex, rawMessage := range messages {
+		var message map[string]json.RawMessage
+		if json.Unmarshal(rawMessage, &message) != nil {
+			d.Shape = append(d.Shape, "invalid:0")
+			continue
+		}
+		var role string
+		_ = json.Unmarshal(message["role"], &role)
+		var blocks []json.RawMessage
+		if json.Unmarshal(message["content"], &blocks) != nil {
+			d.Shape = append(d.Shape, role+":string")
+			continue
+		}
+		d.Blocks += len(blocks)
+		d.Shape = append(d.Shape, fmt.Sprintf("%s:%d", role, len(blocks)))
+		for blockIndex, block := range blocks {
+			if gjson.GetBytes(block, "cache_control").Exists() {
+				d.Breakpoints = append(d.Breakpoints, fmt.Sprintf("message:%d/block:%d", messageIndex, blockIndex))
+			}
+		}
+	}
+	return d
+}
+
+func addRelayCacheLookbackBridge(body []byte) []byte {
+	bridged, _ := addRelayCacheLookbackBridgeWithDiagnostic(body)
+	return bridged
+}
+
+func addRelayCacheLookbackBridgeWithDiagnostic(body []byte) ([]byte, relayCacheDiagnostic) {
+	diagnostic := inspectRelayCacheRequest(body)
+	skip := func(reason string) ([]byte, relayCacheDiagnostic) {
+		diagnostic.Action = "skip"
+		diagnostic.Reason = reason
+		return body, diagnostic
+	}
+	var payload map[string]json.RawMessage
+	if json.Unmarshal(body, &payload) != nil {
+		return skip("invalid_json")
 	}
 	breakpointCount := countCacheControlsInArray(payload["tools"]) + countCacheControlsInArray(payload["system"])
 	var messages []json.RawMessage
 	if json.Unmarshal(payload["messages"], &messages) != nil {
-		return body
+		return skip("invalid_messages")
 	}
 
 	type blockLocation struct{ message, block int }
@@ -846,7 +933,7 @@ func addRelayCacheLookbackBridge(body []byte) []byte {
 	for messageIndex, rawMessage := range messages {
 		var message map[string]json.RawMessage
 		if json.Unmarshal(rawMessage, &message) != nil {
-			return body
+			return skip("invalid_message")
 		}
 		_ = json.Unmarshal(message["role"], &roles[messageIndex])
 		var blocks []json.RawMessage
@@ -864,18 +951,18 @@ func addRelayCacheLookbackBridge(body []byte) []byte {
 		}
 	}
 	if breakpointCount >= maxAnthropicCacheBreakpoints {
-		return body
+		return skip("breakpoint_limit")
 	}
 	if len(breakpoints) == 0 {
-		return body // Do not opt a client into caching when it did not ask for it.
+		return skip("no_message_breakpoint") // Do not opt a client into caching when it did not ask for it.
 	}
 
 	tail := breakpoints[len(breakpoints)-1]
 	if tail != len(locations)-1 || tail < cacheLookbackBlocks {
-		return body
+		return skip("tail_not_eligible")
 	}
 	if len(breakpoints) > 1 && tail-breakpoints[len(breakpoints)-2] <= cacheLookbackBlocks {
-		return body
+		return skip("nearby_message_breakpoint")
 	}
 	lastAssistant := -1
 	for messageIndex := len(roles) - 1; messageIndex >= 0; messageIndex-- {
@@ -885,7 +972,7 @@ func addRelayCacheLookbackBridge(body []byte) []byte {
 		}
 	}
 	if lastAssistant <= 0 {
-		return body
+		return skip("no_previous_turn")
 	}
 	target := -1
 	for index := len(locations) - 1; index >= 0; index-- {
@@ -895,32 +982,35 @@ func addRelayCacheLookbackBridge(body []byte) []byte {
 		}
 	}
 	if target < 0 || tail-target <= cacheLookbackBlocks {
-		return body
+		return skip("previous_turn_within_lookback")
 	}
 	location := locations[target]
 	block, err := sjson.SetRawBytes(contents[location.message][location.block], "cache_control", []byte(`{"type":"ephemeral"}`))
 	if err != nil {
-		return body
+		return skip("bridge_set_failed")
 	}
 	contents[location.message][location.block] = block
 	content, err := json.Marshal(contents[location.message])
 	if err != nil {
-		return body
+		return skip("content_marshal_failed")
 	}
 	messageObjects[location.message]["content"] = content
 	messages[location.message], err = json.Marshal(messageObjects[location.message])
 	if err != nil {
-		return body
+		return skip("message_marshal_failed")
 	}
 	payload["messages"], err = json.Marshal(messages)
 	if err != nil {
-		return body
+		return skip("messages_marshal_failed")
 	}
 	bridged, err := json.Marshal(payload)
 	if err != nil {
-		return body
+		return skip("request_marshal_failed")
 	}
-	return bridged
+	diagnostic.Action = "bridged"
+	diagnostic.Reason = "lookback_gap"
+	diagnostic.Bridge = fmt.Sprintf("message:%d/block:%d", location.message, location.block)
+	return bridged, diagnostic
 }
 
 func countCacheControlsInArray(raw json.RawMessage) int {
