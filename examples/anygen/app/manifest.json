@@ -1,0 +1,10 @@
+{
+  "name": "LLM Proxy",
+  "appName": "LLM Proxy",
+  "description": "Private OpenAI-compatible Chat Completions and Models endpoints.",
+  "capabilities": ["llm"],
+  "teamVisible": false,
+  "version": "0.2.0",
+  "manifestVersion": "0.1",
+  "kitVersion": 1
+}

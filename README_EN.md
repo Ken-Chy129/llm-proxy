@@ -151,6 +151,8 @@ Claude Code `/v1/messages` traffic is passed through natively; OpenAI Chat Compl
 
 ### AnyGen through the proxy
 
+To create a direct-call AnyGen API, see the [provision command, guide and repository skill](docs/anygen-proxy.md) (Chinese). It creates an Agent, deploys a fixed App and provisions publication/key grants, delivering a Base URL and privately saved key. It does not start or configure this proxy. Creation and a single paid smoke test are explicit opt-ins.
+
 The AnyGen `sk-ag` key is read only from an environment variable:
 
 ```bash
@@ -162,7 +164,7 @@ Grant the key exactly the app's `Chat Completions` and `Models` actions with `wh
 ```yaml
 anygen:
   enabled: true
-  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
 
 models:
@@ -170,7 +172,7 @@ models:
     providers: [anygen]
 ```
 
-At startup the proxy calls upstream `GET /models` and registers the visible models dynamically. The model-list request invokes no model and consumes no credits. AnyGen Chat Completions is non-streaming only; `stream:true` is rejected explicitly. Credits are fetched from the platform-native `GET https://www.anygen.io/v1/openapi/key/verify` endpoint, outside the app's `/api/v1` base URL, and shown on the AnyGen Backend card.
+At startup the proxy calls upstream `GET /models` to populate its candidate catalog; only models in the routing table or explicitly published through the dashboard are served. Listing models invokes no model and consumes no credits. The AnyGen upstream is non-streaming; this proxy can wait for the completed result and adapt it to Chat Completions or typed Responses SSE, including function calls. This is not incremental token streaming. Credits come from the platform-native `GET https://www.anygen.io/v1/openapi/key/verify`, outside the app base URL, and appear on the dashboard's Quota page. App action grants do not restrict every other platform permission of the owner's `sk-ag` key; do not distribute that upstream credential.
 
 Claude Code:
 
@@ -289,7 +291,7 @@ relay:
 
 anygen:
   enabled: true
-  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
 
 # Default order per series. A model's series comes from its name prefix.

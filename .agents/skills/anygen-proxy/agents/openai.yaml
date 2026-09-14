@@ -1,0 +1,4 @@
+interface:
+  display_name: "AnyGen 代理复刻"
+  short_description: "自动创建 AnyGen App，交付可直连 URL 与 Key 并验收链路"
+  default_prompt: "用 $anygen-proxy 创建可直连的 AnyGen Base URL 和 Key，先预览 provision 计划，再确认创建与一次模型验收，不配置或重启 llm-proxy。"

@@ -2,6 +2,9 @@ llm-proxy
 *.db
 .idea/
 *.json
+!examples/anygen/manifest.json
+!examples/anygen/app/manifest.json
+!examples/anygen/app/package.json
 !config.yaml
 config.yaml
 llm-proxy-linux
@@ -12,3 +15,5 @@ llm-proxy-linux-amd64
 .env.*
 !.env.example
 .learnings/
+__pycache__/
+.anygen-proxy/

@@ -62,9 +62,10 @@ relay:
 # non-streaming only. /v1/responses waits for the completed result and adapts it
 # to typed Responses SSE for clients such as Codex CLI. Credits come from the
 # platform-native /v1/openapi/key/verify endpoint, outside this app base URL.
+# Provision your own app/ref first; see docs/anygen-proxy.md.
 anygen:
   enabled: false
-  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
 
 # --- Series defaults -------------------------------------------------------

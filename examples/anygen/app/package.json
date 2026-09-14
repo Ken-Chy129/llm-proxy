@@ -1,0 +1,9 @@
+{
+  "name": "anygen-llm-proxy",
+  "private": true,
+  "dependencies": {
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "zod": "3.25.76"
+  }
+}

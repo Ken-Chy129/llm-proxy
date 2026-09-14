@@ -1,0 +1,9 @@
+{
+  "name": "LLM Proxy",
+  "appName": "LLM Proxy",
+  "description": "Private OpenAI-compatible model access through AnyGen.",
+  "capabilities": ["llm"],
+  "version": "0.1.0",
+  "manifestVersion": "0.1",
+  "kitVersion": 1
+}

@@ -154,6 +154,8 @@ Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions �
 
 ### 通过代理使用 AnyGen
 
+需要创建自己的 AnyGen API？见[provision 创建命令、完整流程和 Skill](docs/anygen-proxy.md)。自动创建 Agent、部署固定 App、建立 publication 并授权，交付可直连的 URL + Key；不依赖启动本代理，也不会修改其配置。默认只预览，线上创建和一次付费验收需显式开启。
+
 AnyGen 的 `sk-ag` Key 只从环境变量读取：
 
 ```bash
@@ -165,7 +167,7 @@ Key 应精确授权 App 的 `Chat Completions` 和 `Models` 两条 action，并�
 ```yaml
 anygen:
   enabled: true
-  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
 
 models:
@@ -173,7 +175,7 @@ models:
     providers: [anygen]
 ```
 
-启动时代理会调用上游 `GET /models` 动态注册当前可见模型；该查询不触发模型调用、不扣积分。AnyGen Chat Completions 仍只支持非流式请求，`stream:true` 会被明确拒绝；Codex CLI 使用的 `/v1/responses` 会由代理等待完整结果后转换为标准 Responses SSE，支持文本和 function call 事件。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 Quota 页面中。
+启动时代理会调用上游 `GET /models` 同步候选目录；对外可用模型仍由 `models` 路由表或 Dashboard 发布动作决定，不会自动开放整个目录。该查询不触发模型调用、不扣积分。AnyGen 上游只支持非流式；本代理可以等待完整结果，再转换为 Chat Completions SSE 或标准 Responses SSE（含 function call 事件），并非实时 token 流。积分通过平台原生的 `GET https://www.anygen.io/v1/openapi/key/verify` 查询，不拼在 App 的 `/api/v1` base URL 下，并显示在 Dashboard 的 Quota 页面中。`sk-ag` 是 owner 的平台凭证，App 的两动作 grant 不代表其全平台权限仅限这两项；不要对外分发上游 Key。
 
 Claude Code：
 
@@ -306,7 +308,7 @@ relay:
 
 anygen:
   enabled: true
-  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/appg4oo4fl2ay7g2u7my4eaqzy/api/v1"
+  base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"          # 这里只写环境变量名，不写 sk-ag Key
 
 # 系列默认顺序。模型属于哪个系列由名字前缀推导，不用手写
