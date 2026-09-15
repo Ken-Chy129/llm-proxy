@@ -28,6 +28,15 @@ type ClaudeOAuthExecutor struct {
 	modelsMu   sync.RWMutex
 }
 
+const defaultClaudeMaxOutputTokens = 64000
+
+func claudeMaxOutputTokens(model string) int {
+	if model == "claude-fable-5-1" {
+		return 128000
+	}
+	return defaultClaudeMaxOutputTokens
+}
+
 func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []config.ModelConfig) *ClaudeOAuthExecutor {
 	return &ClaudeOAuthExecutor{
 		oauth:      oauth,
@@ -250,7 +259,7 @@ func (e *ClaudeOAuthExecutor) Execute(ctx context.Context, req *types.ChatComple
 	ar.Stream = false
 	ar.AnthropicVersion = ""
 	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
-	ar.MaxTokens = 64000
+	ar.MaxTokens = claudeMaxOutputTokens(upstreamModel)
 
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)
@@ -292,7 +301,7 @@ func (e *ClaudeOAuthExecutor) ExecuteStream(ctx context.Context, req *types.Chat
 	ar.Stream = true
 	ar.AnthropicVersion = ""
 	ar.Thinking = &types.ThinkingConfig{Type: "adaptive"}
-	ar.MaxTokens = 64000
+	ar.MaxTokens = claudeMaxOutputTokens(upstreamModel)
 
 	body, _ := json.Marshal(ar)
 	body = injectClaudeCodeSystemBlocks(body)

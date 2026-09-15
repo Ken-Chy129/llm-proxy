@@ -54,6 +54,24 @@ func TestClaudeCodeIdentityVersionMeetsAnthropicModelFloor(t *testing.T) {
 	}
 }
 
+func TestClaudeOAuthMaxOutputTokensIsModelAware(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{model: "claude-fable-5-1", want: 128000},
+		{model: "claude-opus-5", want: 64000},
+		{model: "unknown-claude-model", want: 64000},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			if got := claudeMaxOutputTokens(tt.model); got != tt.want {
+				t.Fatalf("claudeMaxOutputTokens(%q) = %d, want %d", tt.model, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClaudeOAuthExecuteUsesConfiguredUpstreamModel(t *testing.T) {
 	dir := t.TempDir()
 	store := auth.NewTokenStore(dir, auth.StrategyRoundRobin)
