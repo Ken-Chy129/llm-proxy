@@ -958,31 +958,39 @@ func addRelayCacheLookbackBridgeWithDiagnostic(body []byte) ([]byte, relayCacheD
 	}
 
 	tail := breakpoints[len(breakpoints)-1]
-	if tail != len(locations)-1 || tail < cacheLookbackBlocks {
-		return skip("tail_not_eligible")
-	}
-	if len(breakpoints) > 1 && tail-breakpoints[len(breakpoints)-2] <= cacheLookbackBlocks {
-		return skip("nearby_message_breakpoint")
-	}
-	lastAssistant := -1
-	for messageIndex := len(roles) - 1; messageIndex >= 0; messageIndex-- {
-		if roles[messageIndex] == "assistant" {
-			lastAssistant = messageIndex
-			break
-		}
-	}
-	if lastAssistant <= 0 {
-		return skip("no_previous_turn")
-	}
 	target := -1
-	for index := len(locations) - 1; index >= 0; index-- {
-		if locations[index].message < lastAssistant {
-			target = index
-			break
+	reason := "lookback_gap"
+	if tail != len(locations)-1 {
+		// The client marker can intentionally lag behind the current turn.
+		// Mark the current tail so the next request can reuse this exact prefix.
+		target = len(locations) - 1
+		reason = "stale_tail_breakpoint"
+	} else {
+		if tail < cacheLookbackBlocks {
+			return skip("tail_not_eligible")
 		}
-	}
-	if target < 0 || tail-target <= cacheLookbackBlocks {
-		return skip("previous_turn_within_lookback")
+		if len(breakpoints) > 1 && tail-breakpoints[len(breakpoints)-2] <= cacheLookbackBlocks {
+			return skip("nearby_message_breakpoint")
+		}
+		lastAssistant := -1
+		for messageIndex := len(roles) - 1; messageIndex >= 0; messageIndex-- {
+			if roles[messageIndex] == "assistant" {
+				lastAssistant = messageIndex
+				break
+			}
+		}
+		if lastAssistant <= 0 {
+			return skip("no_previous_turn")
+		}
+		for index := len(locations) - 1; index >= 0; index-- {
+			if locations[index].message < lastAssistant {
+				target = index
+				break
+			}
+		}
+		if target < 0 || tail-target <= cacheLookbackBlocks {
+			return skip("previous_turn_within_lookback")
+		}
 	}
 	location := locations[target]
 	block, err := sjson.SetRawBytes(contents[location.message][location.block], "cache_control", []byte(`{"type":"ephemeral"}`))
@@ -1008,7 +1016,7 @@ func addRelayCacheLookbackBridgeWithDiagnostic(body []byte) ([]byte, relayCacheD
 		return skip("request_marshal_failed")
 	}
 	diagnostic.Action = "bridged"
-	diagnostic.Reason = "lookback_gap"
+	diagnostic.Reason = reason
 	diagnostic.Bridge = fmt.Sprintf("message:%d/block:%d", location.message, location.block)
 	return bridged, diagnostic
 }

@@ -191,6 +191,24 @@ func TestRelayPassthroughBridgesLongPromptCacheLookback(t *testing.T) {
 	}
 }
 
+func TestRelayPassthroughExtendsStaleTailBreakpoint(t *testing.T) {
+	body := []byte(`{"model":"claude-fable-5-1","tools":[{"name":"shell","cache_control":{"type":"ephemeral"}}],"system":[{"type":"text","text":"system","cache_control":{"type":"ephemeral"}}],"messages":[{"role":"user","content":[{"type":"text","text":"cached","cache_control":{"type":"ephemeral"}}]},{"role":"assistant","content":[{"type":"text","text":"answer"}]},{"role":"user","content":[{"type":"text","text":"next","extension":"keep"}]}]}`)
+
+	got, diagnostic := addRelayCacheLookbackBridgeWithDiagnostic(body)
+	if diagnostic.Action != "bridged" || diagnostic.Reason != "stale_tail_breakpoint" || diagnostic.Bridge != "message:2/block:0" {
+		t.Fatalf("unexpected tail diagnostic: %s", diagnostic.String())
+	}
+	if count := countTopLevelCacheBreakpoints(got); count != 4 {
+		t.Fatalf("cache breakpoints = %d, want 4: %s", count, got)
+	}
+	if tail := gjson.GetBytes(got, "messages.2.content.0.cache_control.type").String(); tail != "ephemeral" {
+		t.Fatalf("new tail cache breakpoint = %q: %s", tail, got)
+	}
+	if extension := gjson.GetBytes(got, "messages.2.content.0.extension").String(); extension != "keep" {
+		t.Fatalf("tail extension was lost: %s", got)
+	}
+}
+
 func TestRelayPassthroughLeavesNearbyAndFullCacheBreakpointsAlone(t *testing.T) {
 	nearby := []byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"a","cache_control":{"type":"ephemeral"}},{"type":"text","text":"b"},{"type":"text","text":"c","cache_control":{"type":"ephemeral"}}]}]}`)
 	if got := addRelayCacheLookbackBridge(nearby); string(got) != string(nearby) {
