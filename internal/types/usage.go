@@ -12,6 +12,13 @@ type FailureAttempt struct {
 	Error    string `json:"error"`
 }
 
+// DiagnosticArtifact is sensitive provider-bound evidence attached to a
+// failed attempt, such as the exact translated request and raw upstream stream.
+type DiagnosticArtifact struct {
+	Name string
+	Data []byte
+}
+
 // ReasoningUnknown marks a reasoning-token count the upstream never reported.
 // Anthropic folds thinking tokens into output_tokens with no way to separate
 // them, so a Claude-served request genuinely has no answer here — which is a

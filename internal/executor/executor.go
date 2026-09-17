@@ -64,9 +64,17 @@ type attemptRecorder struct {
 
 type ctxAttemptKey struct{}
 
+type artifactRecorder struct {
+	mu        sync.Mutex
+	artifacts []types.DiagnosticArtifact
+}
+
+type ctxArtifactKey struct{}
+
 // WithAttemptRecorder captures every failed account/provider try in order.
 func WithAttemptRecorder(ctx context.Context) context.Context {
-	return context.WithValue(ctx, ctxAttemptKey{}, &attemptRecorder{})
+	ctx = context.WithValue(ctx, ctxAttemptKey{}, &attemptRecorder{})
+	return context.WithValue(ctx, ctxArtifactKey{}, &artifactRecorder{})
 }
 
 // FailureAttempts returns a defensive copy of the request's failed tries.
@@ -77,6 +85,33 @@ func FailureAttempts(ctx context.Context) []types.FailureAttempt {
 		return append([]types.FailureAttempt(nil), r.attempts...)
 	}
 	return nil
+}
+
+// DiagnosticArtifacts returns request-scoped provider evidence for incident
+// capture. It is never exposed through the logs API.
+func DiagnosticArtifacts(ctx context.Context) []types.DiagnosticArtifact {
+	if r, ok := ctx.Value(ctxArtifactKey{}).(*artifactRecorder); ok {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		out := make([]types.DiagnosticArtifact, len(r.artifacts))
+		for i, artifact := range r.artifacts {
+			out[i] = types.DiagnosticArtifact{Name: artifact.Name, Data: append([]byte(nil), artifact.Data...)}
+		}
+		return out
+	}
+	return nil
+}
+
+func recordDiagnosticArtifact(ctx context.Context, name string, data []byte) {
+	const maxArtifactBytes = 32 << 20
+	if len(data) > maxArtifactBytes {
+		data = data[:maxArtifactBytes]
+	}
+	if r, ok := ctx.Value(ctxArtifactKey{}).(*artifactRecorder); ok {
+		r.mu.Lock()
+		r.artifacts = append(r.artifacts, types.DiagnosticArtifact{Name: name, Data: append([]byte(nil), data...)})
+		r.mu.Unlock()
+	}
 }
 
 func recordFailureAttempt(ctx context.Context, attempt types.FailureAttempt) {

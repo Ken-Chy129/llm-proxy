@@ -3,6 +3,7 @@ package incident
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,6 +12,8 @@ import (
 	"testing"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/config"
+	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 )
 
@@ -107,6 +110,34 @@ func TestCapturesCapacity429(t *testing.T) {
 	if entries := captureEntries(t, dir); len(entries) != 1 {
 		t.Fatalf("capacity failure captures=%d, want 1", len(entries))
 	}
+}
+
+func TestCapturesSuccessfulRequestWithNonRateLimitFailedAttempt(t *testing.T) {
+	dir := t.TempDir()
+	r := captureEngine(t, dir, func(c *gin.Context) {
+		ctx := executor.WithAttemptRecorder(c.Request.Context())
+		chain := executor.NewChain([]executor.Link{
+			{Provider: "relay", Exec: &incidentStub{err: &executor.HTTPError{Backend: "relay", Status: 502, Body: "empty upstream stream"}}},
+			{Provider: "claude_oauth", Exec: &incidentStub{}},
+		})
+		_, _ = chain.Execute(ctx, &types.ChatCompletionRequest{Model: "m"})
+		c.Request = c.Request.WithContext(ctx)
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+	post(t, r, `{"model":"claude-fable-5-1"}`)
+	if entries := captureEntries(t, dir); len(entries) != 1 {
+		t.Fatalf("successful fallback captures=%d, want 1", len(entries))
+	}
+}
+
+type incidentStub struct{ err error }
+
+func (s *incidentStub) Models() []string { return []string{"m"} }
+func (s *incidentStub) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	return &types.ChatCompletionResponse{}, s.err
+}
+func (s *incidentStub) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
+	return &types.Usage{}, s.err
 }
 
 func TestDoesNotCaptureClientCancellation(t *testing.T) {

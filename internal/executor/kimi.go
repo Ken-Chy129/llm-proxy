@@ -425,10 +425,16 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	var hasToolCalls bool
 	var sawContent bool
 	var terminated bool
+	var upstreamSSE bytes.Buffer
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for scanner.Scan() {
-		data, ok := sseData(scanner.Text())
+		line := scanner.Text()
+		if e.Backend() == "relay" && upstreamSSE.Len() < 32<<20 {
+			upstreamSSE.WriteString(line)
+			upstreamSSE.WriteByte('\n')
+		}
+		data, ok := sseData(line)
 		if !ok || data == "[DONE]" {
 			continue
 		}
@@ -533,6 +539,10 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	// it here, where the chain can still fall over, rather than letting the
 	// caller discover the unusable stream after the chain has returned.
 	if !terminated {
+		if e.Backend() == "relay" {
+			recordDiagnosticArtifact(ctx, "relay-request.json", body)
+			recordDiagnosticArtifact(ctx, "relay-response.sse", upstreamSSE.Bytes())
+		}
 		return &usage, incompleteStreamError(e.Backend(), sawContent)
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")

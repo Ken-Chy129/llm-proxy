@@ -82,13 +82,15 @@ func CaptureFailures(cfg config.FailureCaptureConfig) gin.HandlerFunc {
 		status := c.Writer.Status()
 		captureErr, _ := c.Get("failure_capture_error")
 		errorText, _ := captureErr.(string)
-		if errorText == "" && status < 400 {
+		attempts := executor.FailureAttempts(c.Request.Context())
+		if errorText == "" && status < 400 && !hasNonRateLimitFailure(attempts) {
 			return
 		}
 		// A 429 is not necessarily quota: providers also use it for transient
 		// overloaded/capacity faults, which are exactly the incidents we need to
-		// reproduce. Exclude only bodies that identify an actual usage/rate limit.
-		if isRateLimit(errorText, writer.body.Bytes()) {
+		// reproduce. Exclude only requests whose every failure is an actual
+		// usage/rate limit.
+		if isRateLimit(errorText, writer.body.Bytes()) && !hasNonRateLimitFailure(attempts) {
 			return
 		}
 		if c.Request.Context().Err() != nil || strings.Contains(strings.ToLower(errorText), "context canceled") {
@@ -159,6 +161,13 @@ func save(dir string, c *gin.Context, request, response []byte, responseTruncate
 			return
 		}
 	}
+	for i, artifact := range executor.DiagnosticArtifacts(c.Request.Context()) {
+		name := fmt.Sprintf("attempt-%02d-%s", i+1, safeFileName(artifact.Name))
+		if err := os.WriteFile(filepath.Join(tmp, name), artifact.Data, 0o600); err != nil {
+			_ = os.RemoveAll(tmp)
+			return
+		}
+	}
 	replay := fmt.Sprintf("#!/bin/sh\nset -eu\n: \"${LLM_PROXY_API_KEY:?set LLM_PROXY_API_KEY}\"\ncurl -N --fail-with-body \"${LLM_PROXY_BASE_URL:?set LLM_PROXY_BASE_URL}%s\" \\\n+  -H \"Authorization: Bearer $LLM_PROXY_API_KEY\" \\\n+  -H \"Content-Type: application/json\" \\\n+  --data-binary @request.json\n", c.Request.URL.Path)
 	replay = strings.ReplaceAll(replay, "\n+  ", "\n  ")
 	if err := os.WriteFile(filepath.Join(tmp, "replay.sh"), []byte(replay), 0o700); err != nil {
@@ -214,6 +223,31 @@ func isRateLimit(errText string, body []byte) bool {
 		strings.Contains(s, "rate limit has been reached") ||
 		strings.Contains(s, "rate limit exceeded") ||
 		strings.Contains(s, "quota exceeded")
+}
+
+func hasNonRateLimitFailure(attempts []types.FailureAttempt) bool {
+	for _, attempt := range attempts {
+		if !isRateLimit(attempt.Error, nil) {
+			return true
+		}
+	}
+	return false
+}
+
+func safeFileName(name string) string {
+	name = filepath.Base(name)
+	var out strings.Builder
+	for _, r := range name {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("._-", r) {
+			out.WriteRune(r)
+		} else {
+			out.WriteByte('_')
+		}
+	}
+	if out.Len() == 0 {
+		return "artifact.bin"
+	}
+	return out.String()
 }
 func safeHeaders(h http.Header) http.Header {
 	out := make(http.Header)
