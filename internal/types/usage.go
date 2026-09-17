@@ -2,6 +2,16 @@ package types
 
 import "encoding/json"
 
+// FailureAttempt is one failed upstream try before a request either succeeded
+// elsewhere or returned its final error. Scope is "account" or "provider".
+type FailureAttempt struct {
+	Scope    string `json:"scope"`
+	Provider string `json:"provider"`
+	Account  string `json:"account,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	Error    string `json:"error"`
+}
+
 // ReasoningUnknown marks a reasoning-token count the upstream never reported.
 // Anthropic folds thinking tokens into output_tokens with no way to separate
 // them, so a Claude-served request genuinely has no answer here — which is a

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,16 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Ken-Chy129/llm-proxy/internal/compaction"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
-
-// compactSummaryPrefix marks summaries this proxy synthesized so a later
-// request can decode them. Real OpenAI encrypted_content blobs will not match
-// and are ignored.
-const compactSummaryPrefix = "ken-compact-v1:"
 
 const (
 	compactMaxTokens = 1024
@@ -30,31 +25,11 @@ const (
 )
 
 func encodeCompactSummary(summary string) string {
-	summary = strings.TrimSpace(summary)
-	if summary == "" {
-		return ""
-	}
-	return base64.StdEncoding.EncodeToString([]byte(compactSummaryPrefix + summary))
+	return compaction.Encode(summary)
 }
 
 func decodeCompactSummary(encrypted string) (string, bool) {
-	encrypted = strings.TrimSpace(encrypted)
-	if encrypted == "" {
-		return "", false
-	}
-	raw, err := base64.StdEncoding.DecodeString(encrypted)
-	if err != nil {
-		return "", false
-	}
-	text := string(raw)
-	if !strings.HasPrefix(text, compactSummaryPrefix) {
-		return "", false
-	}
-	summary := strings.TrimSpace(strings.TrimPrefix(text, compactSummaryPrefix))
-	if summary == "" {
-		return "", false
-	}
-	return summary, true
+	return compaction.Decode(encrypted)
 }
 
 func trailingCompactionTrigger(input json.RawMessage) bool {

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/incident"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
@@ -112,12 +113,29 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		c.Header("Connection", "keep-alive")
 	}
 
-	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx := executor.WithAttemptRecorder(c.Request.Context())
+	ctx, getAccount := executor.WithAccountRecorder(ctx)
 	ctx, _ = executor.WithBackendRecorder(ctx)
 	// Put the derived context back on the request so recordLog, which is called
 	// from a dozen places with only the gin context, can read which provider
 	// ended up serving.
 	c.Request = c.Request.WithContext(ctx)
+
+	// Always synthesize compaction locally, including when Codex is the native
+	// Responses provider. Codex's own encrypted compaction is tied to the OAuth
+	// account that created it; a portable proxy summary survives the mandatory
+	// account switch when that account runs out of quota.
+	if trailingCompactionTrigger(req.Input) {
+		chatReq, conversionErr := h.toChatCompletionRequest(&req)
+		if conversionErr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": gin.H{"message": conversionErr.Error(), "type": "invalid_request_error", "param": "input"},
+			})
+			return
+		}
+		h.handleCompactionV2(c, ctx, exec, chatReq, req.Model, start, getAccount)
+		return
+	}
 
 	if chain, ok := exec.(*executor.Chain); ok && chain.NeedsResponsesAdapter() {
 		var chatReq *types.ChatCompletionRequest
@@ -211,10 +229,6 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error": gin.H{"message": conversionErr.Error(), "type": "invalid_request_error", "param": "input"},
 		})
-		return
-	}
-	if trailingCompactionTrigger(req.Input) {
-		h.handleCompactionV2(c, ctx, exec, chatReq, req.Model, start, getAccount)
 		return
 	}
 	if support, ok := exec.(executor.StreamingSupport); ok && !support.SupportsStreaming() {
@@ -1178,6 +1192,11 @@ func copyResponsesStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.Re
 // the stream died before response.completed), in which case the token buckets
 // stay at zero and reasoning at unknown.
 func (h *ResponsesHandler) recordLog(c *gin.Context, model string, start time.Time, usage *types.TokenUsage, account string, failedOver []string, err error) {
+	if err != nil {
+		c.Set("failure_capture_backend", h.servingBackend(c, model))
+		c.Set("failure_capture_failover", mergeFailover(failedOver, c.Request.Context()))
+		incident.MarkFailure(c, err)
+	}
 	if h.statsDB == nil {
 		return
 	}
@@ -1192,6 +1211,7 @@ func (h *ResponsesHandler) recordLog(c *gin.Context, model string, start time.Ti
 		Account:         account,
 		FailoverFrom:    strings.Join(mergeFailover(failedOver, c.Request.Context()), ","),
 		ReasoningTokens: types.ReasoningUnknown,
+		Attempts:        executor.FailureAttempts(c.Request.Context()),
 	}
 	if usage != nil {
 		entry.SetUsage(*usage)

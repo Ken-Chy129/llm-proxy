@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/auth"
+	"github.com/Ken-Chy129/llm-proxy/internal/compaction"
 	internaltls "github.com/Ken-Chy129/llm-proxy/internal/tls"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
 	"github.com/google/uuid"
@@ -414,6 +415,7 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 		resp, err := e.client().Do(httpReq)
 		if err != nil {
 			lastErr = fmt.Errorf("codex request: %w", err)
+			recordAccountFailure(ctx, "codex", tokenData.ID, 0, lastErr)
 			continue
 		}
 
@@ -430,6 +432,11 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			recordAccountFailure(ctx, "codex", tokenData.ID, resp.StatusCode,
+				&HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)})
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
 			// Codex 429s are account-wide (all models share one quota) → model "".
 			e.oauth.Store().MarkRateLimited("codex", tokenData.ID, "", until, !known)
@@ -437,7 +444,6 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 				tokenData.ID, until.Format(time.RFC3339), !known)
 			exhausted[tokenData.ID] = true
 			if len(exhausted) < attempts {
-				resp.Body.Close()
 				recordAccountFailover(ctx, tokenData.ID)
 				lastErr = fmt.Errorf("codex account %s rate-limited (429)", tokenData.ID)
 				continue
@@ -452,6 +458,8 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 		if resp.StatusCode == http.StatusUnauthorized {
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			recordAccountFailure(ctx, "codex", tokenData.ID, resp.StatusCode,
+				&HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)})
 			if !refreshed[tokenData.ID] {
 				refreshed[tokenData.ID] = true
 				if err := e.oauth.ForceRefresh(ctx, tokenData.ID); err == nil {
@@ -498,7 +506,12 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		reqMap["instructions"] = ""
 	}
 	stripForeignInputIDs(reqMap)
+	// Proxy-generated compactions are portable plain summaries. Convert them to
+	// a regular input message before forwarding so Codex never tries to decrypt
+	// them as account-bound upstream ciphertext.
+	expandPortableCompactions(reqMap)
 	patchedBody, _ := json.Marshal(reqMap)
+	degradedBody := []byte(nil)
 
 	// Same account walk as doStream: a 401 gets one refresh-and-retry, then the
 	// account is marked revoked and the next one is tried. Without this a single
@@ -511,9 +524,29 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	refreshed := make(map[string]bool)
 	exhausted := make(map[string]bool)
 	var lastErr error
+	sawEncryptedRejection := false
+	degradeUnreadableCompaction := func() bool {
+		if !sawEncryptedRejection || degradedBody != nil {
+			return false
+		}
+		removed := dropOpaqueCompactions(reqMap)
+		if removed == 0 {
+			return false
+		}
+		degradedBody, _ = json.Marshal(reqMap)
+		log.Printf("[codex] recovered account-bound session by dropping %d unreadable compaction item(s)", removed)
+		exhausted = make(map[string]bool)
+		refreshed = make(map[string]bool)
+		patchedBody = degradedBody
+		return true
+	}
 	for i := 0; i < accounts*2; i++ {
-		tokenData := e.oauth.GetTokenData(ctx)
+		tokenData := e.oauth.GetTokenDataExcluding(ctx, exhausted)
 		if tokenData == nil {
+			if degradeUnreadableCompaction() {
+				i = -1
+				continue
+			}
 			if lastErr != nil {
 				return nil, lastErr
 			}
@@ -552,7 +585,9 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 
 		resp, err := e.client().Do(httpReq)
 		if err != nil {
-			return nil, fmt.Errorf("codex request: %w", err)
+			requestErr := fmt.Errorf("codex request: %w", err)
+			recordAccountFailure(ctx, "codex", tokenData.ID, 0, requestErr)
+			return nil, requestErr
 		}
 
 		if quota := auth.ParseCodexRateLimitHeaders(resp.Header); quota != nil {
@@ -565,6 +600,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+			recordAccountFailure(ctx, "codex", tokenData.ID, resp.StatusCode, lastErr)
 			if !refreshed[tokenData.ID] {
 				refreshed[tokenData.ID] = true
 				if err := e.oauth.ForceRefresh(ctx, tokenData.ID); err == nil {
@@ -581,6 +617,10 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 				recordAccountFailover(ctx, tokenData.ID)
 				continue
 			}
+			if degradeUnreadableCompaction() {
+				i = -1
+				continue
+			}
 			return nil, lastErr
 		}
 
@@ -590,17 +630,40 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+			recordAccountFailure(ctx, "codex", tokenData.ID, resp.StatusCode, lastErr)
 			exhausted[tokenData.ID] = true
 			if len(exhausted) < accounts {
 				recordAccountFailover(ctx, tokenData.ID)
+				continue
+			}
+			if degradeUnreadableCompaction() {
+				i = -1
 				continue
 			}
 			return nil, lastErr
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			defer resp.Body.Close()
 			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if isCodexEncryptedContentError(resp.StatusCode, respBody) {
+				lastErr = &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
+				recordAccountFailure(ctx, "codex", tokenData.ID, resp.StatusCode, lastErr)
+				sawEncryptedRejection = true
+				exhausted[tokenData.ID] = true
+				if len(exhausted) < accounts {
+					recordAccountFailover(ctx, tokenData.ID)
+					continue
+				}
+				// None of the usable accounts owns this old ciphertext. Remove only
+				// opaque compaction items and preserve all subsequent plain turns.
+				if degradeUnreadableCompaction() {
+					i = -1
+					continue
+				}
+				return nil, &HTTPError{Backend: "codex", Status: http.StatusUnprocessableEntity,
+					Body: "conversation contains encrypted state that no available Codex account can verify"}
+			}
 			return nil, &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
 		}
 
@@ -610,6 +673,67 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		lastErr = fmt.Errorf("codex: no accounts available")
 	}
 	return nil, lastErr
+}
+
+func isCodexEncryptedContentError(status int, body []byte) bool {
+	if status != http.StatusBadRequest {
+		return false
+	}
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "encrypted content") &&
+		(strings.Contains(s, "could not be verified") || strings.Contains(s, "could not be decrypted"))
+}
+
+func expandPortableCompactions(reqMap map[string]interface{}) int {
+	input, ok := reqMap["input"].([]interface{})
+	if !ok {
+		return 0
+	}
+	expanded := 0
+	for i, raw := range input {
+		item, ok := raw.(map[string]interface{})
+		if !ok || item["type"] != "compaction" {
+			continue
+		}
+		encrypted, _ := item["encrypted_content"].(string)
+		summary, ok := compaction.Decode(encrypted)
+		if !ok {
+			continue
+		}
+		input[i] = map[string]interface{}{
+			"role": "user",
+			"content": []interface{}{map[string]interface{}{
+				"type": "input_text", "text": "[Conversation summary after compaction]\n" + summary,
+			}},
+		}
+		expanded++
+	}
+	return expanded
+}
+
+func dropOpaqueCompactions(reqMap map[string]interface{}) int {
+	input, ok := reqMap["input"].([]interface{})
+	if !ok {
+		return 0
+	}
+	out := make([]interface{}, 0, len(input))
+	removed := 0
+	for _, raw := range input {
+		item, ok := raw.(map[string]interface{})
+		if ok && item["type"] == "compaction" {
+			if encrypted, _ := item["encrypted_content"].(string); encrypted != "" {
+				if _, portable := compaction.Decode(encrypted); !portable {
+					removed++
+					continue
+				}
+			}
+		}
+		out = append(out, raw)
+	}
+	if removed > 0 {
+		reqMap["input"] = out
+	}
+	return removed
 }
 
 // stripForeignInputIDs drops item ids upstream will not accept.

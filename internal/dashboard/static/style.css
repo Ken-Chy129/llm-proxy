@@ -335,6 +335,8 @@ rect.cal-future{fill:transparent;}
 .log-search::placeholder{color:var(--text-2);}
 .log-err-row td{padding:2px 12px 8px;border:none;}
 .log-err{display:block;max-width:100%;font-size:11px;color:var(--red);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:help;}
+.log-attempts{display:flex;flex-direction:column;gap:3px;padding:2px 0 5px;}
+.log-attempt{font-size:11px;color:var(--text-2);white-space:normal;overflow-wrap:anywhere;}
 
 /* --- token breakdown: input / output / cache / thinking -------------------- */
 /* A split fill replaces the flat accent gradient when the metric is tokens, so

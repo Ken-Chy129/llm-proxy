@@ -770,7 +770,18 @@ async function loadLogs() {
     const foTag = l.failover_from
       ? ` <span style="color:var(--yellow);font-size:10px;cursor:help" title="failed over from: ${l.failover_from}">↩</span>`
       : '';
-    const errRow = l.error ? `<tr class="log-err-row"><td colspan="8"><div class="log-err" title="${escAttr(l.error)}">${escHtml(l.error)}</div></td></tr>` : '';
+    const attempts = (l.attempts || []).map((a, i) => {
+      const who = [a.provider, a.account].filter(Boolean).join(' / ') || a.scope || 'upstream';
+      const status = a.status ? `HTTP ${a.status}` : 'transport';
+      return `<div class="log-attempt"><span style="color:var(--yellow)">attempt ${i + 1}</span> · <span class="text-mono">${escHtml(who)}</span> · ${escHtml(status)} · ${escHtml(a.error || 'failed')}</div>`;
+    }).join('');
+    const legacyFailover = !attempts && l.failover_from
+      ? `<div class="log-attempt"><span style="color:var(--yellow)">legacy failover</span> · ${escHtml(l.failover_from)}</div>`
+      : '';
+    const finalError = l.error ? `<div class="log-err" title="${escAttr(l.error)}"><span style="color:var(--red)">final</span> · ${escHtml(l.error)}</div>` : '';
+    const detailRow = (attempts || legacyFailover || finalError)
+      ? `<tr class="log-err-row"><td colspan="8"><div class="log-attempts">${attempts}${legacyFailover}${finalError}</div></td></tr>`
+      : '';
     // The breakdown is hover-only. A per-row bar or an expandable chip row both
     // cost permanent visual weight for a detail that is looked up occasionally,
     // and the table's job is scanning for anomalies.
@@ -784,7 +795,7 @@ async function loadLogs() {
     const hitCell = (tk.input_tokens && tk.cache_read_tokens)
       ? `<span title="${tk.cache_read_tokens.toLocaleString()} of ${tk.input_tokens.toLocaleString()} input read from cache">${Math.round(tk.cache_read_tokens / tk.input_tokens * 100)}%</span>`
       : '<span class="text-muted">–</span>';
-    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tokCell}</td><td>${hitCell}</td><td class="${sc}">${l.status}</td></tr>${errRow}`;
+    return `<tr><td class="text-muted text-mono">${t}</td><td class="text-mono">${l.model}${keyTag}</td><td class="text-muted">${l.backend}</td><td class="text-muted text-mono" style="font-size:11px" title="${acct}${l.failover_from ? ' (failover from ' + l.failover_from + ')' : ''}">${acct}${foTag}</td><td>${l.latency_ms}ms</td><td>${tokCell}</td><td>${hitCell}</td><td class="${sc}">${l.status}</td></tr>${detailRow}`;
   }).join('') || '<tr><td colspan="8" class="text-muted" style="text-align:center;padding:24px">' + (logErrorsOnly || logSearch ? 'No matching requests' : 'No requests yet') + '</td></tr>';
 }
 

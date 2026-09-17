@@ -10,13 +10,14 @@ import (
 )
 
 type Config struct {
-	Server      ServerConfig      `yaml:"server"`
-	Vertex      VertexConfig      `yaml:"vertex"`
-	ClaudeOAuth ClaudeOAuthConfig `yaml:"claude_oauth"`
-	Codex       CodexConfig       `yaml:"codex"`
-	Kimi        KimiConfig        `yaml:"kimi"`
-	Relay       RelayConfig       `yaml:"relay"`
-	AnyGen      AnyGenConfig      `yaml:"anygen"`
+	Server         ServerConfig         `yaml:"server"`
+	Vertex         VertexConfig         `yaml:"vertex"`
+	ClaudeOAuth    ClaudeOAuthConfig    `yaml:"claude_oauth"`
+	Codex          CodexConfig          `yaml:"codex"`
+	Kimi           KimiConfig           `yaml:"kimi"`
+	Relay          RelayConfig          `yaml:"relay"`
+	AnyGen         AnyGenConfig         `yaml:"anygen"`
+	FailureCapture FailureCaptureConfig `yaml:"failure_capture"`
 	// Series holds the default provider order per model family, and Models the
 	// per-model overrides. Together they replace the old per-provider model
 	// lists: a model is named once, and the providers that can serve it are an
@@ -61,6 +62,15 @@ type ServerConfig struct {
 	// weekly window resets soonest, so perishable weekly budget is burned first;
 	// "round_robin" — the legacy blind rotation.
 	AccountStrategy string `yaml:"account_strategy"`
+}
+
+// FailureCaptureConfig controls private, on-disk incident bundles for failed
+// /v1 requests. Bundles contain complete prompts and must be treated as
+// sensitive user data.
+type FailureCaptureConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Dir           string `yaml:"dir"`
+	RetentionDays int    `yaml:"retention_days"`
 }
 
 type VertexConfig struct {

@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -166,6 +168,56 @@ func TestResponsesCompactionTriggerReturnsExactlyOneCompactionItem(t *testing.T)
 		t.Fatalf("decoded summary = %q ok=%v", summary, ok)
 	}
 	assertConsistentResponseID(t, body)
+}
+
+func TestNativeResponsesCompactionAlsoUsesPortableProxySummary(t *testing.T) {
+	backend := &nativeResponsesCompactionStub{}
+	r := router.New()
+	r.SetProvider("codex", backend)
+	r.SetRoutes([]router.Route{{Model: "gpt-5.6-sol", Providers: []string{"codex"}}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-5.6-sol","stream":true,
+		"input":[{"role":"user","content":"portable please"},{"type":"compaction_trigger"}]
+	}`))
+	h.HandleResponses(c)
+
+	if backend.responsesCalls != 0 {
+		t.Fatalf("native compaction was passed upstream %d time(s)", backend.responsesCalls)
+	}
+	if backend.executeCalls != 1 {
+		t.Fatalf("portable summarizer calls=%d, want 1", backend.executeCalls)
+	}
+	completed := lastCompletedOutput(t, w.Body.String())
+	if len(completed) != 1 {
+		t.Fatalf("completed output=%v", completed)
+	}
+	encrypted, _ := completed[0]["encrypted_content"].(string)
+	if summary, ok := decodeCompactSummary(encrypted); !ok || summary != "portable summary" {
+		t.Fatalf("summary=%q ok=%v", summary, ok)
+	}
+}
+
+type nativeResponsesCompactionStub struct {
+	executeCalls   int
+	responsesCalls int
+}
+
+func (s *nativeResponsesCompactionStub) Models() []string { return []string{"gpt-5.6-sol"} }
+func (s *nativeResponsesCompactionStub) Execute(context.Context, *types.ChatCompletionRequest) (*types.ChatCompletionResponse, error) {
+	s.executeCalls++
+	return &types.ChatCompletionResponse{Model: "gpt-5.6-sol", Choices: []types.ChatCompletionChoice{{Message: &types.ChatResult{Content: "portable summary"}}}}, nil
+}
+func (s *nativeResponsesCompactionStub) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
+	return nil, fmt.Errorf("unexpected streaming adapter call")
+}
+func (s *nativeResponsesCompactionStub) OpenResponsesStream(context.Context, []byte) (io.ReadCloser, error) {
+	s.responsesCalls++
+	return nil, fmt.Errorf("native compaction must not pass through")
 }
 
 func TestResponsesCompactionEmptySummaryFailsBeforeSSE(t *testing.T) {

@@ -57,6 +57,69 @@ type backendRecorder struct {
 
 type ctxBackendKey struct{}
 
+type attemptRecorder struct {
+	mu       sync.Mutex
+	attempts []types.FailureAttempt
+}
+
+type ctxAttemptKey struct{}
+
+// WithAttemptRecorder captures every failed account/provider try in order.
+func WithAttemptRecorder(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxAttemptKey{}, &attemptRecorder{})
+}
+
+// FailureAttempts returns a defensive copy of the request's failed tries.
+func FailureAttempts(ctx context.Context) []types.FailureAttempt {
+	if r, ok := ctx.Value(ctxAttemptKey{}).(*attemptRecorder); ok {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return append([]types.FailureAttempt(nil), r.attempts...)
+	}
+	return nil
+}
+
+func recordFailureAttempt(ctx context.Context, attempt types.FailureAttempt) {
+	const maxAttemptError = 2048
+	if len(attempt.Error) > maxAttemptError {
+		attempt.Error = attempt.Error[:maxAttemptError] + "…"
+	}
+	if r, ok := ctx.Value(ctxAttemptKey{}).(*attemptRecorder); ok {
+		r.mu.Lock()
+		r.attempts = append(r.attempts, attempt)
+		r.mu.Unlock()
+	}
+}
+
+func currentAccount(ctx context.Context) string {
+	if r, ok := ctx.Value(ctxAccountKey{}).(*accountRecorder); ok {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		return r.account
+	}
+	return ""
+}
+
+func recordAccountFailure(ctx context.Context, provider, account string, status int, err error) {
+	message := "upstream attempt failed"
+	if err != nil {
+		message = err.Error()
+	}
+	recordFailureAttempt(ctx, types.FailureAttempt{
+		Scope: "account", Provider: provider, Account: account, Status: status, Error: message,
+	})
+}
+
+func recordProviderFailure(ctx context.Context, provider string, status int, err error) {
+	message := "upstream attempt failed"
+	if err != nil {
+		message = err.Error()
+	}
+	recordFailureAttempt(ctx, types.FailureAttempt{
+		Scope: "provider", Provider: provider, Account: currentAccount(ctx), Status: status, Error: message,
+	})
+}
+
 // WithBackendRecorder returns a derived context that captures which backend
 // actually served the request, which differs from the routing table entry when a
 // fallback chain moves traffic to its secondary. The getter reports the serving

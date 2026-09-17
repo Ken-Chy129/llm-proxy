@@ -85,6 +85,29 @@ func TestFallbackSwitchesToSecondaryOn429(t *testing.T) {
 	}
 }
 
+func TestFallbackRecordsEveryFailedProviderAttempt(t *testing.T) {
+	primary := &stubAnthropic{name: "primary", status: 429, body: `{"error":"rate_limit"}`}
+	secondary := &stubAnthropic{name: "secondary", status: 503, body: `{"error":"down"}`}
+	final := &stubAnthropic{name: "final", status: 200, body: `{"ok":true}`}
+	chain := NewChain([]Link{
+		{Provider: "claude_oauth", Exec: primary},
+		{Provider: "relay", Exec: secondary},
+		{Provider: "vertex", Exec: final},
+	})
+	ctx := WithAttemptRecorder(context.Background())
+	if _, status, err := chain.ExecuteAnthropicRaw(ctx, []byte("{}"), nil); err != nil || status != 200 {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	attempts := FailureAttempts(ctx)
+	if len(attempts) != 2 {
+		t.Fatalf("attempts=%+v, want 2", attempts)
+	}
+	if attempts[0].Provider != "claude_oauth" || attempts[0].Status != 429 ||
+		attempts[1].Provider != "relay" || attempts[1].Status != 503 {
+		t.Fatalf("attempt order=%+v", attempts)
+	}
+}
+
 func TestFallbackDoesNotSwitchOnClientError(t *testing.T) {
 	primary := &stubAnthropic{name: "primary", status: 400, body: `{"error":"bad"}`}
 	secondary := &stubAnthropic{name: "secondary", status: 200, body: "{}"}

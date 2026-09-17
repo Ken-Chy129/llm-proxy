@@ -109,6 +109,7 @@ func (e *Chain) ExecuteAnthropicRaw(ctx context.Context, body []byte, h http.Hea
 		if !shouldFallOver(lastStatus, lastErr) {
 			return lastBody, lastStatus, lastErr
 		}
+		recordProviderFailure(ctx, link.Provider, lastStatus, lastErr)
 		if next, ok := e.nextProvider(i, true); ok {
 			log.Printf("[chain] %s exhausted (status=%d err=%v); retrying on %s", link.Provider, lastStatus, lastErr, next)
 		}
@@ -141,6 +142,7 @@ func (e *Chain) OpenAnthropicStream(ctx context.Context, body []byte, h http.Hea
 		if !shouldFallOver(lastStatus, lastErr) {
 			return lastStream, lastStatus, lastErr
 		}
+		recordProviderFailure(ctx, link.Provider, lastStatus, lastErr)
 		if lastStream != nil {
 			lastStream.Close()
 			lastStream = nil
@@ -185,6 +187,7 @@ func (e *Chain) Execute(ctx context.Context, req *types.ChatCompletionRequest) (
 		if !shouldFallOver(status, nil) && status != 0 {
 			return resp, err
 		}
+		recordProviderFailure(ctx, link.Provider, status, err)
 		if next, ok := e.nextProvider(i, false); ok {
 			log.Printf("[chain] %s exhausted (%v); retrying on %s", link.Provider, err, next)
 		}
@@ -221,6 +224,7 @@ func (e *Chain) ExecuteStream(ctx context.Context, req *types.ChatCompletionRequ
 		if st := StatusFromError(err); st != 0 && !shouldFallOver(st, nil) {
 			return usage, err
 		}
+		recordProviderFailure(ctx, link.Provider, StatusFromError(err), err)
 		if next, ok := e.nextProvider(i, false); ok {
 			log.Printf("[chain] %s exhausted (%v); retrying on %s", link.Provider, err, next)
 		}
@@ -320,6 +324,7 @@ func (e *Chain) openResponsesStream(
 		if !shouldFallOver(status, nil) && status != 0 {
 			return nil, err
 		}
+		recordProviderFailure(ctx, link.Provider, status, err)
 		if next, ok := e.nextResponsesProvider(i, adapt != nil); ok {
 			log.Printf("[chain] %s exhausted (%v); retrying on %s", link.Provider, err, next)
 		}

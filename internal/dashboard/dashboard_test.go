@@ -69,6 +69,25 @@ func TestLogTableConstrainsLongErrorRows(t *testing.T) {
 	}
 }
 
+func TestLogTableRendersEveryFailedAttempt(t *testing.T) {
+	app, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read embedded app: %v", err)
+	}
+	script := string(app)
+	for _, want := range []string{
+		"(l.attempts || []).map((a, i)",
+		"attempt ${i + 1}",
+		"a.provider, a.account",
+		"legacy failover",
+		"final</span>",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("attempt trace rendering missing %q", want)
+		}
+	}
+}
+
 func TestStatusRefreshPatchesRenderedListsInsteadOfReplacingThem(t *testing.T) {
 	app, err := staticFiles.ReadFile("static/app.js")
 	if err != nil {

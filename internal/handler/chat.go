@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/incident"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
@@ -114,8 +115,10 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx := executor.WithAttemptRecorder(c.Request.Context())
+	ctx, getAccount := executor.WithAccountRecorder(ctx)
 	ctx, getBackend := executor.WithBackendRecorder(ctx)
+	c.Request = c.Request.WithContext(ctx)
 	resp, err := exec.Execute(ctx, &req)
 	latency := time.Since(start)
 	account, failedOver := getAccount()
@@ -131,6 +134,7 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 		// Until usage arrives, reasoning is unknown rather than zero — an errored
 		// request has no answer, and 0 would claim the model thought nothing.
 		ReasoningTokens: types.ReasoningUnknown,
+		Attempts:        executor.FailureAttempts(ctx),
 	}
 
 	if err != nil {
@@ -138,6 +142,7 @@ func (h *ChatHandler) ChatCompletions(c *gin.Context) {
 		logEntry.Status = errStatus(err)
 		logEntry.LatencyMs = latency.Milliseconds()
 		logEntry.Error = err.Error()
+		captureFailure(c, ctx, logEntry.Backend, err)
 		h.recordLog(logEntry)
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error": gin.H{"message": err.Error(), "type": "server_error"},
@@ -163,8 +168,10 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 	c.Header("Connection", "keep-alive")
 
 	c.Stream(func(w io.Writer) bool {
-		ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+		ctx := executor.WithAttemptRecorder(c.Request.Context())
+		ctx, getAccount := executor.WithAccountRecorder(ctx)
 		ctx, getBackend := executor.WithBackendRecorder(ctx)
+		c.Request = c.Request.WithContext(ctx)
 		usage, err := exec.ExecuteStream(ctx, req, w)
 		latency := time.Since(start)
 		account, failedOver := getAccount()
@@ -180,6 +187,7 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 			Account:         account,
 			FailoverFrom:    strings.Join(mergeFailover(failedOver, ctx), ","),
 			ReasoningTokens: types.ReasoningUnknown,
+			Attempts:        executor.FailureAttempts(ctx),
 		}
 		if usage != nil {
 			logEntry.SetUsage(usage.Breakdown())
@@ -188,12 +196,22 @@ func (h *ChatHandler) handleStream(c *gin.Context, exec interface {
 			log.Printf("stream error: %v", err)
 			logEntry.Status = errStatus(err)
 			logEntry.Error = err.Error()
+			captureFailure(c, ctx, logEntry.Backend, err)
 			errJSON, _ := json.Marshal(gin.H{"error": gin.H{"message": err.Error(), "type": "server_error"}})
 			fmt.Fprintf(w, "data: %s\n\n", errJSON)
 		}
 		h.recordLog(logEntry)
 		return false
 	})
+}
+
+func captureFailure(c *gin.Context, ctx context.Context, backend string, err error) {
+	if err == nil {
+		return
+	}
+	c.Set("failure_capture_backend", backend)
+	c.Set("failure_capture_failover", executor.BackendFallbackFrom(ctx))
+	incident.MarkFailure(c, err)
 }
 
 // errStatus maps an executor error to the upstream HTTP status when known,

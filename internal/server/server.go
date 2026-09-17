@@ -12,6 +12,7 @@ import (
 	"github.com/Ken-Chy129/llm-proxy/internal/dashboard"
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
 	"github.com/Ken-Chy129/llm-proxy/internal/handler"
+	"github.com/Ken-Chy129/llm-proxy/internal/incident"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/gin-gonic/gin"
@@ -47,6 +48,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 
 	// /v1/* API routes (Bearer token protected)
 	api := engine.Group("/", APIKeyAuth(keyStore), TokenLimitCheck(statsDB))
+	api.Use(incident.CaptureFailures(cfg.FailureCapture))
 	responsesHandler := handler.NewResponsesHandler(r, statsDB)
 
 	api.POST("/v1/chat/completions", chatHandler.ChatCompletions)

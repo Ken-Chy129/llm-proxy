@@ -282,6 +282,12 @@ server:
   cert_file: "/path/to/cert.pem"       # 可选：启用 HTTPS
   key_file: "/path/to/key.pem"
 
+# 可选：封存除限流和客户端取消以外的失败现场，供后续复现
+failure_capture:
+  enabled: true
+  dir: "/data/failure-captures"
+  retention_days: 7
+
 # Provider 段只写"怎么连上去"，不再决定服务什么模型
 claude_oauth:
   enabled: true
@@ -330,6 +336,10 @@ models:
     providers:
       - kimi: "k3"
 ```
+
+`failure_capture` 覆盖 `/v1/messages`、Chat Completions、Responses 和图片接口的所有 provider。每次符合条件的失败会生成一个私有目录，其中包括完整的 `request.json`、返回给客户端的 `response.body`、`metadata.json` 和 `replay.sh`。鉴权 Header 不会写入文件，重放时需要通过环境变量重新提供代理地址和 API Key。
+
+现场包含完整提示词、工具参数和工具输出，属于敏感数据。目录和文件权限分别为 `0700`、`0600`，过期目录在进程启动时按 `retention_days` 清理；不需要排查时应关闭该功能。
 
 ### 路由是怎么定的
 

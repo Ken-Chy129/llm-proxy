@@ -29,6 +29,14 @@ claude_oauth:
   enabled: true
   # token_dir: "/data"  # for Docker; defaults to ~/.llm-proxy
 
+# Failed /v1 requests are saved as private reproduction bundles. Each bundle
+# contains the complete request body, so protect this directory like credentials.
+# 429/rate-limit failures and client cancellations are deliberately excluded.
+failure_capture:
+  enabled: false
+  dir: "/data/failure-captures"
+  retention_days: 7
+
 codex:
   enabled: true
 

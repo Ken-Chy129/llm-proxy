@@ -127,6 +127,12 @@ func (o *CodexOAuth) GetTokenData(_ context.Context) *TokenData {
 	return o.store.Get("codex", "")
 }
 
+// GetTokenDataExcluding selects another usable account after a request-local
+// failure without changing the global account policy.
+func (o *CodexOAuth) GetTokenDataExcluding(_ context.Context, excluded map[string]bool) *TokenData {
+	return o.store.GetExcluding("codex", "", excluded)
+}
+
 func (o *CodexOAuth) GetToken(ctx context.Context) (string, error) {
 	token := o.store.Get("codex", "")
 	if token == nil {

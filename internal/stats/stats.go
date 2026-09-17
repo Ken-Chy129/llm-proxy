@@ -2,6 +2,7 @@ package stats
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,22 +19,23 @@ import (
 // field of the same name. types.TokenUsage is the source of these values;
 // SetUsage is the only sanctioned way to populate them.
 type RequestLog struct {
-	ID               int64     `json:"id"`
-	Time             time.Time `json:"time"`
-	Model            string    `json:"model"`
-	Backend          string    `json:"backend"`
-	LatencyMs        int64     `json:"latency_ms"`
-	Status           int       `json:"status"`
-	PromptTokens     int       `json:"prompt_tokens"`     // input tokens excluding both cache buckets
-	CompletionTokens int       `json:"completion_tokens"` // all output, reasoning included
-	CacheReadTokens  int       `json:"cache_read_tokens"`
-	CacheWriteTokens int       `json:"cache_write_tokens"`
-	ReasoningTokens  int       `json:"reasoning_tokens"` // subset of CompletionTokens; -1 = upstream didn't report
-	Stream           bool      `json:"stream"`
-	Error            string    `json:"error,omitempty"`
-	APIKeyName       string    `json:"api_key_name,omitempty"`
-	Account          string    `json:"account,omitempty"`       // upstream account (email/id) that served the request
-	FailoverFrom     string    `json:"failover_from,omitempty"` // comma-separated accounts that 429'd before the serving one
+	ID               int64                  `json:"id"`
+	Time             time.Time              `json:"time"`
+	Model            string                 `json:"model"`
+	Backend          string                 `json:"backend"`
+	LatencyMs        int64                  `json:"latency_ms"`
+	Status           int                    `json:"status"`
+	PromptTokens     int                    `json:"prompt_tokens"`     // input tokens excluding both cache buckets
+	CompletionTokens int                    `json:"completion_tokens"` // all output, reasoning included
+	CacheReadTokens  int                    `json:"cache_read_tokens"`
+	CacheWriteTokens int                    `json:"cache_write_tokens"`
+	ReasoningTokens  int                    `json:"reasoning_tokens"` // subset of CompletionTokens; -1 = upstream didn't report
+	Stream           bool                   `json:"stream"`
+	Error            string                 `json:"error,omitempty"`
+	APIKeyName       string                 `json:"api_key_name,omitempty"`
+	Account          string                 `json:"account,omitempty"`       // upstream account (email/id) that served the request
+	FailoverFrom     string                 `json:"failover_from,omitempty"` // comma-separated accounts that 429'd before the serving one
+	Attempts         []types.FailureAttempt `json:"attempts,omitempty"`
 
 	// CostUSD is list API cost for this request, priced at write time and frozen.
 	// Recomputing history at today's rates would silently rewrite what past
@@ -310,6 +312,7 @@ func migrate(db *sql.DB) error {
 			api_key_name      TEXT DEFAULT '',
 			account           TEXT DEFAULT '',
 			failover_from     TEXT DEFAULT '',
+			attempts          TEXT DEFAULT '',
 			cost_usd          REAL
 		);
 		CREATE INDEX IF NOT EXISTS idx_logs_time ON request_logs(time);
@@ -324,6 +327,7 @@ func migrate(db *sql.DB) error {
 	db.Exec("ALTER TABLE request_logs ADD COLUMN account TEXT DEFAULT ''")
 	// Add failover_from column if missing (existing DBs)
 	db.Exec("ALTER TABLE request_logs ADD COLUMN failover_from TEXT DEFAULT ''")
+	db.Exec("ALTER TABLE request_logs ADD COLUMN attempts TEXT DEFAULT ''")
 	// Token breakdown columns (existing DBs). Rows written before this migration
 	// have no cache data and never will — it was dropped on the floor, not
 	// recorded as zero — so totals step up on the day this ships. reasoning
@@ -350,12 +354,12 @@ func (d *DB) Record(log *RequestLog) error {
 	}
 	_, err := d.db.Exec(`
 		INSERT INTO request_logs (time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from, cost_usd)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from, attempts, cost_usd)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		log.Time.UTC().Format(time.RFC3339), log.Model, log.Backend, log.LatencyMs,
 		log.Status, log.PromptTokens, log.CompletionTokens,
 		log.CacheReadTokens, log.CacheWriteTokens, log.ReasoningTokens,
-		log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom, cost,
+		log.Stream, log.Error, log.APIKeyName, log.Account, log.FailoverFrom, marshalAttempts(log.Attempts), cost,
 	)
 	return err
 }
@@ -369,12 +373,12 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 	where := "WHERE 1=1"
 	var args []any
 	if errorsOnly {
-		where += " AND status >= 400"
+		where += " AND (status >= 400 OR attempts <> '')"
 	}
 	if search = strings.TrimSpace(search); search != "" {
-		where += " AND (model LIKE ? OR account LIKE ? OR api_key_name LIKE ? OR error LIKE ?)"
+		where += " AND (model LIKE ? OR account LIKE ? OR api_key_name LIKE ? OR error LIKE ? OR attempts LIKE ?)"
 		like := "%" + search + "%"
-		args = append(args, like, like, like, like)
+		args = append(args, like, like, like, like, like)
 	}
 
 	var total int
@@ -382,7 +386,7 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 
 	rows, err := d.db.Query(`
 		SELECT id, time, model, backend, latency_ms, status, prompt_tokens, completion_tokens,
-			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from,
+			cache_read_tokens, cache_write_tokens, reasoning_tokens, stream, error, api_key_name, account, failover_from, attempts,
 			cost_usd
 		FROM request_logs `+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
@@ -395,16 +399,26 @@ func (d *DB) QueryLogs(limit, offset int, errorsOnly bool, search string) ([]Req
 		var l RequestLog
 		var t string
 		var cost sql.NullFloat64
+		var attempts string
 		if err := rows.Scan(&l.ID, &t, &l.Model, &l.Backend, &l.LatencyMs, &l.Status,
 			&l.PromptTokens, &l.CompletionTokens, &l.CacheReadTokens, &l.CacheWriteTokens, &l.ReasoningTokens,
-			&l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom, &cost); err != nil {
+			&l.Stream, &l.Error, &l.APIKeyName, &l.Account, &l.FailoverFrom, &attempts, &cost); err != nil {
 			continue
 		}
 		l.Time, _ = time.Parse(time.RFC3339, t)
 		l.CostUSD, l.CostKnown = cost.Float64, cost.Valid
+		_ = json.Unmarshal([]byte(attempts), &l.Attempts)
 		logs = append(logs, l)
 	}
 	return logs, total, nil
+}
+
+func marshalAttempts(attempts []types.FailureAttempt) string {
+	if len(attempts) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(attempts)
+	return string(b)
 }
 
 // StatsByBucket returns the request/token/error counts grouped into time buckets

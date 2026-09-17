@@ -362,6 +362,14 @@ func (s *TokenStore) Dir() string { return s.dir }
 // Both share the same fallbacks so a request is always attempted while a token
 // still exists.
 func (s *TokenStore) Get(provider, model string) *TokenData {
+	return s.GetExcluding(provider, model, nil)
+}
+
+// GetExcluding applies the normal selection policy while omitting accounts
+// already tried by the current request. Provider executors use it to walk the
+// pool without defeating quota-aware selection or accidentally reusing a
+// manually disabled/revoked/cooling-down account.
+func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bool) *TokenData {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	list := s.accounts[provider]
@@ -372,6 +380,9 @@ func (s *TokenStore) Get(provider, model string) *TokenData {
 	start := int(s.counter.Add(1)) % n
 
 	notBlocked := func(t *TokenData) bool {
+		if excluded[t.ID] {
+			return false
+		}
 		if _, revoked := s.revokedLocked(provider, t.ID); revoked {
 			return false
 		}
@@ -401,6 +412,9 @@ func (s *TokenStore) Get(provider, model string) *TokenData {
 		}
 	}
 	for _, t := range list {
+		if excluded[t.ID] {
+			continue
+		}
 		if !s.isAccountDisabledLocked(provider, t.ID) {
 			// A revoked account is never worth trying: its token can only be
 			// fixed by a re-login, so returning it would spend the request on a

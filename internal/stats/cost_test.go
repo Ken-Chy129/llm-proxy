@@ -2,6 +2,7 @@ package stats
 
 import (
 	"math"
+	"reflect"
 	"testing"
 	"time"
 
@@ -80,6 +81,28 @@ func TestUnpricedModelIsUnknownNotZero(t *testing.T) {
 		if row.Model == "mystery-model" && (row.CostKnown || row.CostUSD != 0) {
 			t.Errorf("unpriced row round-tripped as %v/%v", row.CostUSD, row.CostKnown)
 		}
+	}
+}
+
+func TestRequestFailureAttemptsRoundTrip(t *testing.T) {
+	db := newTestDB(t)
+	want := []types.FailureAttempt{
+		{Scope: "account", Provider: "claude_oauth", Account: "a@example.com", Status: 429, Error: "usage limit reached"},
+		{Scope: "provider", Provider: "relay", Status: 502, Error: "stream ended without stop reason"},
+	}
+	entry := &RequestLog{
+		Time: time.Now(), Model: "claude-fable-5-1", Backend: "anygen", Status: 200,
+		Attempts: want,
+	}
+	if err := db.Record(entry); err != nil {
+		t.Fatalf("record attempts: %v", err)
+	}
+	logs, total, err := db.QueryLogs(10, 0, true, "stream ended")
+	if err != nil {
+		t.Fatalf("query attempts: %v", err)
+	}
+	if total != 1 || len(logs) != 1 || !reflect.DeepEqual(logs[0].Attempts, want) {
+		t.Fatalf("attempts = %+v, want %+v", logs, want)
 	}
 }
 

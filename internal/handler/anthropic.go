@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Ken-Chy129/llm-proxy/internal/executor"
+	"github.com/Ken-Chy129/llm-proxy/internal/incident"
 	"github.com/Ken-Chy129/llm-proxy/internal/router"
 	"github.com/Ken-Chy129/llm-proxy/internal/stats"
 	"github.com/Ken-Chy129/llm-proxy/internal/types"
@@ -89,8 +90,10 @@ func anthropicErrStatus(err error) int {
 }
 
 func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.AnthropicExecutor, resolvedBackend, model string, body []byte, start time.Time) {
-	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx := executor.WithAttemptRecorder(c.Request.Context())
+	ctx, getAccount := executor.WithAccountRecorder(ctx)
 	ctx, getBackend := executor.WithBackendRecorder(ctx)
+	c.Request = c.Request.WithContext(ctx)
 	stream, statusCode, err := ae.OpenAnthropicStream(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	served := getBackend()
@@ -125,8 +128,10 @@ func (h *AnthropicHandler) handleAnthropicStream(c *gin.Context, ae executor.Ant
 }
 
 func (h *AnthropicHandler) handleAnthropicRaw(c *gin.Context, ae executor.AnthropicExecutor, resolvedBackend, model string, body []byte, start time.Time) {
-	ctx, getAccount := executor.WithAccountRecorder(c.Request.Context())
+	ctx := executor.WithAttemptRecorder(c.Request.Context())
+	ctx, getAccount := executor.WithAccountRecorder(ctx)
 	ctx, getBackend := executor.WithBackendRecorder(ctx)
+	c.Request = c.Request.WithContext(ctx)
 	respBody, statusCode, err := ae.ExecuteAnthropicRaw(ctx, body, c.Request.Header)
 	account, failedOver := getAccount()
 	served := getBackend()
@@ -225,9 +230,6 @@ func copyStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.AnthropicUs
 }
 
 func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, start time.Time, stream bool, usage *types.AnthropicUsage, err error, status int, account string, failedOver []string, servedBackend string, ctx context.Context) {
-	if h.statsDB == nil {
-		return
-	}
 	// A fallback chain reports which backend actually served, which differs from
 	// the routing table when the primary was exhausted. Without this, relay
 	// overflow traffic would be logged as if the subscription had served it.
@@ -237,6 +239,17 @@ func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, star
 	}
 	if from := executor.BackendFallbackFrom(ctx); len(from) > 0 {
 		failedOver = append(failedOver, from...)
+	}
+	if err != nil || status >= 400 {
+		c.Set("failure_capture_backend", backend)
+		c.Set("failure_capture_failover", append([]string(nil), failedOver...))
+		if err == nil {
+			err = fmt.Errorf("upstream error %d", status)
+		}
+		incident.MarkFailure(c, err)
+	}
+	if h.statsDB == nil {
+		return
 	}
 	entry := &stats.RequestLog{
 		Time:            time.Now(),
@@ -249,6 +262,7 @@ func (h *AnthropicHandler) recordAnthropicLog(c *gin.Context, model string, star
 		Account:         account,
 		FailoverFrom:    strings.Join(failedOver, ","),
 		ReasoningTokens: types.ReasoningUnknown,
+		Attempts:        executor.FailureAttempts(ctx),
 	}
 	if usage != nil {
 		entry.SetUsage(usage.Breakdown())

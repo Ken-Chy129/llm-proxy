@@ -192,6 +192,7 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 		resp, err := e.httpClient.Do(req)
 		if err != nil {
 			lastErr = err
+			recordAccountFailure(ctx, "claude_oauth", accountID, 0, err)
 			continue
 		}
 		// 401: the credentials were rejected, not the request. Refresh once and
@@ -202,6 +203,7 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 			respBody, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			lastErr = &HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)}
+			recordAccountFailure(ctx, "claude_oauth", accountID, resp.StatusCode, lastErr)
 			if !refreshed[accountID] {
 				refreshed[accountID] = true
 				if err := e.oauth.ForceRefresh(ctx, accountID); err == nil {
@@ -221,6 +223,11 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 			return nil, lastErr
 		}
 		if resp.StatusCode == http.StatusTooManyRequests {
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			recordAccountFailure(ctx, "claude_oauth", accountID, resp.StatusCode,
+				&HTTPError{Backend: "claude oauth", Status: resp.StatusCode, Body: string(respBody)})
 			until, known := auth.RateLimitResetTime(resp.Header, 60*time.Second)
 			// Don't let a model-specific weekly cap (whose 429 reports the weekly
 			// boundary) bench the whole account for days; clamp short and let quota
@@ -236,7 +243,6 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 				accountID, until.Format(time.RFC3339), !known, i+1, attempts)
 			exhausted[accountID] = true
 			if len(exhausted) < attempts {
-				resp.Body.Close()
 				recordAccountFailover(ctx, accountID)
 				lastErr = fmt.Errorf("claude account %s rate-limited (429)", accountID)
 				continue
