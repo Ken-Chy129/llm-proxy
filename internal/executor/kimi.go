@@ -811,6 +811,13 @@ func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model is required")
 	}
 	payload["model"], _ = json.Marshal(e.resolveModel(model))
+	if e.Backend() == "relay" {
+		var err error
+		payload, err = coalesceAnthropicMessages(payload)
+		if err != nil {
+			return nil, err
+		}
+	}
 	rewritten, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -821,6 +828,63 @@ func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
 		log.Printf("[relay-cache] %s", diagnostic.String())
 	}
 	return rewritten, nil
+}
+
+// coalesceAnthropicMessages normalizes consecutive messages with the same role
+// into one content array. Anthropic treats consecutive same-role messages as a
+// single turn, but some compatible relays validate tool_result cardinality
+// before performing that normalization and can misread parallel tool results
+// split across adjacent user messages as duplicates.
+func coalesceAnthropicMessages(payload map[string]json.RawMessage) (map[string]json.RawMessage, error) {
+	var messages []map[string]json.RawMessage
+	if err := json.Unmarshal(payload["messages"], &messages); err != nil {
+		return nil, fmt.Errorf("parse Anthropic messages: %w", err)
+	}
+	if len(messages) < 2 {
+		return payload, nil
+	}
+
+	normalized := make([]map[string]json.RawMessage, 0, len(messages))
+	for _, message := range messages {
+		var role string
+		if err := json.Unmarshal(message["role"], &role); err != nil {
+			return nil, fmt.Errorf("parse Anthropic message role: %w", err)
+		}
+		blocks, err := anthropicContentBlocks(message["content"])
+		if err != nil {
+			return nil, err
+		}
+		if len(normalized) > 0 {
+			previous := normalized[len(normalized)-1]
+			var previousRole string
+			_ = json.Unmarshal(previous["role"], &previousRole)
+			if previousRole == role {
+				previousBlocks, err := anthropicContentBlocks(previous["content"])
+				if err != nil {
+					return nil, err
+				}
+				previous["content"], _ = json.Marshal(append(previousBlocks, blocks...))
+				continue
+			}
+		}
+		message["content"], _ = json.Marshal(blocks)
+		normalized = append(normalized, message)
+	}
+	payload["messages"], _ = json.Marshal(normalized)
+	return payload, nil
+}
+
+func anthropicContentBlocks(raw json.RawMessage) ([]json.RawMessage, error) {
+	var blocks []json.RawMessage
+	if json.Unmarshal(raw, &blocks) == nil {
+		return blocks, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return nil, fmt.Errorf("parse Anthropic message content: %w", err)
+	}
+	block, _ := json.Marshal(map[string]string{"type": "text", "text": text})
+	return []json.RawMessage{block}, nil
 }
 
 const (

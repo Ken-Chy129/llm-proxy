@@ -121,6 +121,49 @@ func TestRelayExecutorPassesClaudeCodeRequestToAnthropicUpstream(t *testing.T) {
 	}
 }
 
+func TestRelayCoalescesParallelToolResultsIntoOneUserTurn(t *testing.T) {
+	body := []byte(`{
+		"model":"claude-fable-5-1",
+		"messages":[
+			{"role":"assistant","content":[
+				{"type":"tool_use","id":"call_a","name":"read","input":{}},
+				{"type":"tool_use","id":"call_b","name":"read","input":{}}
+			]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_a","content":"a"}]},
+			{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_b","content":"b"}]},
+			{"role":"assistant","content":"done"},
+			{"role":"assistant","content":[{"type":"text","text":"more"}]}
+		]
+	}`)
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := coalesceAnthropicMessages(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages []struct {
+		Role    string                   `json:"role"`
+		Content []map[string]interface{} `json:"content"`
+	}
+	if err := json.Unmarshal(normalized["messages"], &messages); err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 3 {
+		t.Fatalf("messages=%d, want 3", len(messages))
+	}
+	if messages[1].Role != "user" || len(messages[1].Content) != 2 {
+		t.Fatalf("merged user turn=%+v", messages[1])
+	}
+	if messages[1].Content[0]["tool_use_id"] != "call_a" || messages[1].Content[1]["tool_use_id"] != "call_b" {
+		t.Fatalf("tool result order changed: %+v", messages[1].Content)
+	}
+	if messages[2].Role != "assistant" || len(messages[2].Content) != 2 {
+		t.Fatalf("merged assistant turn=%+v", messages[2])
+	}
+}
+
 func TestRelayPassthroughBridgesLongPromptCacheLookback(t *testing.T) {
 	assistantBlocks := make([]map[string]interface{}, 0, 22)
 	for i := 0; i < 22; i++ {

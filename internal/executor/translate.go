@@ -471,20 +471,37 @@ func parseStop(raw json.RawMessage) []string {
 // stream as a successful empty one.
 func anthropicStreamError(data string) (string, string, bool) {
 	var payload struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
+		Type  string          `json:"type"`
+		Error json.RawMessage `json:"error"`
 	}
 	if json.Unmarshal([]byte(data), &payload) != nil || payload.Type != "error" {
 		return "", "", false
 	}
-	message := strings.TrimSpace(payload.Error.Message)
+	var detail struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	}
+	var stringError string
+	_ = json.Unmarshal(payload.Error, &detail)
+	_ = json.Unmarshal(payload.Error, &stringError)
+	message := strings.TrimSpace(detail.Message)
+	if message == "" {
+		message = strings.TrimSpace(stringError)
+	}
 	if message == "" {
 		message = strings.TrimSpace(data)
 	}
-	return strings.TrimSpace(payload.Error.Type), message, true
+	errType := strings.TrimSpace(detail.Type)
+	if errType == "" && looksLikeAnthropicValidationError(message) {
+		errType = "invalid_request_error"
+	}
+	return errType, message, true
+}
+
+func looksLikeAnthropicValidationError(message string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	return strings.HasPrefix(message, "messages.") || strings.HasPrefix(message, "system.") ||
+		strings.Contains(message, "tool_use") || strings.Contains(message, "tool_result")
 }
 
 // anthropicStreamErrorStatus maps an in-band error type onto the HTTP status it

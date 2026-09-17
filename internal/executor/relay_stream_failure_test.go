@@ -59,6 +59,22 @@ func TestRelayStreamSurfacesInBandUpstreamError(t *testing.T) {
 	}
 }
 
+func TestRelayStreamSurfacesStringValidationError(t *testing.T) {
+	exec := relayAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: error\ndata: {\"type\":\"error\",\"error\":\"messages.34.content.2: each tool_use must have a single result\"}\n\n")
+	})
+
+	var out bytes.Buffer
+	_, err := exec.ExecuteStream(context.Background(), streamRequest(), &out)
+	if err == nil || !strings.Contains(err.Error(), "each tool_use must have a single result") {
+		t.Fatalf("error = %v, want relay validation detail", err)
+	}
+	if got := StatusFromError(err); got != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", got)
+	}
+}
+
 // A stream that stops before message_delta cannot be turned into a valid
 // Responses stream, so it has to fail inside the executor where failover is
 // still possible.
