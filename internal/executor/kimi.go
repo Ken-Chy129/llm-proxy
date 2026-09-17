@@ -343,6 +343,23 @@ func (e *KimiExecutor) anthropicEndpoint() string {
 }
 
 func (e *KimiExecutor) openAnthropic(ctx context.Context, body []byte, clientHeaders http.Header, stream bool) (*http.Response, error) {
+	// Both native Messages passthrough and translated Chat/Responses requests
+	// converge here. Normalize at this boundary so neither path can bypass the
+	// relay's stricter same-role/tool-result validation.
+	if e.Backend() == "relay" {
+		var payload map[string]json.RawMessage
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("parse relay request: %w", err)
+		}
+		normalized, err := coalesceAnthropicMessages(payload)
+		if err != nil {
+			return nil, err
+		}
+		body, err = json.Marshal(normalized)
+		if err != nil {
+			return nil, fmt.Errorf("marshal normalized relay request: %w", err)
+		}
+	}
 	key, err := e.apiKey()
 	if err != nil {
 		return nil, err
@@ -811,13 +828,6 @@ func (e *KimiExecutor) rewriteAnthropicModel(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("model is required")
 	}
 	payload["model"], _ = json.Marshal(e.resolveModel(model))
-	if e.Backend() == "relay" {
-		var err error
-		payload, err = coalesceAnthropicMessages(payload)
-		if err != nil {
-			return nil, err
-		}
-	}
 	rewritten, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err

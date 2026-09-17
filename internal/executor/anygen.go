@@ -197,10 +197,10 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 	if err != nil {
 		return nil, fmt.Errorf("call anygen chat completions: %w", err)
 	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read anygen response: %w", err)
+	body, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("read anygen response: %w", readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &HTTPError{Backend: "anygen", Status: resp.StatusCode, Body: string(body)}
@@ -223,6 +223,10 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 		// it is discarded once we return an error, so log it here. Empty
 		// responses are small by definition; the cap only guards against an
 		// upstream that pads them.
+		if status == http.StatusBadGateway {
+			recordDiagnosticArtifact(ctx, "anygen-request.json", payload)
+			recordDiagnosticArtifact(ctx, "anygen-response.json", body)
+		}
 		log.Printf("[anygen] empty output for model %s (upstream model %s): %s; returning %d; raw body: %s",
 			req.Model, upstream.Model, reason, status, truncateForLog(body, maxAnyGenLogBody))
 		return nil, &HTTPError{

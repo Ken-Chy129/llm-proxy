@@ -1162,6 +1162,7 @@ func copyResponsesStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.Re
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
 
 	var usage *types.ResponsesUsage
+	var streamErr error
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1169,10 +1170,13 @@ func copyResponsesStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.Re
 		if strings.HasPrefix(line, "data: ") {
 			var event map[string]interface{}
 			if json.Unmarshal([]byte(line[6:]), &event) == nil {
-				if t, _ := event["type"].(string); t == "response.completed" || t == "response.incomplete" {
+				t, _ := event["type"].(string)
+				if t == "response.completed" || t == "response.incomplete" {
 					if u := types.ParseResponsesUsage(event); u != nil {
 						usage = u
 					}
+				} else if t == "response.failed" || t == "error" {
+					streamErr = responsesEventError(event)
 				}
 			}
 		}
@@ -1183,9 +1187,42 @@ func copyResponsesStreamAndExtractUsage(src io.Reader, dst io.Writer) (*types.Re
 		if canFlush {
 			flusher.Flush()
 		}
+		if streamErr != nil {
+			return usage, streamErr
+		}
 	}
 
 	return usage, scanner.Err()
+}
+
+func responsesEventError(event map[string]interface{}) error {
+	message, code := "upstream emitted response.failed", ""
+	var inspect func(interface{})
+	inspect = func(value interface{}) {
+		object, ok := value.(map[string]interface{})
+		if !ok {
+			return
+		}
+		if nested, ok := object["error"].(map[string]interface{}); ok {
+			inspect(nested)
+		}
+		if value, ok := object["message"].(string); ok && value != "" {
+			message = value
+		}
+		if value, ok := object["code"].(string); ok && value != "" {
+			code = value
+		}
+	}
+	inspect(event)
+	if response, ok := event["response"].(map[string]interface{}); ok {
+		inspect(response)
+	}
+	status := http.StatusBadGateway
+	lower := strings.ToLower(code + " " + message)
+	if strings.Contains(lower, "capacity") || strings.Contains(lower, "overload") || strings.Contains(lower, "rate_limit") {
+		status = http.StatusTooManyRequests
+	}
+	return &executor.HTTPError{Backend: "responses upstream", Status: status, Body: message}
 }
 
 // recordLog logs one /v1/responses request. usage may be nil (open failed, or

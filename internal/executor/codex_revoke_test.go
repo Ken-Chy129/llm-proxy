@@ -72,7 +72,7 @@ func TestCodexRefreshesOnceOn401(t *testing.T) {
 		mu.Unlock()
 		if token == "refreshed-token" {
 			w.Header().Set("Content-Type", "text/event-stream")
-			io.WriteString(w, "data: [DONE]\n\n")
+			io.WriteString(w, completedResponsesStream)
 			return
 		}
 		w.WriteHeader(http.StatusUnauthorized)
@@ -128,7 +128,7 @@ func TestCodexMarksRevokedAndFailsOverWhenRefreshFails(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: [DONE]\n\n")
+		io.WriteString(w, completedResponsesStream)
 	}))
 	defer upstream.Close()
 

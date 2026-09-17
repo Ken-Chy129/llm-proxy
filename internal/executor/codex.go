@@ -667,12 +667,96 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			return nil, &HTTPError{Backend: "codex", Status: resp.StatusCode, Body: string(respBody)}
 		}
 
-		return resp.Body, nil
+		validatedStream, streamErr := preflightCodexResponsesStream(resp.Body)
+		if streamErr != nil {
+			resp.Body.Close()
+			recordAccountFailure(ctx, "codex", tokenData.ID, StatusFromError(streamErr), streamErr)
+			lastErr = streamErr
+			exhausted[tokenData.ID] = true
+			if e.oauth.GetTokenDataExcluding(ctx, exhausted) != nil {
+				recordAccountFailover(ctx, tokenData.ID)
+				continue
+			}
+			return nil, streamErr
+		}
+		return validatedStream, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("codex: no accounts available")
 	}
 	return nil, lastErr
+}
+
+func preflightCodexResponsesStream(body io.ReadCloser) (io.ReadCloser, error) {
+	const maxPreflightBytes = 4 << 20
+	reader := bufio.NewReader(body)
+	var prefix bytes.Buffer
+	for prefix.Len() <= maxPreflightBytes {
+		line, err := reader.ReadString('\n')
+		prefix.WriteString(line)
+		if strings.HasPrefix(line, "data:") {
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+			var event map[string]interface{}
+			if data != "" && data != "[DONE]" && json.Unmarshal([]byte(data), &event) == nil {
+				typ, _ := event["type"].(string)
+				switch typ {
+				case "response.failed", "error":
+					return nil, codexFailedEventError(event)
+				case "response.completed", "response.incomplete":
+					return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
+				case "response.output_text.delta", "response.function_call_arguments.delta", "response.reasoning_summary_text.delta":
+					return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
+				}
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil, &HTTPError{Backend: "codex", Status: http.StatusBadGateway, Body: "responses stream ended without a terminal event"}
+			}
+			return nil, fmt.Errorf("read codex responses stream: %w", err)
+		}
+	}
+	return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
+}
+
+type prefixedReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func codexFailedEventError(event map[string]interface{}) error {
+	message, code := responsesFailureDetail(event)
+	status := http.StatusBadGateway
+	lower := strings.ToLower(code + " " + message)
+	if strings.Contains(lower, "capacity") || strings.Contains(lower, "overload") || strings.Contains(lower, "rate_limit") {
+		status = http.StatusTooManyRequests
+	}
+	return &HTTPError{Backend: "codex", Status: status, Body: message}
+}
+
+func responsesFailureDetail(event map[string]interface{}) (message, code string) {
+	var read func(interface{})
+	read = func(value interface{}) {
+		if object, ok := value.(map[string]interface{}); ok {
+			if nested, ok := object["error"].(map[string]interface{}); ok {
+				read(nested)
+			}
+			if code == "" {
+				code, _ = object["code"].(string)
+			}
+			if message == "" {
+				message, _ = object["message"].(string)
+			}
+		}
+	}
+	read(event)
+	if response, ok := event["response"].(map[string]interface{}); ok {
+		read(response)
+	}
+	if message == "" {
+		message = "upstream emitted response.failed"
+	}
+	return message, code
 }
 
 func isCodexEncryptedContentError(status int, body []byte) bool {

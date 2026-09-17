@@ -42,6 +42,33 @@ func (w *resultWriter) Write(p []byte) (int, error) {
 	return w.ResponseWriter.Write(p)
 }
 
+// ReadFrom keeps io.Copy's fast path observable. Some upstream response bodies
+// implement WriterTo; explicitly routing through Write guarantees streamed SSE
+// is included in the incident bundle instead of bypassing the capture buffer.
+func (w *resultWriter) ReadFrom(r io.Reader) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var total int64
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return total, nil
+			}
+			return total, readErr
+		}
+	}
+}
+
 // CaptureFailures returns middleware that writes one private reproduction
 // bundle for every failed /v1 request except rate limits and client cancels.
 func CaptureFailures(cfg config.FailureCaptureConfig) gin.HandlerFunc {

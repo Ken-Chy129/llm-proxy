@@ -15,6 +15,8 @@ import (
 
 const encryptedRejected = `{"error":{"message":"The encrypted content for item cmp_old could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error"}}`
 
+const completedResponsesStream = "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+
 func encryptedSessionBody(encrypted string) []byte {
 	body, _ := json.Marshal(map[string]interface{}{
 		"model": "gpt-5.5", "stream": true,
@@ -42,7 +44,7 @@ func TestCodexEncryptedSessionTriesAnotherAccountBeforeDegrading(t *testing.T) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: [DONE]\n\n")
+		io.WriteString(w, completedResponsesStream)
 	}))
 	defer server.Close()
 	withCodexUpstream(t, server.URL, server.URL)
@@ -79,7 +81,7 @@ func TestCodexEncryptedSessionDegradesOnlyAfterEveryAccountRejects(t *testing.T)
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: [DONE]\n\n")
+		io.WriteString(w, completedResponsesStream)
 	}))
 	defer server.Close()
 	withCodexUpstream(t, server.URL, server.URL)
@@ -121,7 +123,7 @@ func TestCodexEncryptedSessionStillSwitchesWhenOwningAccountRunsOut(t *testing.T
 			io.WriteString(w, encryptedRejected)
 		default:
 			w.Header().Set("Content-Type", "text/event-stream")
-			io.WriteString(w, "data: [DONE]\n\n")
+			io.WriteString(w, completedResponsesStream)
 		}
 	}))
 	defer server.Close()
@@ -149,7 +151,7 @@ func TestCodexExpandsPortableCompactionBeforeUpstream(t *testing.T) {
 		data, _ := io.ReadAll(r.Body)
 		body = string(data)
 		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: [DONE]\n\n")
+		io.WriteString(w, completedResponsesStream)
 	}))
 	defer server.Close()
 	withCodexUpstream(t, server.URL, server.URL)

@@ -164,6 +164,46 @@ func TestRelayCoalescesParallelToolResultsIntoOneUserTurn(t *testing.T) {
 	}
 }
 
+func TestRelayTranslatedStreamCoalescesParallelToolResults(t *testing.T) {
+	t.Setenv("TEST_RELAY_TRANSLATED_TOKEN", "relay-secret")
+	var upstreamMessages []struct {
+		Role    string                   `json:"role"`
+		Content []map[string]interface{} `json:"content"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages json.RawMessage `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if err := json.Unmarshal(body.Messages, &upstreamMessages); err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
+	}))
+	defer server.Close()
+	exec := NewRelayExecutor(config.RelayConfig{BaseURL: server.URL, AuthTokenEnv: "TEST_RELAY_TRANSLATED_TOKEN"})
+	exec.SetModels([]config.ModelConfig{{Name: "m"}})
+	req := &types.ChatCompletionRequest{
+		Model: "m", Stream: true, Messages: []types.ChatMessage{
+			{Role: "assistant", ToolCalls: []types.ToolCall{
+				{ID: "a", Type: "function", Function: types.ToolCallFunction{Name: "read", Arguments: `{}`}},
+				{ID: "b", Type: "function", Function: types.ToolCallFunction{Name: "read", Arguments: `{}`}},
+			}},
+			{Role: "tool", ToolCallID: "a", Content: json.RawMessage(`"one"`)},
+			{Role: "tool", ToolCallID: "b", Content: json.RawMessage(`"two"`)},
+		},
+	}
+	if _, err := exec.ExecuteStream(context.Background(), req, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(upstreamMessages) != 2 || upstreamMessages[1].Role != "user" || len(upstreamMessages[1].Content) != 2 {
+		t.Fatalf("translated upstream messages = %+v", upstreamMessages)
+	}
+}
+
 func TestRelayPassthroughBridgesLongPromptCacheLookback(t *testing.T) {
 	assistantBlocks := make([]map[string]interface{}, 0, 22)
 	for i := 0; i < 22; i++ {

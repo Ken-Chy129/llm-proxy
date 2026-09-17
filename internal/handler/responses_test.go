@@ -982,3 +982,22 @@ func TestAdaptedResponsesMintsUpstreamCompatibleMessageIDs(t *testing.T) {
 		t.Errorf("message item is missing a msg_ id:\n%s", body)
 	}
 }
+
+func TestCopyResponsesStreamReportsFailedEventAfterPartialOutput(t *testing.T) {
+	stream := strings.Join([]string{
+		`event: response.output_text.delta`,
+		`data: {"type":"response.output_text.delta","delta":"partial"}`,
+		``,
+		`event: response.failed`,
+		`data: {"type":"response.failed","response":{"error":{"code":"model_at_capacity","message":"Selected model is at capacity."}}}`,
+		``,
+	}, "\n")
+	var out strings.Builder
+	_, err := copyResponsesStreamAndExtractUsage(strings.NewReader(stream), &out)
+	if err == nil || executor.StatusFromError(err) != http.StatusTooManyRequests || !strings.Contains(err.Error(), "at capacity") {
+		t.Fatalf("error=%v status=%d", err, executor.StatusFromError(err))
+	}
+	if !strings.Contains(out.String(), "partial") || !strings.Contains(out.String(), "response.failed") {
+		t.Fatalf("forwarded stream=%s", out.String())
+	}
+}

@@ -142,7 +142,9 @@ func TestAnyGenExecutorRejectsSuccessfulResponseWithoutUsableOutput(t *testing.T
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			calls := 0
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
 				w.Header().Set("Content-Type", "application/json")
 				io.WriteString(w, tt.body)
 			}))
@@ -166,6 +168,9 @@ func TestAnyGenExecutorRejectsSuccessfulResponseWithoutUsableOutput(t *testing.T
 			// operators back to the upstream to guess what happened.
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %q, want it to mention %q", err, tt.want)
+			}
+			if calls != 1 {
+				t.Fatalf("upstream calls = %d, want 1", calls)
 			}
 		})
 	}
