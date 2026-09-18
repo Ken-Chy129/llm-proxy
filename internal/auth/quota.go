@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -51,6 +52,21 @@ type RateWindow struct {
 	// ResetUnix is the machine-readable reset time (unix seconds) behind ResetAt.
 	// Used by quota-aware account selection to compare reset times; 0 = unknown.
 	ResetUnix int64 `json:"reset_unix,omitempty"`
+	// Model names the model family this window caps ("fable", "opus", ...),
+	// lower-cased. Empty means the window is account-wide. A model-scoped
+	// window never benches the whole account, but selection must still skip
+	// the account for requests to that family once it is exhausted.
+	Model string `json:"model,omitempty"`
+}
+
+// AppliesTo reports whether a model-scoped window governs the given upstream
+// model id. Account-wide windows (empty Model) never match here; they are
+// handled through Primary/Secondary.
+func (w *RateWindow) AppliesTo(model string) bool {
+	if w == nil || w.Model == "" || model == "" {
+		return false
+	}
+	return strings.Contains(strings.ToLower(model), w.Model)
 }
 
 // Exhausted reports whether this window is currently used up: the limit was
@@ -84,6 +100,21 @@ func (q *QuotaInfo) HasHeadroom(now time.Time) bool {
 		}
 	}
 	return true
+}
+
+// ModelExhausted returns the model-scoped window (Fable weekly, Opus weekly,
+// ...) that currently blocks requests for model on this account, or nil when
+// none does. The account may still serve every other model.
+func (q *QuotaInfo) ModelExhausted(model string, now time.Time) *RateWindow {
+	if q == nil || !q.HasRealData {
+		return nil
+	}
+	for _, a := range q.Additional {
+		if a.Primary.AppliesTo(model) && a.Primary.Exhausted(now) {
+			return a.Primary
+		}
+	}
+	return nil
 }
 
 type AdditionalRL struct {

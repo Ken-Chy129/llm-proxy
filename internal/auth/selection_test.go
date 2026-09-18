@@ -105,6 +105,65 @@ func TestPerModelRateLimit(t *testing.T) {
 	}
 }
 
+// A quota snapshot whose model-scoped weekly window (Fable) is spent must keep
+// the account out of Fable requests, under both strategies, while it still
+// serves other models. Reactive 429 cooldowns alone cannot do this: they are
+// clamped to minutes, so without the quota signal each Fable request would
+// re-try the dead account and burn an attempt on a guaranteed 429.
+func TestModelScopedQuotaSkipsAccountForThatModel(t *testing.T) {
+	for _, strategy := range []string{StrategyWeeklyExpiry, StrategyRoundRobin} {
+		t.Run(strategy, func(t *testing.T) {
+			dir := t.TempDir()
+			InitQuotaCache(dir)
+			store := NewTokenStore(dir, strategy)
+			future := time.Now().Add(time.Hour).Format(time.RFC3339)
+			for _, id := range []string{"A", "B"} {
+				store.Add(&TokenData{ID: id, Provider: "claude", AccessToken: "t-" + id, ExpiresAt: future})
+			}
+			now := time.Now()
+			mk := func(id string, fableSpent bool) *QuotaInfo {
+				return &QuotaInfo{
+					AccountID: id, HasRealData: true,
+					Primary:   &RateWindow{Label: labelClaudeSession, ResetUnix: now.Add(3 * time.Hour).Unix()},
+					Secondary: &RateWindow{Label: labelClaudeWeeklyAll, ResetUnix: now.Add(24 * time.Hour).Unix()},
+					Additional: []AdditionalRL{{Name: "Fable weekly", Primary: &RateWindow{
+						Label: "Fable weekly", Model: "fable", LimitReached: fableSpent,
+						ResetUnix: now.Add(72 * time.Hour).Unix(),
+					}}},
+				}
+			}
+			// A resets its weekly sooner, so weekly_expiry would prefer it if
+			// Fable were not spent there.
+			a := mk("A", true)
+			a.Secondary.ResetUnix = now.Add(12 * time.Hour).Unix()
+			QuotaCache.Set("claude:A", a)
+			QuotaCache.Set("claude:B", mk("B", false))
+
+			fable, opus := map[string]bool{}, map[string]bool{}
+			for i := 0; i < 10; i++ {
+				if g := store.Get("claude", "claude-fable-5-1"); g != nil {
+					fable[g.ID] = true
+				}
+				if g := store.Get("claude", "claude-opus-5"); g != nil {
+					opus[g.ID] = true
+				}
+			}
+			if fable["A"] {
+				t.Error("A must be skipped for Fable while its Fable weekly is spent")
+			}
+			if !fable["B"] {
+				t.Error("B must serve Fable")
+			}
+			if !opus["A"] {
+				t.Error("A must stay selectable for other models")
+			}
+			if _, _, active := store.RateLimitInfo("claude", "A"); active {
+				t.Error("a model-scoped quota cap must not show as an account-wide limit")
+			}
+		})
+	}
+}
+
 func TestRateWindowExhausted(t *testing.T) {
 	now := time.Now()
 	cases := []struct {

@@ -638,6 +638,14 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 			Percent  float64 `json:"percent"`
 			Severity string  `json:"severity"`
 			ResetsAt string  `json:"resets_at"`
+			// Scope names the model family a "weekly_scoped" window caps, e.g.
+			// {"model":{"display_name":"Fable"}}. Absent on account-wide windows.
+			Scope *struct {
+				Model *struct {
+					ID          string `json:"id"`
+					DisplayName string `json:"display_name"`
+				} `json:"model"`
+			} `json:"scope"`
 		} `json:"limits"`
 		FiveHour       *claudeUsageWindow `json:"five_hour"`
 		SevenDay       *claudeUsageWindow `json:"seven_day"`
@@ -652,8 +660,17 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 	if len(usage.Limits) > 0 {
 		for _, l := range usage.Limits {
 			display, unix := parseClaudeReset(l.ResetsAt)
+			scopedModel := ""
+			if l.Scope != nil && l.Scope.Model != nil {
+				scopedModel = l.Scope.Model.DisplayName
+				if scopedModel == "" {
+					scopedModel = l.Scope.Model.ID
+				}
+			}
+			label, family := claudeLimitLabel(l.Kind, l.Group, scopedModel)
 			windows = append(windows, &RateWindow{
-				Label:            claudeLimitLabel(l.Kind, l.Group),
+				Label:            label,
+				Model:            family,
 				RemainingPercent: remainingPercent(l.Percent),
 				// Only a full window (percent >= 100) counts as reached. Anthropic
 				// flags severity "critical" while the account is still usable (it's
@@ -679,8 +696,10 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 				continue
 			}
 			display, unix := parseClaudeReset(w.win.ResetsAt)
+			label, family := claudeLimitLabel(w.key, "", "")
 			windows = append(windows, &RateWindow{
-				Label:            claudeLimitLabel(w.key, ""),
+				Label:            label,
+				Model:            family,
 				RemainingPercent: remainingPercent(w.win.Utilization),
 				LimitReached:     w.win.Utilization >= 100,
 				ResetAt:          display,
@@ -697,9 +716,10 @@ func ParseClaudeUsageLimits(body []byte) (*QuotaInfo, error) {
 	// Primary = the 5h session window, Secondary = the all-models weekly window.
 	// These two are the only account-wide binding limits, so the "limited" badge
 	// (admin handler) and quota-aware selection (token_store) key off them alone.
-	// Model-specific weekly limits — Opus/Sonnet weekly and the Fable "Weekly
-	// limit" — are informational and go to Additional: hitting one must never
-	// bench the whole account, only the all-models weekly does.
+	// Model-specific weekly limits — Opus/Sonnet/Fable weekly — go to Additional
+	// tagged with their model family: hitting one must never bench the whole
+	// account (only the all-models weekly does), but selection does skip the
+	// account for that family via QuotaInfo.ModelExhausted.
 	info := &QuotaInfo{}
 	for _, w := range windows {
 		switch {
@@ -736,31 +756,38 @@ const (
 	labelClaudeWeeklyAll = "Weekly (all models)"
 )
 
-func claudeLimitLabel(kind, group string) string {
+// claudeLimitLabel returns the display label for a usage window and, for a
+// model-scoped window, the lower-cased model family it caps ("fable", "opus").
+// scopedModel is the display name from a "weekly_scoped" limit's scope, when
+// the API provides one.
+func claudeLimitLabel(kind, group, scopedModel string) (label, family string) {
 	switch strings.ToLower(kind) {
 	case "session", "five_hour":
-		return labelClaudeSession
+		return labelClaudeSession, ""
 	case "weekly_all", "seven_day":
-		return labelClaudeWeeklyAll
+		return labelClaudeWeeklyAll, ""
 	case "weekly_opus", "seven_day_opus":
-		return "Opus weekly"
+		return "Opus weekly", "opus"
 	case "weekly_sonnet", "seven_day_sonnet":
-		return "Sonnet weekly"
+		return "Sonnet weekly", "sonnet"
+	}
+	if scopedModel != "" {
+		family = strings.ToLower(strings.TrimSpace(scopedModel))
+		return strings.TrimSpace(scopedModel) + " weekly", family
 	}
 	lower := strings.ToLower(kind)
-	if strings.Contains(lower, "opus") {
-		return "Opus weekly"
-	}
-	if strings.Contains(lower, "sonnet") {
-		return "Sonnet weekly"
+	for _, f := range []string{"opus", "sonnet", "haiku", "fable"} {
+		if strings.Contains(lower, f) {
+			return strings.ToUpper(f[:1]) + f[1:] + " weekly", f
+		}
 	}
 	if group == "weekly" {
-		return "Weekly limit"
+		return "Weekly limit", ""
 	}
 	if kind != "" {
-		return kind
+		return kind, ""
 	}
-	return "Usage limit"
+	return "Usage limit", ""
 }
 
 // parseClaudeReset returns the display string ("01/02 15:04", local) and the

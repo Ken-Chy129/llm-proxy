@@ -535,10 +535,17 @@ async function loadStatus() {
         : stale
           ? `<div class="quota-state is-stale">stale reading · refresh to confirm</div>`
           : '';
+      // A spent model-scoped cap (Fable weekly, Opus weekly) does not take the
+      // account out of rotation, but the router will not send that model here
+      // until the reset. Say so, or the card reads as fully serving while Fable
+      // requests silently route elsewhere.
+      const modelLimitBadge = (!blocked && q.model_limits && q.model_limits.length)
+        ? q.model_limits.map(m => `<div class="quota-state is-model-limit" title="${escapeHTML('This account is skipped for ' + m.label.replace(/ weekly$/, '') + ' requests until the window resets; other models still serve here')}">${escapeHTML(m.label)} spent${m.reset_at ? ' · until ' + escapeHTML(m.reset_at) : ''}</div>`).join('')
+        : '';
       const label = (q.provider || '').charAt(0).toUpperCase() + (q.provider || '').slice(1);
       return {
         key: JSON.stringify([q.provider || '', q.account_id || '']),
-        html: `<div class="quota-card${blocked ? ' is-blocked' : waiting ? ' is-waiting' : ''}" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(displayName || '')}</span>${refreshBtn}</div><div class="quota-plan-row"><span class="plan-badge ${planCls}" title="${escapeHTML(planLabel)}">${escapeHTML(planLabel)}</span>${fetchedAt}</div>${stateBadge}${rows}</div>`,
+        html: `<div class="quota-card${blocked ? ' is-blocked' : waiting ? ' is-waiting' : ''}" data-provider="${q.provider}" data-account="${q.account_id}"><div class="quota-card-header"><span class="model-tag" style="background:var(--accent-dim);color:var(--text-0)">${label}</span><span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHTML(displayName || '')}</span>${refreshBtn}</div><div class="quota-plan-row"><span class="plan-badge ${planCls}" title="${escapeHTML(planLabel)}">${escapeHTML(planLabel)}</span>${fetchedAt}</div>${stateBadge}${modelLimitBadge}${rows}</div>`,
       };
     });
     // One section per tier; a tier with nothing in it disappears entirely so

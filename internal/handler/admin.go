@@ -105,10 +105,38 @@ type quotaView struct {
 	// StateDetail explains a non-serving state in the operator's terms, e.g.
 	// "re-login needed · since 09-07 15:00".
 	StateDetail string `json:"state_detail,omitempty"`
+	// ModelLimits lists model families (e.g. "Fable") whose scoped weekly cap is
+	// spent on this account. The account keeps serving everything else, so it
+	// stays "serving" -- but the router will not pick it for these models until
+	// the listed reset, and the operator should see that on the card.
+	ModelLimits []modelLimitView `json:"model_limits,omitempty"`
 	// Stale marks a snapshot too old to describe the account's current headroom.
 	Stale bool `json:"stale"`
 	// StaleAge is a human-readable age ("13d") for any snapshot that has one.
 	StaleAge string `json:"stale_age,omitempty"`
+}
+
+// modelLimitView is one spent model-scoped window, in operator terms.
+type modelLimitView struct {
+	Label   string `json:"label"`
+	ResetAt string `json:"reset_at,omitempty"`
+}
+
+// spentModelLimits collects the model-scoped windows currently exhausted on a
+// snapshot, in the order the upstream reported them.
+func spentModelLimits(q *auth.QuotaInfo, now time.Time) []modelLimitView {
+	if q == nil || !q.HasRealData {
+		return nil
+	}
+	var out []modelLimitView
+	for _, a := range q.Additional {
+		w := a.Primary
+		if w == nil || w.Model == "" || !w.Exhausted(now) {
+			continue
+		}
+		out = append(out, modelLimitView{Label: w.Label, ResetAt: w.ResetAt})
+	}
+	return out
 }
 
 // humanAge renders a snapshot age at the coarsest unit that still says
@@ -150,6 +178,7 @@ func newQuotaView(q *auth.QuotaInfo, state, detail string, now time.Time) quotaV
 		StateDetail:  detail,
 		Tier:         tier,
 		Serving:      tier == quotaTierServing,
+		ModelLimits:  spentModelLimits(q, now),
 	}
 	if age, ok := q.Age(now); ok {
 		v.StaleAge = humanAge(age)

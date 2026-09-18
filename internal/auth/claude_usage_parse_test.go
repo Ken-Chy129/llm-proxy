@@ -1,6 +1,9 @@
 package auth
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestParseClaudeUsageLimitsReal(t *testing.T) {
 	body := []byte(`{"five_hour":{"utilization":100.0,"resets_at":"2026-07-01T09:30:00.019821+00:00"},"seven_day":{"utilization":35.0,"resets_at":"2026-07-01T09:00:00.019840+00:00"},"seven_day_opus":null,"seven_day_sonnet":null,"limits":[{"kind":"session","group":"session","percent":100,"severity":"critical","resets_at":"2026-07-01T09:30:00.019821+00:00","is_active":true},{"kind":"weekly_all","group":"weekly","percent":35,"severity":"normal","resets_at":"2026-07-01T09:00:00.019840+00:00","is_active":false}]}`)
@@ -52,8 +55,49 @@ func TestParseClaudeUsageLimitsPinsWeeklyAll(t *testing.T) {
 	if len(info.Additional) != 1 || info.Additional[0].Primary == nil {
 		t.Fatalf("expected the model-specific window in Additional, got %+v", info.Additional)
 	}
-	if info.Additional[0].Primary.Label != "Weekly limit" || !info.Additional[0].Primary.LimitReached {
+	if info.Additional[0].Primary.Label != "Fable weekly" || info.Additional[0].Primary.Model != "fable" || !info.Additional[0].Primary.LimitReached {
 		t.Errorf("Fable window wrong: %+v", info.Additional[0].Primary)
+	}
+}
+
+// The live API reports the Fable cap as kind "weekly_scoped" with the model
+// only in scope.model.display_name. The window must be tagged with that family
+// so selection can skip the account for Fable while keeping it for Opus etc.
+func TestParseClaudeUsageLimitsWeeklyScoped(t *testing.T) {
+	body := []byte(`{"limits":[
+		{"kind":"session","group":"session","percent":1,"severity":"normal","resets_at":"2026-09-18T10:10:01Z","scope":null,"is_active":false},
+		{"kind":"weekly_all","group":"weekly","percent":52,"severity":"normal","resets_at":"2026-09-21T14:00:00Z","scope":null,"is_active":false},
+		{"kind":"weekly_scoped","group":"weekly","percent":100,"severity":"critical","resets_at":"2026-09-21T13:59:59Z","scope":{"model":{"id":null,"display_name":"Fable"},"surface":null},"is_active":true}
+	]}`)
+	info, err := ParseClaudeUsageLimits(body)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	if info.Secondary == nil || info.Secondary.LimitReached {
+		t.Fatalf("all-models weekly must stay usable: %+v", info.Secondary)
+	}
+	if len(info.Additional) != 1 {
+		t.Fatalf("expected one scoped window, got %+v", info.Additional)
+	}
+	w := info.Additional[0].Primary
+	if w.Label != "Fable weekly" || w.Model != "fable" || !w.LimitReached {
+		t.Fatalf("scoped window wrong: %+v", w)
+	}
+	// FetchQuota stamps this after a successful fetch; the parser leaves it unset.
+	info.HasRealData = true
+	future := time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC)
+	if info.ModelExhausted("claude-fable-5-1", future) == nil {
+		t.Error("Fable must be exhausted on this account")
+	}
+	if info.ModelExhausted("claude-opus-5", future) != nil {
+		t.Error("Opus must not be affected by the Fable cap")
+	}
+	if info.Primary.Exhausted(future) || info.Secondary.Exhausted(future) {
+		t.Error("a spent Fable cap must not bench the whole account")
+	}
+	// Past the reset the window is fresh again without a refetch.
+	if info.ModelExhausted("claude-fable-5-1", future.Add(48*time.Hour)) != nil {
+		t.Error("Fable window must recover at its reset time")
 	}
 }
 

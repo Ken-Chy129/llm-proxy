@@ -354,8 +354,9 @@ func (s *TokenStore) Dir() string { return s.dir }
 
 // Get returns the next token for a provider according to the configured
 // strategy. model scopes rate-limit filtering: an account cooling down only for
-// a specific model (e.g. a Fable/Opus weekly cap) is still eligible for other
-// models. Pass "" when the caller isn't model-specific. Under "weekly_expiry" it
+// a specific model, or whose quota shows that model's weekly cap (Fable/Opus)
+// spent, is still eligible for other models. Pass "" when the caller isn't
+// model-specific. Under "weekly_expiry" it
 // prefers the usable account whose weekly window resets soonest (burning
 // perishable weekly budget first); it falls back to round-robin when no
 // quota-backed account qualifies. Under "round_robin" it uses blind rotation.
@@ -379,6 +380,7 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 	n := len(list)
 	start := int(s.counter.Add(1)) % n
 
+	now := time.Now()
 	notBlocked := func(t *TokenData) bool {
 		if excluded[t.ID] {
 			return false
@@ -386,7 +388,18 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 		if _, revoked := s.revokedLocked(provider, t.ID); revoked {
 			return false
 		}
-		return !s.isAccountDisabledLocked(provider, t.ID) && !s.isRateLimitedLocked(provider, t.ID, model)
+		if s.isAccountDisabledLocked(provider, t.ID) || s.isRateLimitedLocked(provider, t.ID, model) {
+			return false
+		}
+		// A model-scoped weekly cap (e.g. Fable) that quota shows as spent makes
+		// this account useless for that model until the reset, even though it
+		// still serves everything else. Skip it rather than collect a 429.
+		if model != "" && QuotaCache != nil {
+			if q := QuotaCache.Get(provider + ":" + t.ID); q.ModelExhausted(model, now) != nil {
+				return false
+			}
+		}
+		return true
 	}
 
 	// Preferred tier: quota-aware selection by soonest weekly reset.
@@ -433,7 +446,7 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 // "Usable" = not expired/disabled/rate-limited and, per fresh quota, neither
 // the session (primary) nor the all-models-weekly (secondary) window is
 // exhausted. Model-specific weekly limits (Opus/Fable) live in Additional and
-// never gate selection here.
+// are applied per request model by notBlocked, never account-wide.
 // Accounts without real quota data are skipped here — they fall through to the
 // round-robin tier. Returns nil when no quota-backed account qualifies.
 //
