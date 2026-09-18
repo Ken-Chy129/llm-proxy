@@ -12,6 +12,31 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+const (
+	// Output budgets used when the client sends none. Claude models get their
+	// real ceiling so long tool calls are not cut at 8k; anything else (Kimi via
+	// the Anthropic-compatible endpoint) keeps the conservative legacy value.
+	defaultClaudeMaxOutputTokens  = 64000
+	defaultGenericMaxOutputTokens = 8192
+)
+
+// claudeMaxOutputTokens is the ceiling for a model known to be Claude.
+func claudeMaxOutputTokens(model string) int {
+	if model == "claude-fable-5-1" {
+		return 128000
+	}
+	return defaultClaudeMaxOutputTokens
+}
+
+// defaultAnthropicMaxTokens picks the fallback budget for a translated request
+// whose client omitted max_tokens, based on what the upstream model is.
+func defaultAnthropicMaxTokens(model string) int {
+	if strings.HasPrefix(model, "claude-") {
+		return claudeMaxOutputTokens(model)
+	}
+	return defaultGenericMaxOutputTokens
+}
+
 func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.AnthropicRequest {
 	ar := &types.AnthropicRequest{
 		Model:            model,
@@ -22,7 +47,9 @@ func ToAnthropicRequest(req *types.ChatCompletionRequest, model string) *types.A
 		AnthropicVersion: "vertex-2023-10-16",
 	}
 	if ar.MaxTokens == 0 {
-		ar.MaxTokens = 8192
+		// Clients such as Codex omit the output budget entirely; a flat 8192 here
+		// used to truncate long tool calls on every non-OAuth Claude backend.
+		ar.MaxTokens = defaultAnthropicMaxTokens(model)
 	}
 
 	var systemParts []string

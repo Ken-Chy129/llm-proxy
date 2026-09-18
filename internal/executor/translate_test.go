@@ -224,3 +224,30 @@ func TestToAnthropicContentLeavesUnknownShapesAlone(t *testing.T) {
 		t.Errorf("nil content = %q, want empty", got)
 	}
 }
+
+func TestToAnthropicRequestDefaultsMaxTokensByModel(t *testing.T) {
+	tests := []struct {
+		model string
+		want  int
+	}{
+		{model: "claude-fable-5-1", want: 128000},
+		{model: "claude-opus-4-6", want: 64000},
+		{model: "claude-haiku-4-5-20251001", want: 64000},
+		{model: "k3", want: 8192},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			req := &types.ChatCompletionRequest{Model: tt.model}
+			if got := ToAnthropicRequest(req, tt.model).MaxTokens; got != tt.want {
+				t.Fatalf("MaxTokens = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestToAnthropicRequestKeepsExplicitMaxTokens(t *testing.T) {
+	req := &types.ChatCompletionRequest{Model: "claude-opus-4-6", MaxTokens: 1234}
+	if got := ToAnthropicRequest(req, req.Model).MaxTokens; got != 1234 {
+		t.Fatalf("MaxTokens = %d, want 1234", got)
+	}
+}
