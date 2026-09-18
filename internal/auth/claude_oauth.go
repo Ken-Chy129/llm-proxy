@@ -94,6 +94,9 @@ func (o *ClaudeOAuth) GetToken(ctx context.Context) (string, error) {
 func (o *ClaudeOAuth) GetTokenWithAccount(ctx context.Context, model string) (string, string, error) {
 	token := o.store.Get("claude", model)
 	if token == nil {
+		if o.store.AllRateLimited("claude", model) {
+			return "", "", ErrAllAccountsRateLimited
+		}
 		return "", "", fmt.Errorf("claude not authenticated (%d accounts), visit /auth/claude to login", len(o.store.AllForProvider("claude")))
 	}
 	id := token.ID

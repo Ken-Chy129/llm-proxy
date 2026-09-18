@@ -328,7 +328,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, req *types.ChatComple
 func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w io.Writer) error {
 	tokenData := e.oauth.GetTokenData(ctx)
 	if tokenData == nil {
-		return fmt.Errorf("codex not authenticated")
+		return e.noAccountError()
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, codexBaseURL+"/codex/responses", bytes.NewReader(rawBody))
@@ -360,6 +360,19 @@ func (e *CodexExecutor) ExecuteRawStream(ctx context.Context, rawBody []byte, w 
 	return err
 }
 
+// noAccountError describes a nil account selection. When the pool exists but
+// every account is limited, the error carries a 429 so the chain treats it
+// like the upstream 429 it stands in for and fails over; the request no longer
+// walks every cooling-down account collecting one real 429 each.
+func (e *CodexExecutor) noAccountError() error {
+	store := e.oauth.Store()
+	if store.AllRateLimited("codex", "") {
+		return &HTTPError{Backend: "codex", Status: http.StatusTooManyRequests,
+			Body: "all codex accounts are rate-limited or out of quota"}
+	}
+	return fmt.Errorf("codex not authenticated (%d accounts), visit /auth/codex to login", len(store.AllForProvider("codex")))
+}
+
 func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionRequest, w io.Writer) error {
 	cr := e.toCodexRequest(req)
 	body, _ := json.Marshal(cr)
@@ -382,7 +395,10 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 	for i := 0; i < budget; i++ {
 		tokenData := e.oauth.GetTokenData(ctx)
 		if tokenData == nil {
-			return fmt.Errorf("codex not authenticated")
+			if lastErr != nil {
+				return lastErr
+			}
+			return e.noAccountError()
 		}
 		if exhausted[tokenData.ID] {
 			// Wrapped around to an account we already ruled out: the pool is
@@ -550,7 +566,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			if lastErr != nil {
 				return nil, lastErr
 			}
-			return nil, fmt.Errorf("codex not authenticated (%d accounts), visit /auth/codex to login", accounts)
+			return nil, e.noAccountError()
 		}
 		if exhausted[tokenData.ID] {
 			break

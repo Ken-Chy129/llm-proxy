@@ -40,11 +40,43 @@ func TestGetWeeklyExpirySelection(t *testing.T) {
 		t.Fatalf("expected A after B weekly exhausted, got %v", got)
 	}
 
-	// A's session also exhausted → both blocked in the quota tier → fall through
-	// to round-robin, which still returns some active, non-rate-limited account.
+	// A's session also exhausted → every account is out of quota. Selection
+	// must say so (nil) rather than hand one back to collect a certain 429;
+	// the chain then fails over to the next provider without the detour.
 	setQuota("A", now.Add(3*time.Hour), now.Add(6*24*time.Hour), true, false)
-	if got := store.Get("claude", ""); got == nil {
-		t.Fatal("expected round-robin fallback to return an account, got nil")
+	if got := store.Get("claude", ""); got != nil {
+		t.Fatalf("expected nil when every account is exhausted, got %v", got.ID)
+	}
+
+	// The moment a window's reset passes, the stale snapshot stops blocking.
+	setQuota("A", now.Add(-time.Minute), now.Add(6*24*time.Hour), true, false)
+	if got := store.Get("claude", ""); got == nil || got.ID != "A" {
+		t.Fatalf("expected A once its session reset passed, got %v", got)
+	}
+}
+
+// Every account cooling down after a 429 used to be handed back anyway by the
+// "always try something" fallback, so a request against a fully limited pool
+// walked all N accounts and collected N guaranteed 429s before the chain moved
+// on. Selection must return nil instead, and recover when a cooldown lapses.
+func TestGetReturnsNilWhenEveryAccountIsCoolingDown(t *testing.T) {
+	dir := t.TempDir()
+	InitQuotaCache(dir)
+	store := NewTokenStore(dir, StrategyWeeklyExpiry)
+	future := time.Now().Add(time.Hour).Format(time.RFC3339)
+	for _, id := range []string{"A", "B"} {
+		store.Add(&TokenData{ID: id, Provider: "codex", AccessToken: "t-" + id, ExpiresAt: future})
+	}
+	store.MarkRateLimited("codex", "A", "", time.Now().Add(20*time.Minute), false)
+	store.MarkRateLimited("codex", "B", "", time.Now().Add(time.Hour), false)
+	if got := store.Get("codex", ""); got != nil {
+		t.Fatalf("expected nil while both accounts cool down, got %v", got.ID)
+	}
+	// An expired-but-not-limited token is still worth returning: the caller
+	// refreshes it.
+	store.ClearRateLimit("codex", "A")
+	if got := store.Get("codex", ""); got == nil || got.ID != "A" {
+		t.Fatalf("expected A after its cooldown cleared, got %v", got)
 	}
 }
 

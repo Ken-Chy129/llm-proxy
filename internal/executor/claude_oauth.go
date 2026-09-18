@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -163,6 +164,17 @@ func (e *ClaudeOAuthExecutor) doWithFailover(ctx context.Context, model string, 
 	for i := 0; i < attempts*2; i++ {
 		token, accountID, err := e.oauth.GetTokenWithAccount(ctx, model)
 		if err != nil {
+			if errors.Is(err, auth.ErrAllAccountsRateLimited) {
+				// Nothing left to try: every account is cooling down or shows
+				// its window spent. Surface a 429 so the chain fails over at
+				// once instead of looping here, and prefer the real upstream
+				// 429 from this pass when there was one.
+				if lastErr != nil && StatusFromError(lastErr) == http.StatusTooManyRequests {
+					return nil, lastErr
+				}
+				return nil, &HTTPError{Backend: "claude oauth", Status: http.StatusTooManyRequests,
+					Body: "all claude accounts are rate-limited or out of quota"}
+			}
 			// A refresh that failed with 400/401 has already marked the account
 			// revoked, so the next pass will pick a different one. Keep going
 			// while another account might still serve.

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -391,11 +392,20 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 		if s.isAccountDisabledLocked(provider, t.ID) || s.isRateLimitedLocked(provider, t.ID, model) {
 			return false
 		}
-		// A model-scoped weekly cap (e.g. Fable) that quota shows as spent makes
-		// this account useless for that model until the reset, even though it
-		// still serves everything else. Skip it rather than collect a 429.
-		if model != "" && QuotaCache != nil {
-			if q := QuotaCache.Get(provider + ":" + t.ID); q.ModelExhausted(model, now) != nil {
+		if QuotaCache != nil {
+			q := QuotaCache.Get(provider + ":" + t.ID)
+			// Fresh quota showing the session or all-models weekly window spent
+			// is the same signal the dashboard's "limited" badge uses. Skipping
+			// here keeps selection consistent with it: an account shown as
+			// limited is never attempted. Exhausted() honours the reset time, so
+			// a stale snapshot stops blocking on its own once the window rolls.
+			if q != nil && q.HasRealData && (q.Primary.Exhausted(now) || q.Secondary.Exhausted(now)) {
+				return false
+			}
+			// A model-scoped weekly cap (e.g. Fable) that quota shows as spent
+			// makes this account useless for that model until the reset, even
+			// though it still serves everything else.
+			if model != "" && q.ModelExhausted(model, now) != nil {
 				return false
 			}
 		}
@@ -416,29 +426,64 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 			return list[idx]
 		}
 	}
-	// All expired/disabled/rate-limited. Prefer a non-disabled account that
-	// isn't rate-limited (so the caller can refresh an expired token); fall
-	// back to any non-disabled account so something is always tried.
+	// Every active account is blocked. An expired access token is still worth
+	// handing back: the caller refreshes it and the request goes through.
 	for _, t := range list {
 		if notBlocked(t) {
 			return t
 		}
 	}
-	for _, t := range list {
-		if excluded[t.ID] {
+	// Nothing usable remains. This used to fall back to "any non-disabled
+	// account so something is always tried", which handed back accounts that
+	// were cooling down after a 429 or whose quota showed the window spent.
+	// With the whole pool limited, every request then walked all of them
+	// collecting one guaranteed 429 each before failing over to the next
+	// provider. Return nil instead so the chain moves on immediately; the
+	// cooldown expiring or a quota refresh brings accounts back on their own.
+	return nil
+}
+
+// ErrAllAccountsRateLimited is returned by token lookups when a provider has
+// accounts but every one is cooling down or out of quota. Executors map it to a
+// 429 so the provider chain fails over instead of reporting a login problem.
+var ErrAllAccountsRateLimited = errors.New("all accounts are rate-limited or out of quota")
+
+// AllRateLimited reports whether the provider has accounts but every one that
+// could otherwise serve (not paused, not revoked) is currently held back by a
+// 429 cooldown or by quota showing its window spent. Executors use this to
+// turn a nil selection into a 429-class error instead of "not authenticated",
+// so the chain fails over to the next provider the way a real 429 would.
+func (s *TokenStore) AllRateLimited(provider, model string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	now := time.Now()
+	limited := 0
+	for _, t := range s.accounts[provider] {
+		if s.isAccountDisabledLocked(provider, t.ID) {
 			continue
 		}
-		if !s.isAccountDisabledLocked(provider, t.ID) {
-			// A revoked account is never worth trying: its token can only be
-			// fixed by a re-login, so returning it would spend the request on a
-			// guaranteed 401 instead of failing over to another provider.
-			if _, revoked := s.revokedLocked(provider, t.ID); revoked {
+		if _, revoked := s.revokedLocked(provider, t.ID); revoked {
+			continue
+		}
+		if s.isRateLimitedLocked(provider, t.ID, model) {
+			limited++
+			continue
+		}
+		if QuotaCache != nil {
+			q := QuotaCache.Get(provider + ":" + t.ID)
+			if q != nil && q.HasRealData && (q.Primary.Exhausted(now) || q.Secondary.Exhausted(now)) {
+				limited++
 				continue
 			}
-			return t
+			if model != "" && q.ModelExhausted(model, now) != nil {
+				limited++
+				continue
+			}
 		}
+		// A servable account exists; Get would have returned it.
+		return false
 	}
-	return nil
+	return limited > 0
 }
 
 // pickByWeeklyExpiry selects the usable account whose weekly window resets
@@ -458,7 +503,6 @@ func (s *TokenStore) pickByWeeklyExpiry(provider string, list []*TokenData, notB
 		weeklyRst  int64
 		sessionRst int64
 	}
-	now := time.Now()
 	var cands []cand
 	for _, t := range list {
 		if t.IsExpired() || !notBlocked(t) {
@@ -468,12 +512,8 @@ func (s *TokenStore) pickByWeeklyExpiry(provider string, list []*TokenData, notB
 		if q == nil || !q.HasRealData {
 			continue
 		}
-		// Proactively skip an account whose session or weekly is exhausted, so
-		// we don't spend a request just to collect a 429. A window whose reset
-		// has already passed counts as fresh (see RateWindow.Exhausted).
-		if q.Primary.Exhausted(now) || q.Secondary.Exhausted(now) {
-			continue
-		}
+		// notBlocked has already skipped exhausted windows; this tier only adds
+		// the reset-time ordering on top.
 		c := cand{t: t}
 		if q.Secondary != nil {
 			c.weeklyRst = q.Secondary.ResetUnix
