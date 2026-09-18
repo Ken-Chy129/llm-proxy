@@ -28,15 +28,6 @@ type ClaudeOAuthExecutor struct {
 	modelsMu   sync.RWMutex
 }
 
-const defaultClaudeMaxOutputTokens = 64000
-
-func claudeMaxOutputTokens(model string) int {
-	if model == "claude-fable-5-1" {
-		return 128000
-	}
-	return defaultClaudeMaxOutputTokens
-}
-
 func NewClaudeOAuthExecutor(oauth *auth.ClaudeOAuth, models []config.ModelConfig) *ClaudeOAuthExecutor {
 	return &ClaudeOAuthExecutor{
 		oauth:      oauth,
