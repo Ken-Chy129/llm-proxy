@@ -39,7 +39,9 @@ func TestCodexRemembersTurnStateAcrossTurns(t *testing.T) {
 		mu.Lock()
 		seen = append(seen, r.Header.Get("x-codex-turn-state"))
 		n++
-		w.Header().Set("x-codex-turn-state", "up-"+strings.Repeat("x", n))
+		if r.Header.Get("x-codex-turn-state") == "" { // upstream only mints when absent
+			w.Header().Set("x-codex-turn-state", "up-"+strings.Repeat("x", n))
+		}
 		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, completedResponsesStream)
@@ -51,6 +53,7 @@ func TestCodexRemembersTurnStateAcrossTurns(t *testing.T) {
 
 	openAndDrain(t, exec, context.Background(), body) // no state yet
 	openAndDrain(t, exec, context.Background(), body) // proxy fills "up-x"
+	openAndDrain(t, exec, context.Background(), body) // upstream omitted header last turn; proxy still fills "up-x"
 	h := http.Header{}
 	h.Set("x-codex-turn-state", "client-own")
 	openAndDrain(t, exec, WithClientHeaders(context.Background(), h), body) // client wins
@@ -58,7 +61,7 @@ func TestCodexRemembersTurnStateAcrossTurns(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	want := []string{"", "up-x", "client-own", ""}
+	want := []string{"", "up-x", "up-x", "client-own", ""}
 	for i := range want {
 		if seen[i] != want[i] {
 			t.Fatalf("turn %d sent state %q, want %q (all=%v)", i, seen[i], want[i], seen)

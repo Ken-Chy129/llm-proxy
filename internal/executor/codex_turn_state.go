@@ -84,13 +84,24 @@ func (s *codexTurnStateStore) lookup(key, accountID string) string {
 	return e.state
 }
 
+// Upstream only issues a new turn-state when the request carried none; a turn
+// that replays a valid state gets a response without the header. remember
+// therefore keeps the existing entry when state is empty, refreshing its age
+// so an active conversation never expires mid-session.
 func (s *codexTurnStateStore) remember(key, accountID, state string) {
-	if s == nil || key == "" || state == "" {
+	if s == nil || key == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
+	if state == "" {
+		if e, ok := s.entries[key]; ok && e.accountID == accountID {
+			e.seenAt = now
+			s.entries[key] = e
+		}
+		return
+	}
 	if len(s.entries) >= codexTurnStateMax {
 		cutoff := now.Add(-codexTurnStateTTL)
 		for k, e := range s.entries {

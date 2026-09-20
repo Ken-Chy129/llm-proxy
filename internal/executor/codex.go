@@ -626,6 +626,15 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		}
 		recordUpstreamHeaders(ctx, resp.Header)
 		if resp.StatusCode == http.StatusOK {
+			// Upstream omits the header when the request already carried a
+			// valid state, so echo the one we hold back to the client too.
+			if resp.Header.Get("x-codex-turn-state") == "" {
+				if held := e.turnStates.lookup(conversation, tokenData.ID); held != "" {
+					h := resp.Header.Clone()
+					h.Set("x-codex-turn-state", held)
+					recordUpstreamHeaders(ctx, h)
+				}
+			}
 			e.turnStates.remember(conversation, tokenData.ID, resp.Header.Get("x-codex-turn-state"))
 		}
 
