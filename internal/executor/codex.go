@@ -112,6 +112,9 @@ type CodexExecutor struct {
 	modelsMu sync.RWMutex
 	models   []string
 	catalog  []string
+	// turnStates remembers upstream's x-codex-turn-state per conversation so a
+	// turn the client sends without one still reaches its cache machine.
+	turnStates *codexTurnStateStore
 	// httpClient overrides the default fingerprinted client; tests set it to
 	// reach a plain-HTTP stub. Nil means "use the real one".
 	httpClient *http.Client
@@ -125,7 +128,7 @@ func (e *CodexExecutor) client() *http.Client {
 }
 
 func NewCodexExecutor(oauth *auth.CodexOAuth, models []string) *CodexExecutor {
-	return &CodexExecutor{oauth: oauth, models: models}
+	return &CodexExecutor{oauth: oauth, models: models, turnStates: newCodexTurnStateStore()}
 }
 
 func (e *CodexExecutor) Models() []string {
@@ -516,6 +519,8 @@ func (e *CodexExecutor) doStream(ctx context.Context, req *types.ChatCompletionR
 func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (io.ReadCloser, error) {
 	var reqMap map[string]interface{}
 	json.Unmarshal(body, &reqMap)
+	conversation := codexConversationKey(reqMap, clientHeaders(ctx).Get("x-codex-window-id"))
+	clientTurnState := clientHeaders(ctx).Get("x-codex-turn-state")
 	reqMap["stream"] = true
 	reqMap["store"] = false
 	if _, ok := reqMap["instructions"]; !ok {
@@ -557,7 +562,15 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		return true
 	}
 	for i := 0; i < accounts*2; i++ {
-		tokenData := e.oauth.GetTokenDataExcluding(ctx, exhausted)
+		// Prefer the account that last served this conversation: its upstream
+		// cache machine holds the prefix and issued the turn-state we replay.
+		var tokenData *auth.TokenData
+		if preferred := e.turnStates.preferredAccount(conversation); preferred != "" {
+			tokenData = e.oauth.GetTokenDataByID(ctx, preferred, exhausted)
+		}
+		if tokenData == nil {
+			tokenData = e.oauth.GetTokenDataExcluding(ctx, exhausted)
+		}
 		if tokenData == nil {
 			if degradeUnreadableEncryptedState() {
 				i = -1
@@ -599,6 +612,11 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		httpReq.Header.Set("x-codex-installation-id", installationID)
 		httpReq.Header.Set("x-client-request-id", uuid.New().String())
 		applyCodexClientHeaders(ctx, httpReq)
+		if clientTurnState == "" {
+			if remembered := e.turnStates.lookup(conversation, tokenData.ID); remembered != "" {
+				httpReq.Header.Set("x-codex-turn-state", remembered)
+			}
+		}
 
 		resp, err := e.client().Do(httpReq)
 		if err != nil {
@@ -607,6 +625,9 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			return nil, requestErr
 		}
 		recordUpstreamHeaders(ctx, resp.Header)
+		if resp.StatusCode == http.StatusOK {
+			e.turnStates.remember(conversation, tokenData.ID, resp.Header.Get("x-codex-turn-state"))
+		}
 
 		if quota := auth.ParseCodexRateLimitHeaders(resp.Header); quota != nil {
 			quota.AccountID = tokenData.ID

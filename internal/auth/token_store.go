@@ -443,6 +443,43 @@ func (s *TokenStore) GetExcluding(provider, model string, excluded map[string]bo
 	return nil
 }
 
+// GetByIDIfUsable returns one specific account only while ordinary selection
+// would still consider it eligible: not excluded, paused, revoked, cooling
+// down or out of quota. Cache-locality callers use it to keep a conversation
+// on the account whose upstream cache machine holds its prefix, without the
+// preference ever overriding availability. An expired access token is still
+// returned because the caller refreshes that exact account before use.
+func (s *TokenStore) GetByIDIfUsable(provider, id, model string, excluded map[string]bool) *TokenData {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if id == "" || excluded[id] {
+		return nil
+	}
+	now := time.Now()
+	for _, t := range s.accounts[provider] {
+		if t.ID != id {
+			continue
+		}
+		if s.isAccountDisabledLocked(provider, id) || s.isRateLimitedLocked(provider, id, model) {
+			return nil
+		}
+		if _, revoked := s.revokedLocked(provider, id); revoked {
+			return nil
+		}
+		if QuotaCache != nil {
+			q := QuotaCache.Get(provider + ":" + id)
+			if q != nil && q.HasRealData && (q.Primary.Exhausted(now) || q.Secondary.Exhausted(now)) {
+				return nil
+			}
+			if model != "" && q.ModelExhausted(model, now) != nil {
+				return nil
+			}
+		}
+		return t
+	}
+	return nil
+}
+
 // ErrAllAccountsRateLimited is returned by token lookups when a provider has
 // accounts but every one is cooling down or out of quota. Executors map it to a
 // 429 so the provider chain fails over instead of reporting a login problem.

@@ -133,6 +133,12 @@ func (o *CodexOAuth) GetTokenDataExcluding(_ context.Context, excluded map[strin
 	return o.store.GetExcluding("codex", "", excluded)
 }
 
+// GetTokenDataByID returns a specific account only while it is still usable
+// under the ordinary selection rules. See TokenStore.GetByIDIfUsable.
+func (o *CodexOAuth) GetTokenDataByID(_ context.Context, accountID string, excluded map[string]bool) *TokenData {
+	return o.store.GetByIDIfUsable("codex", accountID, "", excluded)
+}
+
 func (o *CodexOAuth) GetToken(ctx context.Context) (string, error) {
 	token := o.store.Get("codex", "")
 	if token == nil {
