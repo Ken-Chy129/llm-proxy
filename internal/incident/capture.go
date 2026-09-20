@@ -278,12 +278,31 @@ func safeFileName(name string) string {
 }
 func safeHeaders(h http.Header) http.Header {
 	out := make(http.Header)
-	for _, name := range []string{"Accept", "Content-Type", "Anthropic-Version", "Anthropic-Beta", "User-Agent", "Request-Id", "X-Request-Id"} {
-		if v := h.Values(name); len(v) > 0 {
-			out[name] = append([]string(nil), v...)
+	for name, values := range h {
+		if !diagnosticHeader(name) {
+			continue
 		}
+		out[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
 	}
 	return out
+}
+
+// diagnosticHeader reports whether a header is safe and useful to keep in an
+// incident bundle. Credentials never qualify. Codex session and routing headers
+// (x-codex-*, session_id, chatgpt-account-id) are kept because cache-locality
+// incidents cannot be diagnosed without them; the account id is an opaque
+// identifier, not a secret.
+func diagnosticHeader(name string) bool {
+	lower := strings.ToLower(name)
+	switch lower {
+	case "authorization", "cookie", "set-cookie", "x-api-key", "proxy-authorization", "x-oai-attestation":
+		return false
+	case "accept", "content-type", "anthropic-version", "anthropic-beta", "user-agent",
+		"request-id", "x-request-id", "session_id", "chatgpt-account-id", "openai-model",
+		"x-reasoning-included", "openai-processing-ms", "openai-beta", "content-encoding":
+		return true
+	}
+	return strings.HasPrefix(lower, "x-codex-")
 }
 func stringValue(v interface{}) string    { s, _ := v.(string); return s }
 func stringsValue(v interface{}) []string { s, _ := v.([]string); return s }

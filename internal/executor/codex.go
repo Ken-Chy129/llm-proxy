@@ -541,16 +541,16 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	exhausted := make(map[string]bool)
 	var lastErr error
 	sawEncryptedRejection := false
-	degradeUnreadableCompaction := func() bool {
+	degradeUnreadableEncryptedState := func() bool {
 		if !sawEncryptedRejection || degradedBody != nil {
 			return false
 		}
-		removed := dropOpaqueCompactions(reqMap)
+		removed := dropOpaqueEncryptedItems(reqMap)
 		if removed == 0 {
 			return false
 		}
 		degradedBody, _ = json.Marshal(reqMap)
-		log.Printf("[codex] recovered account-bound session by dropping %d unreadable compaction item(s)", removed)
+		log.Printf("[codex] recovered account-bound session by dropping %d unreadable encrypted item(s)", removed)
 		exhausted = make(map[string]bool)
 		refreshed = make(map[string]bool)
 		patchedBody = degradedBody
@@ -559,7 +559,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 	for i := 0; i < accounts*2; i++ {
 		tokenData := e.oauth.GetTokenDataExcluding(ctx, exhausted)
 		if tokenData == nil {
-			if degradeUnreadableCompaction() {
+			if degradeUnreadableEncryptedState() {
 				i = -1
 				continue
 			}
@@ -598,6 +598,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 		httpReq.Header.Set("x-openai-internal-codex-residency", "us")
 		httpReq.Header.Set("x-codex-installation-id", installationID)
 		httpReq.Header.Set("x-client-request-id", uuid.New().String())
+		applyCodexClientHeaders(ctx, httpReq)
 
 		resp, err := e.client().Do(httpReq)
 		if err != nil {
@@ -605,6 +606,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 			recordAccountFailure(ctx, "codex", tokenData.ID, 0, requestErr)
 			return nil, requestErr
 		}
+		recordUpstreamHeaders(ctx, resp.Header)
 
 		if quota := auth.ParseCodexRateLimitHeaders(resp.Header); quota != nil {
 			quota.AccountID = tokenData.ID
@@ -633,7 +635,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 				recordAccountFailover(ctx, tokenData.ID)
 				continue
 			}
-			if degradeUnreadableCompaction() {
+			if degradeUnreadableEncryptedState() {
 				i = -1
 				continue
 			}
@@ -652,7 +654,7 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 				recordAccountFailover(ctx, tokenData.ID)
 				continue
 			}
-			if degradeUnreadableCompaction() {
+			if degradeUnreadableEncryptedState() {
 				i = -1
 				continue
 			}
@@ -671,9 +673,9 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 					recordAccountFailover(ctx, tokenData.ID)
 					continue
 				}
-				// None of the usable accounts owns this old ciphertext. Remove only
-				// opaque compaction items and preserve all subsequent plain turns.
-				if degradeUnreadableCompaction() {
+				// None of the usable accounts owns this old ciphertext. Remove
+				// opaque encrypted replay items and preserve subsequent plain turns.
+				if degradeUnreadableEncryptedState() {
 					i = -1
 					continue
 				}
@@ -811,7 +813,7 @@ func expandPortableCompactions(reqMap map[string]interface{}) int {
 	return expanded
 }
 
-func dropOpaqueCompactions(reqMap map[string]interface{}) int {
+func dropOpaqueEncryptedItems(reqMap map[string]interface{}) int {
 	input, ok := reqMap["input"].([]interface{})
 	if !ok {
 		return 0
@@ -820,8 +822,13 @@ func dropOpaqueCompactions(reqMap map[string]interface{}) int {
 	removed := 0
 	for _, raw := range input {
 		item, ok := raw.(map[string]interface{})
-		if ok && item["type"] == "compaction" {
-			if encrypted, _ := item["encrypted_content"].(string); encrypted != "" {
+		if ok {
+			encrypted, _ := item["encrypted_content"].(string)
+			if encrypted != "" {
+				if item["type"] != "compaction" {
+					removed++
+					continue
+				}
 				if _, portable := compaction.Decode(encrypted); !portable {
 					removed++
 					continue

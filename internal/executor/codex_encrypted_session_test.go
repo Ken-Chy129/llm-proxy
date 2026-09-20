@@ -166,3 +166,55 @@ func TestCodexExpandsPortableCompactionBeforeUpstream(t *testing.T) {
 		t.Fatalf("portable compaction was not expanded: %s", body)
 	}
 }
+
+func TestCodexEncryptedSessionDropsAllOpaqueReplayItemsTogether(t *testing.T) {
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(data))
+		if strings.Contains(string(data), "opaque-compaction") {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error"}}`)
+			return
+		}
+		if strings.Contains(string(data), "opaque-reasoning") {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, `{"error":{"message":"The encrypted content for item rs_msg_old could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, completedResponsesStream)
+	}))
+	defer server.Close()
+	withCodexUpstream(t, server.URL, server.URL)
+	exec, _ := newCodexTestExecutor(t, "B", "A")
+
+	body, _ := json.Marshal(map[string]interface{}{
+		"model": "gpt-5.5", "stream": true,
+		"input": []interface{}{
+			map[string]interface{}{
+				"type": "compaction", "id": "cmp_old",
+				"encrypted_content": "opaque-compaction",
+			},
+			map[string]interface{}{
+				"type": "reasoning", "id": "rs_msg_old",
+				"encrypted_content": "opaque-reasoning",
+			},
+			map[string]interface{}{"role": "user", "content": "continue"},
+		},
+	})
+	stream, err := exec.OpenResponsesStream(context.Background(), body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, stream)
+	stream.Close()
+	if len(bodies) != 3 {
+		t.Fatalf("calls=%d, want both accounts followed by one degraded retry", len(bodies))
+	}
+	if strings.Contains(bodies[2], "opaque-compaction") ||
+		strings.Contains(bodies[2], "opaque-reasoning") ||
+		!strings.Contains(bodies[2], "continue") {
+		t.Fatalf("degraded request still contains opaque encrypted state: %s", bodies[2])
+	}
+}

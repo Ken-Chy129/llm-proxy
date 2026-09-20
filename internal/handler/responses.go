@@ -107,19 +107,30 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 
 	start := time.Now()
 
-	setSSEHeaders := func() {
-		c.Header("Content-Type", "text/event-stream")
-		c.Header("Cache-Control", "no-cache")
-		c.Header("Connection", "keep-alive")
-	}
-
 	ctx := executor.WithAttemptRecorder(c.Request.Context())
 	ctx, getAccount := executor.WithAccountRecorder(ctx)
 	ctx, _ = executor.WithBackendRecorder(ctx)
+	// Codex clients carry session/routing headers (x-codex-turn-state and
+	// friends) that upstream uses to keep a conversation on the machine holding
+	// its prompt cache. Make them available to the native executor, and capture
+	// the upstream's reply headers so they can be echoed back to the client.
+	ctx = executor.WithClientHeaders(ctx, c.Request.Header)
+	ctx, upstreamHeaders := executor.WithUpstreamHeaderRecorder(ctx)
 	// Put the derived context back on the request so recordLog, which is called
 	// from a dozen places with only the gin context, can read which provider
 	// ended up serving.
 	c.Request = c.Request.WithContext(ctx)
+
+	setSSEHeaders := func() {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		for name, values := range upstreamHeaders() {
+			for _, v := range values {
+				c.Writer.Header().Add(name, v)
+			}
+		}
+	}
 
 	// Always synthesize compaction locally, including when Codex is the native
 	// Responses provider. Codex's own encrypted compaction is tied to the OAuth
