@@ -203,7 +203,18 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 		return nil, fmt.Errorf("read anygen response: %w", readErr)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, &HTTPError{Backend: "anygen", Status: resp.StatusCode, Body: string(body)}
+		return nil, &HTTPError{Backend: "anygen", Status: resp.StatusCode, Body: anygenErrorMessage(body)}
+	}
+	if isAGWFailedEnvelope(body) {
+		// The Lark API gateway answers 200 + this envelope when mino_server does
+		// not respond within its 30s upstream timeout. Report it as a timeout so
+		// it is not mistaken for an empty completion.
+		recordDiagnosticArtifact(ctx, "anygen-request.json", payload)
+		return nil, &HTTPError{
+			Backend: "anygen",
+			Status:  http.StatusGatewayTimeout,
+			Body:    "gateway returned {code:1,msg:Failed}: upstream exceeded the AGW 30s request timeout",
+		}
 	}
 	var result types.ChatCompletionResponse
 	if err := json.Unmarshal(body, &result); err != nil {
@@ -240,6 +251,28 @@ func (e *AnyGenExecutor) Execute(ctx context.Context, req *types.ChatCompletionR
 }
 
 func (e *AnyGenExecutor) SupportsStreaming() bool { return false }
+
+// isAGWFailedEnvelope matches the API gateway's generic failure body
+// {"code":1,"msg":"Failed","data":{}}.
+func isAGWFailedEnvelope(body []byte) bool {
+	var env struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	return json.Unmarshal(body, &env) == nil && env.Code == 1 && env.Msg == "Failed"
+}
+
+// anygenErrorMessage unwraps the app's {"message":"..."} error body; anything
+// else is passed through verbatim.
+func anygenErrorMessage(body []byte) string {
+	var m struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(body, &m) == nil && m.Message != "" {
+		return m.Message
+	}
+	return string(body)
+}
 
 func (e *AnyGenExecutor) ExecuteStream(context.Context, *types.ChatCompletionRequest, io.Writer) (*types.Usage, error) {
 	return nil, &HTTPError{

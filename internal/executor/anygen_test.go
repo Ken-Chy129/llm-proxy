@@ -280,3 +280,39 @@ func TestAnyGenExecutorRejectsStreamingWithoutCallingUpstream(t *testing.T) {
 		t.Fatalf("error = %q, want non-streaming explanation", err)
 	}
 }
+
+func TestAnyGenExecutorSurfacesGatewayFailures(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	cases := []struct {
+		name       string
+		status     int
+		body       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"agw timeout envelope", 200, `{"code":1,"msg":"Failed","data":{}}`, http.StatusGatewayTimeout, "AGW 30s request timeout"},
+		{"app error message", 502, `{"message":"502 [code=100006029] insufficient credits balance"}`, 502, "insufficient credits balance"},
+		{"plain error body", 500, `Uncaught framework exception: Error: socket hang up`, 500, "socket hang up"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+			exec := NewAnyGenExecutor(config.AnyGenConfig{BaseURL: server.URL, APIKeyEnv: "TEST_ANYGEN_LLM_KEY"})
+			content, _ := json.Marshal("hello")
+			_, err := exec.Execute(context.Background(), &types.ChatCompletionRequest{
+				Model:    "gpt-5.6-luna",
+				Messages: []types.ChatMessage{{Role: "user", Content: content}},
+			})
+			if got := StatusFromError(err); got != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (err=%v)", got, tc.wantStatus, err)
+			}
+			if !strings.Contains(err.Error(), tc.wantBody) {
+				t.Fatalf("err = %q, want it to contain %q", err.Error(), tc.wantBody)
+			}
+		})
+	}
+}
