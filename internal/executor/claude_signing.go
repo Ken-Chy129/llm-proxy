@@ -83,7 +83,21 @@ func injectClaudeCodeSystemBlocks(body []byte) []byte {
 	// Check if already injected
 	firstText := gjson.GetBytes(body, "system.0.text").String()
 	if strings.HasPrefix(firstText, "x-anthropic-billing-header:") {
-		return body
+		// The client may be older than the proxy's OAuth identity. Replace its
+		// attribution so Anthropic sees the proxy's supported Claude Code version.
+		want := generateBillingHeader(body, claudeCodeVersion)
+		if firstText == want {
+			return body
+		}
+		raw, err := json.Marshal(want)
+		if err != nil {
+			return body
+		}
+		patched, err := sjson.SetRawBytes(body, "system.0.text", raw)
+		if err != nil {
+			return body
+		}
+		return patched
 	}
 
 	// Build system array: [billing, agent, ...whatever the caller sent]

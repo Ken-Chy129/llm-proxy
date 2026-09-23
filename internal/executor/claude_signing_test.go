@@ -19,12 +19,27 @@ func TestGenerateBillingHeaderMatchesClaudeCodeCustomBaseAttribution(t *testing.
 	}
 }
 
-func TestInjectClaudeCodeSystemBlocksDoesNotMutateExistingBillingHeader(t *testing.T) {
+func TestInjectClaudeCodeSystemBlocksUpgradesExistingBillingHeader(t *testing.T) {
 	body := []byte(`{"model":"claude-opus-5","messages":[{"role":"user","content":"hello"}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=sdk-cli; cch=00000;"},{"type":"text","text":"existing"}]}`)
 
 	got := injectClaudeCodeSystemBlocks(body)
-	if string(got) != string(body) {
-		t.Fatalf("existing client attribution was mutated:\n got: %s\nwant: %s", got, body)
+	var parsed struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+	}
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("parse upgraded body: %v", err)
+	}
+	if len(parsed.System) != 2 {
+		t.Fatalf("system blocks=%d want 2: %s", len(parsed.System), got)
+	}
+	want := generateBillingHeader(body, claudeCodeVersion)
+	if parsed.System[0].Text != want {
+		t.Fatalf("billing header=%q want %q", parsed.System[0].Text, want)
+	}
+	if parsed.System[1].Text != "existing" {
+		t.Fatalf("original system prompt was not preserved: %s", got)
 	}
 }
 
