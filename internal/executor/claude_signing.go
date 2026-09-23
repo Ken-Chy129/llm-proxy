@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	claudeCodeVersion     = "2.1.259"
+	claudeCodeVersion     = "2.1.280"
 	claudeAttributionSeed = "59cf53e54c78"
 )
 
