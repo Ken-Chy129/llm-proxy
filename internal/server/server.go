@@ -35,7 +35,7 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	// deciding to publish. Wired here because the catalog lives on the admin
 	// handler; a nil source would simply leave probing off.
 	chatHandler.SetCatalogSource(adminHandler.ProviderCatalog)
-	imagesHandler := handler.NewImagesHandler(r, statsDB)
+	imagesHandler := handler.NewImagesHandler(r, statsDB, cfg.Codex.ImageHostModel)
 	anthropicHandler := handler.NewAnthropicHandler(r, statsDB)
 
 	// Login page and handler (public)

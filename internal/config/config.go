@@ -101,6 +101,10 @@ type ClaudeOAuthConfig struct {
 type CodexConfig struct {
 	Enabled bool     `yaml:"enabled"`
 	Models  []string `yaml:"models,omitempty"`
+	// ImageHostModel is the chat model that carries the image_generation tool
+	// call for /v1/images/*. Upstream retires models from ChatGPT-account
+	// access over time, so this stays configurable; empty uses the default.
+	ImageHostModel string `yaml:"image_host_model,omitempty"`
 }
 
 // KimiConfig intentionally stores only the name of an environment variable,

@@ -39,6 +39,9 @@ failure_capture:
 
 codex:
   enabled: true
+  # Chat model that hosts image generation for /v1/images/*. Defaults to
+  # gpt-5.5; change it if upstream stops serving that model to ChatGPT logins.
+  # image_host_model: gpt-5.5
 
 # Kimi Code key is read from the environment variable below. Never put the
 # actual key in this file or commit it to Git. For a Kimi API Platform key,

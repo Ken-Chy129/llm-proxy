@@ -22,13 +22,23 @@ import (
 
 const imageGenTimeout = 5 * time.Minute
 
+// defaultImageHostModel is the Codex chat model that hosts the
+// image_generation tool. gpt-5.4-mini used to fill this role until upstream
+// stopped serving it to ChatGPT-account logins.
+const defaultImageHostModel = "gpt-5.5"
+
 type ImagesHandler struct {
-	router  *router.Router
-	statsDB *stats.DB
+	router    *router.Router
+	statsDB   *stats.DB
+	hostModel string
 }
 
-func NewImagesHandler(r *router.Router, db *stats.DB) *ImagesHandler {
-	return &ImagesHandler{router: r, statsDB: db}
+func NewImagesHandler(r *router.Router, db *stats.DB, hostModel string) *ImagesHandler {
+	hostModel = strings.TrimSpace(hostModel)
+	if hostModel == "" {
+		hostModel = defaultImageHostModel
+	}
+	return &ImagesHandler{router: r, statsDB: db, hostModel: hostModel}
 }
 
 type imageGenRequest struct {
@@ -74,7 +84,7 @@ func (h *ImagesHandler) ImagesGenerations(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), imageGenTimeout)
 	defer cancel()
 
-	codexReq := buildCodexImageRequest(&req)
+	codexReq := buildCodexImageRequest(h.hostModel, &req)
 	body, _ := json.Marshal(codexReq)
 
 	var buf bytes.Buffer
@@ -175,7 +185,7 @@ func (h *ImagesHandler) ImagesEdits(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), imageGenTimeout)
 	defer cancel()
 
-	codexReq := buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality)
+	codexReq := buildCodexImageEditRequest(h.hostModel, model, prompt, imageDataURL, size, quality)
 	body, _ := json.Marshal(codexReq)
 
 	var buf bytes.Buffer
@@ -210,7 +220,7 @@ func (h *ImagesHandler) ImagesEdits(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality string) *codexImageReq {
+func buildCodexImageEditRequest(hostModel, model, prompt, imageDataURL, size, quality string) *codexImageReq {
 	tool := map[string]interface{}{
 		"type":  "image_generation",
 		"model": model,
@@ -234,7 +244,7 @@ func buildCodexImageEditRequest(model, prompt, imageDataURL, size, quality strin
 	}
 
 	return &codexImageReq{
-		Model:        "gpt-5.4-mini",
+		Model:        hostModel,
 		Instructions: "",
 		Input: []interface{}{
 			map[string]interface{}{
@@ -277,7 +287,7 @@ type codexImageReq struct {
 	ParallelToolCalls bool          `json:"parallel_tool_calls"`
 }
 
-func buildCodexImageRequest(req *imageGenRequest) *codexImageReq {
+func buildCodexImageRequest(hostModel string, req *imageGenRequest) *codexImageReq {
 	// Build image generation tool
 	tool := map[string]interface{}{
 		"type":   "image_generation",
@@ -298,7 +308,7 @@ func buildCodexImageRequest(req *imageGenRequest) *codexImageReq {
 	}
 
 	return &codexImageReq{
-		Model:        "gpt-5.4-mini",
+		Model:        hostModel,
 		Instructions: "",
 		Input: []interface{}{
 			map[string]interface{}{
