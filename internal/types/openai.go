@@ -18,6 +18,10 @@ type ChatCompletionRequest struct {
 	ToolChoice      json.RawMessage `json:"tool_choice,omitempty"`
 	ResponseFormat  *ResponseFormat `json:"response_format,omitempty"`
 	ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+	// CustomToolNames records Responses custom tools that were represented as
+	// Chat Completions functions for a fallback provider. It is adapter state,
+	// not part of the upstream Chat Completions request.
+	CustomToolNames map[string]struct{} `json:"-"`
 }
 
 type ChatMessage struct {

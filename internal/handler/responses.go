@@ -62,6 +62,7 @@ type responsesInputItem struct {
 	Type             string          `json:"type,omitempty"`
 	CallID           string          `json:"call_id,omitempty"`
 	Name             string          `json:"name,omitempty"`
+	Input            json.RawMessage `json:"input,omitempty"`
 	Arguments        json.RawMessage `json:"arguments,omitempty"`
 	Output           json.RawMessage `json:"output,omitempty"`
 	EncryptedContent string          `json:"encrypted_content,omitempty"`
@@ -265,7 +266,7 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 		}
 
 		var translated bytes.Buffer
-		writeErr := writeChatCompletionAsResponsesSSE(resp, req.Model, &translated)
+		writeErr := writeChatCompletionAsResponsesSSE(resp, req.Model, chatReq.CustomToolNames, &translated)
 		var breakdown *types.TokenUsage
 		if resp.Usage != nil {
 			b := resp.Usage.Breakdown()
@@ -354,7 +355,7 @@ func (h *ResponsesHandler) openAdaptedResponsesStream(
 		if err != nil {
 			return nil, nil, err
 		}
-		if err := writeChatCompletionAsResponsesSSE(resp, model, &buf); err != nil {
+		if err := writeChatCompletionAsResponsesSSE(resp, model, req.CustomToolNames, &buf); err != nil {
 			return nil, nil, err
 		}
 		return io.NopCloser(bytes.NewReader(buf.Bytes())), resp.Usage, nil
@@ -388,6 +389,27 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 		MaxTokens:   req.MaxOutputTokens,
 		Temperature: req.Temperature,
 		TopP:        req.TopP,
+	}
+
+	type responseToolDefinition struct {
+		Type        string          `json:"type"`
+		Name        string          `json:"name"`
+		Description string          `json:"description,omitempty"`
+		Parameters  json.RawMessage `json:"parameters,omitempty"`
+	}
+	responseTools := make([]responseToolDefinition, len(req.Tools))
+	for i, rawTool := range req.Tools {
+		var tool responseToolDefinition
+		if err := json.Unmarshal(rawTool, &tool); err != nil {
+			continue
+		}
+		responseTools[i] = tool
+		if tool.Type == "custom" && tool.Name != "" {
+			if chatReq.CustomToolNames == nil {
+				chatReq.CustomToolNames = make(map[string]struct{})
+			}
+			chatReq.CustomToolNames[tool.Name] = struct{}{}
+		}
 	}
 
 	if req.Instructions != "" {
@@ -454,16 +476,26 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 				Role:    "user",
 				Content: content,
 			})
-		case item.Type == "function_call":
+		case item.Type == "function_call" || item.Type == "custom_tool_call":
 			if len(unresolvedToolCalls) > 0 {
-				return nil, fmt.Errorf("no function_call_output found for function call %q before the next call", firstUnresolvedCall())
+				return nil, fmt.Errorf("no tool output found for tool call %q before the next call", firstUnresolvedCall())
 			}
 			if item.CallID == "" || item.Name == "" {
-				return nil, fmt.Errorf("function_call requires call_id and name")
+				return nil, fmt.Errorf("%s requires call_id and name", item.Type)
 			}
-			arguments, err := chatToolCallArguments(item.Arguments)
+			var arguments string
+			var err error
+			if item.Type == "custom_tool_call" {
+				arguments, err = chatCustomToolCallArguments(item.Input)
+				if chatReq.CustomToolNames == nil {
+					chatReq.CustomToolNames = make(map[string]struct{})
+				}
+				chatReq.CustomToolNames[item.Name] = struct{}{}
+			} else {
+				arguments, err = chatToolCallArguments(item.Arguments)
+			}
 			if err != nil {
-				return nil, fmt.Errorf("invalid arguments for function call %q: %w", item.CallID, err)
+				return nil, fmt.Errorf("invalid input for %s %q: %w", item.Type, item.CallID, err)
 			}
 			pendingToolCalls = append(pendingToolCalls, types.ToolCall{
 				ID:   item.CallID,
@@ -473,19 +505,19 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 					Arguments: arguments,
 				},
 			})
-		case item.Type == "function_call_output":
+		case item.Type == "function_call_output" || item.Type == "custom_tool_call_output":
 			if err := flushToolCalls(); err != nil {
 				return nil, err
 			}
 			if item.CallID == "" {
-				return nil, fmt.Errorf("function_call_output requires call_id")
+				return nil, fmt.Errorf("%s requires call_id", item.Type)
 			}
 			if _, ok := unresolvedToolCalls[item.CallID]; !ok {
-				return nil, fmt.Errorf("function_call_output %q has no matching function call", item.CallID)
+				return nil, fmt.Errorf("%s %q has no matching tool call", item.Type, item.CallID)
 			}
 			outputContent, err := chatToolOutputContent(item.Output)
 			if err != nil {
-				return nil, fmt.Errorf("invalid output for function call %q: %w", item.CallID, err)
+				return nil, fmt.Errorf("invalid output for tool call %q: %w", item.CallID, err)
 			}
 			chatReq.Messages = append(chatReq.Messages, types.ChatMessage{
 				Role:       "tool",
@@ -493,8 +525,8 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 				ToolCallID: item.CallID,
 			})
 			delete(unresolvedToolCalls, item.CallID)
-		case item.Type == "additional_tools" || item.Type == "custom_tool_call" || item.Type == "custom_tool_call_output":
-			return nil, fmt.Errorf("code-mode Responses tools cannot be adapted to a Chat Completions provider; retry the native Responses provider or disable code_mode_only")
+		case item.Type == "additional_tools":
+			return nil, fmt.Errorf("code-mode additional_tools cannot be adapted to a Chat Completions provider; retry the native Responses provider or disable code_mode_only")
 		case item.Role == "user" || item.Role == "assistant":
 			if err := flushToolCalls(); err != nil {
 				return nil, err
@@ -525,19 +557,14 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 		})
 	}
 
-	for _, tool := range req.Tools {
+	for i, tool := range req.Tools {
 		var t types.Tool
 		if json.Unmarshal(tool, &t) == nil && t.Function.Name != "" {
 			chatReq.Tools = append(chatReq.Tools, t)
 			continue
 		}
-		var responseTool struct {
-			Type        string          `json:"type"`
-			Name        string          `json:"name"`
-			Description string          `json:"description,omitempty"`
-			Parameters  json.RawMessage `json:"parameters,omitempty"`
-		}
-		if json.Unmarshal(tool, &responseTool) == nil && responseTool.Type == "function" && responseTool.Name != "" {
+		responseTool := responseTools[i]
+		if responseTool.Type == "function" && responseTool.Name != "" {
 			chatReq.Tools = append(chatReq.Tools, types.Tool{
 				Type: "function",
 				Function: types.ToolFunction{
@@ -546,9 +573,30 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 					Parameters:  responseTool.Parameters,
 				},
 			})
+			continue
+		}
+		if responseTool.Type == "custom" && responseTool.Name != "" {
+			description := strings.TrimSpace(responseTool.Description)
+			if description != "" {
+				description += " "
+			}
+			description += "Pass the complete raw custom-tool input in the input string."
+			chatReq.Tools = append(chatReq.Tools, types.Tool{
+				Type: "function",
+				Function: types.ToolFunction{
+					Name:        responseTool.Name,
+					Description: description,
+					Parameters: json.RawMessage(`{
+						"type":"object",
+						"properties":{"input":{"type":"string","description":"Complete raw input for the custom tool."}},
+						"required":["input"],
+						"additionalProperties":false
+					}`),
+				},
+			})
 		}
 	}
-	chatReq.ToolChoice = req.ToolChoice
+	chatReq.ToolChoice = chatToolChoice(req.ToolChoice, chatReq.CustomToolNames)
 
 	if req.Reasoning != nil && req.Reasoning.Effort != "" {
 		chatReq.ReasoningEffort = req.Reasoning.Effort
@@ -579,6 +627,77 @@ func chatToolCallArguments(raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	return compact.String(), nil
+}
+
+func chatCustomToolCallArguments(raw json.RawMessage) (string, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return "", fmt.Errorf("input is required")
+	}
+	var input string
+	if err := json.Unmarshal(trimmed, &input); err != nil {
+		return "", fmt.Errorf("input must be a string")
+	}
+	encoded, err := json.Marshal(map[string]string{"input": input})
+	if err != nil {
+		return "", err
+	}
+	return string(encoded), nil
+}
+
+func customToolInputFromChatArguments(arguments string) (string, error) {
+	trimmed := strings.TrimSpace(arguments)
+	if trimmed == "" {
+		return "", fmt.Errorf("custom tool arguments are empty")
+	}
+	var input string
+	if err := json.Unmarshal([]byte(trimmed), &input); err == nil {
+		return input, nil
+	}
+	var wrapper struct {
+		Input *string `json:"input"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &wrapper); err != nil {
+		return "", err
+	}
+	if wrapper.Input == nil {
+		return "", fmt.Errorf("custom tool arguments require an input string")
+	}
+	return *wrapper.Input, nil
+}
+
+func chatToolChoice(raw json.RawMessage, customTools map[string]struct{}) json.RawMessage {
+	if len(raw) == 0 || len(customTools) == 0 {
+		return raw
+	}
+	var choice struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	if json.Unmarshal(raw, &choice) != nil || choice.Type != "custom" || choice.Name == "" {
+		return raw
+	}
+	if _, ok := customTools[choice.Name]; !ok {
+		return raw
+	}
+	converted, err := json.Marshal(map[string]interface{}{
+		"type": "function",
+		"function": map[string]string{
+			"name": choice.Name,
+		},
+	})
+	if err != nil {
+		return raw
+	}
+	return converted
+}
+
+func isCustomTool(req *types.ChatCompletionRequest, name string) bool {
+	if req == nil || name == "" {
+		return false
+	}
+	_, ok := req.CustomToolNames[name]
+	return ok
 }
 
 func chatToolOutputContent(raw json.RawMessage) (json.RawMessage, error) {
@@ -711,6 +830,7 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 		itemID      string
 		callID      string
 		name        string
+		custom      bool
 		outputIndex int
 		arguments   strings.Builder
 	}
@@ -723,6 +843,7 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 	var fullContent strings.Builder
 	var toolCalls []*streamedToolCall
 
+	var finishErr error
 	finishResponse := func(finishReason string) {
 		responseTerminated = true
 		terminalEvent := "response.completed"
@@ -776,6 +897,45 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 
 		for _, tc := range toolCalls {
 			arguments := tc.arguments.String()
+			if tc.custom {
+				input, err := customToolInputFromChatArguments(arguments)
+				if err != nil {
+					finishErr = fmt.Errorf("decode custom tool call %q: %w", tc.name, err)
+					return
+				}
+				if input != "" {
+					writeEvent("response.custom_tool_call_input.delta", map[string]interface{}{
+						"type":         "response.custom_tool_call_input.delta",
+						"response_id":  responseID,
+						"item_id":      tc.itemID,
+						"output_index": tc.outputIndex,
+						"delta":        input,
+					})
+				}
+				writeEvent("response.custom_tool_call_input.done", map[string]interface{}{
+					"type":         "response.custom_tool_call_input.done",
+					"response_id":  responseID,
+					"item_id":      tc.itemID,
+					"output_index": tc.outputIndex,
+					"input":        input,
+				})
+				finalItem := map[string]interface{}{
+					"id":      tc.itemID,
+					"type":    "custom_tool_call",
+					"status":  terminalStatus,
+					"call_id": tc.callID,
+					"name":    tc.name,
+					"input":   input,
+				}
+				writeEvent("response.output_item.done", map[string]interface{}{
+					"type":         "response.output_item.done",
+					"response_id":  responseID,
+					"output_index": tc.outputIndex,
+					"item":         finalItem,
+				})
+				finalOutput[tc.outputIndex] = finalItem
+				continue
+			}
 			writeEvent("response.function_call_arguments.done", map[string]interface{}{
 				"type":         "response.function_call_arguments.done",
 				"response_id":  responseID,
@@ -890,25 +1050,38 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 					for _, tc := range delta.ToolCalls {
 						var current *streamedToolCall
 						if tc.ID != "" {
+							custom := isCustomTool(req, tc.Function.Name)
+							itemPrefix := "fc_"
+							itemType := "function_call"
+							itemInput := map[string]interface{}{"arguments": ""}
+							if custom {
+								itemPrefix = "ctc_"
+								itemType = "custom_tool_call"
+								itemInput = map[string]interface{}{"input": ""}
+							}
 							current = &streamedToolCall{
-								itemID:      fmt.Sprintf("fc_%s", uuid.New().String()[:30]),
+								itemID:      fmt.Sprintf("%s%s", itemPrefix, uuid.New().String()[:30]),
 								callID:      tc.ID,
 								name:        tc.Function.Name,
+								custom:      custom,
 								outputIndex: nextOutputIndex,
 							}
 							nextOutputIndex++
+							item := map[string]interface{}{
+								"id":      current.itemID,
+								"type":    itemType,
+								"status":  "in_progress",
+								"call_id": current.callID,
+								"name":    current.name,
+							}
+							for key, value := range itemInput {
+								item[key] = value
+							}
 							writeEvent("response.output_item.added", map[string]interface{}{
 								"type":         "response.output_item.added",
 								"response_id":  responseID,
 								"output_index": current.outputIndex,
-								"item": map[string]interface{}{
-									"id":        current.itemID,
-									"type":      "function_call",
-									"status":    "in_progress",
-									"call_id":   current.callID,
-									"name":      current.name,
-									"arguments": "",
-								},
+								"item":         item,
 							})
 							toolCalls = append(toolCalls, current)
 						} else if len(toolCalls) > 0 {
@@ -916,13 +1089,15 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 						}
 						if tc.Function.Arguments != "" && current != nil {
 							current.arguments.WriteString(tc.Function.Arguments)
-							writeEvent("response.function_call_arguments.delta", map[string]interface{}{
-								"type":         "response.function_call_arguments.delta",
-								"response_id":  responseID,
-								"item_id":      current.itemID,
-								"output_index": current.outputIndex,
-								"delta":        tc.Function.Arguments,
-							})
+							if !current.custom {
+								writeEvent("response.function_call_arguments.delta", map[string]interface{}{
+									"type":         "response.function_call_arguments.delta",
+									"response_id":  responseID,
+									"item_id":      current.itemID,
+									"output_index": current.outputIndex,
+									"delta":        tc.Function.Arguments,
+								})
+							}
 						}
 					}
 				}
@@ -936,6 +1111,9 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 
 	if err := scanner.Err(); err != nil {
 		return usage, fmt.Errorf("scan chat completion stream: %w", err)
+	}
+	if finishErr != nil {
+		return usage, finishErr
 	}
 	if !responseTerminated {
 		return usage, fmt.Errorf("chat completion stream ended without a finish reason")
@@ -954,7 +1132,12 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 // The upstream call is still non-streaming: once it completes, the proxy emits
 // one text delta (or one arguments delta per tool call) and then the matching
 // done/completed events.
-func writeChatCompletionAsResponsesSSE(resp *types.ChatCompletionResponse, requestedModel string, w io.Writer) error {
+func writeChatCompletionAsResponsesSSE(
+	resp *types.ChatCompletionResponse,
+	requestedModel string,
+	customTools map[string]struct{},
+	w io.Writer,
+) error {
 	if resp == nil {
 		return fmt.Errorf("non-streaming executor returned an empty response")
 	}
@@ -1074,6 +1257,49 @@ func writeChatCompletionAsResponsesSSE(resp *types.ChatCompletionResponse, reque
 			callID := toolCall.ID
 			if callID == "" {
 				callID = fmt.Sprintf("call_%s", uuid.New().String()[:24])
+			}
+			if _, custom := customTools[toolCall.Function.Name]; custom {
+				input, err := customToolInputFromChatArguments(toolCall.Function.Arguments)
+				if err != nil {
+					return fmt.Errorf("decode custom tool call %q: %w", toolCall.Function.Name, err)
+				}
+				itemID := fmt.Sprintf("ctc_%s", uuid.New().String()[:30])
+				if err := writeEvent("response.output_item.added", map[string]interface{}{
+					"type": "response.output_item.added", "response_id": responseID, "output_index": outputIndex,
+					"item": map[string]interface{}{
+						"id": itemID, "type": "custom_tool_call", "status": "in_progress",
+						"call_id": callID, "name": toolCall.Function.Name, "input": "",
+					},
+				}); err != nil {
+					return err
+				}
+				if input != "" {
+					if err := writeEvent("response.custom_tool_call_input.delta", map[string]interface{}{
+						"type": "response.custom_tool_call_input.delta", "response_id": responseID, "item_id": itemID,
+						"output_index": outputIndex, "delta": input,
+					}); err != nil {
+						return err
+					}
+				}
+				if err := writeEvent("response.custom_tool_call_input.done", map[string]interface{}{
+					"type": "response.custom_tool_call_input.done", "response_id": responseID, "item_id": itemID,
+					"output_index": outputIndex, "input": input,
+				}); err != nil {
+					return err
+				}
+				completedItem := map[string]interface{}{
+					"id": itemID, "type": "custom_tool_call", "status": terminalStatus,
+					"call_id": callID, "name": toolCall.Function.Name, "input": input,
+				}
+				if err := writeEvent("response.output_item.done", map[string]interface{}{
+					"type": "response.output_item.done", "response_id": responseID,
+					"output_index": outputIndex, "item": completedItem,
+				}); err != nil {
+					return err
+				}
+				completedOutput = append(completedOutput, completedItem)
+				outputIndex++
+				continue
 			}
 			itemID := fmt.Sprintf("fc_%s", uuid.New().String()[:30])
 			if err := writeEvent("response.output_item.added", map[string]interface{}{

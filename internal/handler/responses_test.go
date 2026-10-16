@@ -60,17 +60,59 @@ func TestResponsesRequestConvertsCodexContentAndToolsToChatCompletions(t *testin
 	}
 }
 
-func TestResponsesRequestRejectsCodeModeToolsInsteadOfSilentlyDroppingThem(t *testing.T) {
-	for _, item := range []string{
-		`{"type":"additional_tools","tools":[]}`,
-		`{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"await tools.exec_command({cmd:\"pwd\"})"}`,
-		`{"type":"custom_tool_call_output","call_id":"call_1","output":"ok"}`,
-	} {
-		req := &responsesRequest{Model: "gpt-6-astra", Input: json.RawMessage("[" + item + "]")}
-		_, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
-		if err == nil || !strings.Contains(err.Error(), "code-mode Responses tools cannot be adapted") {
-			t.Fatalf("item %s: error = %v", item, err)
-		}
+func TestResponsesRequestConvertsCustomToolHistoryToChatCompletions(t *testing.T) {
+	input := json.RawMessage(`[
+		{"role":"user","content":[{"type":"input_text","text":"update the file"}]},
+		{"type":"custom_tool_call","call_id":"call_1","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
+		{"type":"custom_tool_call_output","call_id":"call_1","output":"Done!"}
+	]`)
+	tool := json.RawMessage(`{
+		"type":"custom",
+		"name":"apply_patch",
+		"description":"Apply a patch",
+		"format":{"type":"text"}
+	}`)
+	req := &responsesRequest{
+		Model:      "gpt-6-astra",
+		Input:      input,
+		Tools:      []json.RawMessage{tool},
+		ToolChoice: json.RawMessage(`{"type":"custom","name":"apply_patch"}`),
+	}
+
+	chatReq, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chatReq.Messages) != 3 {
+		t.Fatalf("messages = %+v", chatReq.Messages)
+	}
+	call := chatReq.Messages[1].ToolCalls
+	if len(call) != 1 || call[0].Function.Name != "apply_patch" ||
+		call[0].Function.Arguments != `{"input":"*** Begin Patch\n*** End Patch"}` {
+		t.Fatalf("custom call = %+v", call)
+	}
+	if chatReq.Messages[2].Role != "tool" || chatReq.Messages[2].ToolCallID != "call_1" {
+		t.Fatalf("custom output = %+v", chatReq.Messages[2])
+	}
+	if len(chatReq.Tools) != 1 || chatReq.Tools[0].Function.Name != "apply_patch" {
+		t.Fatalf("custom tool definition = %+v", chatReq.Tools)
+	}
+	if !strings.Contains(string(chatReq.Tools[0].Function.Parameters), `"input"`) {
+		t.Fatalf("custom tool schema = %s", chatReq.Tools[0].Function.Parameters)
+	}
+	if string(chatReq.ToolChoice) != `{"function":{"name":"apply_patch"},"type":"function"}` {
+		t.Fatalf("custom tool choice = %s", chatReq.ToolChoice)
+	}
+}
+
+func TestResponsesRequestRejectsAdditionalToolsInsteadOfSilentlyDroppingThem(t *testing.T) {
+	req := &responsesRequest{
+		Model: "gpt-6-astra",
+		Input: json.RawMessage(`[{"type":"additional_tools","tools":[]}]`),
+	}
+	_, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+	if err == nil || !strings.Contains(err.Error(), "additional_tools") {
+		t.Fatalf("error = %v", err)
 	}
 }
 
@@ -563,6 +605,73 @@ func TestResponsesAdaptsNonStreamingAnyGenToolCallToSSE(t *testing.T) {
 	assertConsistentResponseID(t, w.Body.String())
 }
 
+func TestResponsesAdaptsNonStreamingAnyGenCustomToolCallToSSE(t *testing.T) {
+	t.Setenv("TEST_ANYGEN_LLM_KEY", "sk-ag-test")
+	var upstream types.ChatCompletionRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstream); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"chatcmpl-anygen","object":"chat.completion","created":1,"model":"gpt-6-astra","choices":[{"index":0,"message":{"role":"assistant","tool_calls":[{"id":"call_patch","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** End Patch\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":8,"total_tokens":28}}`)
+	}))
+	defer server.Close()
+
+	anygenExec := executor.NewAnyGenExecutor(config.AnyGenConfig{
+		BaseURL:   server.URL + "/api/v1",
+		APIKeyEnv: "TEST_ANYGEN_LLM_KEY",
+	})
+	anygenExec.SetServed([]string{"gpt-6-astra"})
+	r := router.New()
+	r.SetProvider("anygen", anygenExec)
+	r.SetRoutes([]router.Route{{Model: "gpt-6-astra", Providers: []string{"anygen"}}})
+	h := NewResponsesHandler(r, nil)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{
+		"model":"gpt-6-astra",
+		"stream":true,
+		"input":[
+			{"role":"user","content":[{"type":"input_text","text":"edit the file"}]},
+			{"type":"custom_tool_call","call_id":"call_previous","name":"apply_patch","input":"*** Begin Patch\n*** End Patch"},
+			{"type":"custom_tool_call_output","call_id":"call_previous","output":"Done!"},
+			{"role":"user","content":[{"type":"input_text","text":"continue"}]}
+		],
+		"tools":[{"type":"custom","name":"apply_patch","description":"Apply a patch","format":{"type":"text"}}]
+	}`))
+	h.HandleResponses(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", w.Code, w.Body.String())
+	}
+	if len(upstream.Tools) != 1 || upstream.Tools[0].Function.Name != "apply_patch" ||
+		!strings.Contains(string(upstream.Tools[0].Function.Parameters), `"input"`) {
+		t.Fatalf("upstream custom tool = %+v", upstream.Tools)
+	}
+	if len(upstream.Messages) != 4 || len(upstream.Messages[1].ToolCalls) != 1 ||
+		upstream.Messages[1].ToolCalls[0].Function.Name != "apply_patch" ||
+		upstream.Messages[2].Role != "tool" {
+		t.Fatalf("upstream custom tool history = %+v", upstream.Messages)
+	}
+	for _, want := range []string{
+		`"type":"custom_tool_call"`,
+		`"call_id":"call_patch"`,
+		`"name":"apply_patch"`,
+		"event: response.custom_tool_call_input.delta",
+		"event: response.custom_tool_call_input.done",
+		`"input":"*** Begin Patch\n*** End Patch"`,
+	} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("SSE response missing %q:\n%s", want, w.Body.String())
+		}
+	}
+	if strings.Contains(w.Body.String(), `"type":"function_call"`) {
+		t.Fatalf("custom tool was returned as a function call:\n%s", w.Body.String())
+	}
+}
+
 func TestResponsesStreamingAdapterCompletesToolCallSSE(t *testing.T) {
 	var output strings.Builder
 	_, err := (&ResponsesHandler{}).streamWithTranslation(
@@ -598,6 +707,50 @@ func TestResponsesStreamingAdapterCompletesToolCallSSE(t *testing.T) {
 		"event: response.output_item.done",
 		"event: response.completed",
 	)
+}
+
+func TestResponsesStreamingAdapterCompletesCustomToolCallSSE(t *testing.T) {
+	stream := strings.Join([]string{
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant"}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_patch","type":"function","function":{"name":"apply_patch","arguments":""}}]}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"{\"input\":\"*** Begin Patch\\n"}}]}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"function":{"arguments":"*** End Patch\"}"}}]}}]}`,
+		`data: {"id":"chatcmpl-test","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+		"data: [DONE]",
+		"",
+	}, "\n\n")
+	var output strings.Builder
+	_, err := (&ResponsesHandler{}).streamWithTranslation(
+		context.Background(),
+		staticChatStreamExecutor{stream: stream},
+		&types.ChatCompletionRequest{
+			Model:           "gpt-6-astra",
+			CustomToolNames: map[string]struct{}{"apply_patch": {}},
+		},
+		&output,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := output.String()
+	for _, want := range []string{
+		`"type":"custom_tool_call"`,
+		`"call_id":"call_patch"`,
+		`"name":"apply_patch"`,
+		"event: response.custom_tool_call_input.delta",
+		"event: response.custom_tool_call_input.done",
+		`"input":"*** Begin Patch\n*** End Patch"`,
+		"event: response.output_item.done",
+		"event: response.completed",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SSE response missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "event: response.function_call_arguments.") {
+		t.Fatalf("custom tool emitted function-call events:\n%s", body)
+	}
 }
 
 func TestResponsesStreamingAdapterHandlesTerminalChunkWithoutDelta(t *testing.T) {
@@ -753,7 +906,7 @@ func TestWriteChatCompletionAsResponsesSSERejectsEmptyOutputBeforeWriting(t *tes
 		}},
 	}
 	var output strings.Builder
-	err := writeChatCompletionAsResponsesSSE(resp, "gpt-5.6-luna", &output)
+	err := writeChatCompletionAsResponsesSSE(resp, "gpt-5.6-luna", nil, &output)
 	if err == nil {
 		t.Fatal("writeChatCompletionAsResponsesSSE() succeeded for empty output")
 	}
@@ -775,7 +928,7 @@ func TestWriteChatCompletionAsResponsesSSEMapsLengthToIncomplete(t *testing.T) {
 		}},
 	}
 	var output strings.Builder
-	if err := writeChatCompletionAsResponsesSSE(resp, resp.Model, &output); err != nil {
+	if err := writeChatCompletionAsResponsesSSE(resp, resp.Model, nil, &output); err != nil {
 		t.Fatalf("writeChatCompletionAsResponsesSSE() error: %v", err)
 	}
 	body := output.String()
