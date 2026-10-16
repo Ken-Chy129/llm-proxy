@@ -493,6 +493,8 @@ func (h *ResponsesHandler) toChatCompletionRequest(req *responsesRequest) (*type
 				ToolCallID: item.CallID,
 			})
 			delete(unresolvedToolCalls, item.CallID)
+		case item.Type == "additional_tools" || item.Type == "custom_tool_call" || item.Type == "custom_tool_call_output":
+			return nil, fmt.Errorf("code-mode Responses tools cannot be adapted to a Chat Completions provider; retry the native Responses provider or disable code_mode_only")
 		case item.Role == "user" || item.Role == "assistant":
 			if err := flushToolCalls(); err != nil {
 				return nil, err

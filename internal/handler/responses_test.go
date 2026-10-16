@@ -60,6 +60,20 @@ func TestResponsesRequestConvertsCodexContentAndToolsToChatCompletions(t *testin
 	}
 }
 
+func TestResponsesRequestRejectsCodeModeToolsInsteadOfSilentlyDroppingThem(t *testing.T) {
+	for _, item := range []string{
+		`{"type":"additional_tools","tools":[]}`,
+		`{"type":"custom_tool_call","call_id":"call_1","name":"exec","input":"await tools.exec_command({cmd:\"pwd\"})"}`,
+		`{"type":"custom_tool_call_output","call_id":"call_1","output":"ok"}`,
+	} {
+		req := &responsesRequest{Model: "gpt-6-astra", Input: json.RawMessage("[" + item + "]")}
+		_, err := (&ResponsesHandler{}).toChatCompletionRequest(req)
+		if err == nil || !strings.Contains(err.Error(), "code-mode Responses tools cannot be adapted") {
+			t.Fatalf("item %s: error = %v", item, err)
+		}
+	}
+}
+
 func TestResponsesRequestGroupsParallelFunctionCallsIntoOneAssistantMessage(t *testing.T) {
 	input := json.RawMessage(`[
 		{"role":"user","content":[{"type":"input_text","text":"inspect both files"}]},
