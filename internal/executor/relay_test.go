@@ -181,6 +181,7 @@ func TestRelayTranslatedStreamCoalescesParallelToolResults(t *testing.T) {
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n")
 		io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n")
 	}))
 	defer server.Close()

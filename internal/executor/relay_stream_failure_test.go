@@ -98,6 +98,49 @@ func TestRelayStreamRejectsStreamWithoutStopReason(t *testing.T) {
 	}
 }
 
+// A relay can return a syntactically complete Anthropic stream whose only
+// terminal signal is end_turn. With no text or tool_use block, that is not an
+// assistant answer and must fail inside the executor so both failover and the
+// raw incident evidence remain available.
+func TestRelayStreamRejectsTerminatedStreamWithoutAssistantOutput(t *testing.T) {
+	exec := relayAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4}}}\n\n")
+		io.WriteString(w, "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n")
+		io.WriteString(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"\"}}\n\n")
+		io.WriteString(w, "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n")
+		io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":0}}\n\n")
+		io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	})
+
+	ctx := WithAttemptRecorder(context.Background())
+	var out bytes.Buffer
+	_, err := exec.ExecuteStream(ctx, streamRequest(), &out)
+	if err == nil {
+		t.Fatal("ExecuteStream() succeeded on a terminated stream with no assistant output")
+	}
+	if got := StatusFromError(err); got != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 so the chain falls over to the next provider", got)
+	}
+	if !strings.Contains(err.Error(), "no usable assistant output") {
+		t.Fatalf("error = %q, want an explicit empty-output diagnosis", err)
+	}
+	if strings.Contains(out.String(), "[DONE]") {
+		t.Error("an empty stream must not be terminated with [DONE]")
+	}
+
+	artifacts := DiagnosticArtifacts(ctx)
+	if len(artifacts) != 2 {
+		t.Fatalf("diagnostic artifacts = %d, want request and raw upstream SSE", len(artifacts))
+	}
+	if artifacts[0].Name != "relay-request.json" || artifacts[1].Name != "relay-response.sse" {
+		t.Fatalf("diagnostic artifacts = %q, %q", artifacts[0].Name, artifacts[1].Name)
+	}
+	if !bytes.Contains(artifacts[1].Data, []byte(`"stop_reason":"end_turn"`)) {
+		t.Fatalf("relay response artifact did not preserve the terminal event: %q", artifacts[1].Data)
+	}
+}
+
 // The happy path must stay intact: a complete stream still terminates normally.
 func TestRelayStreamStillCompletesNormally(t *testing.T) {
 	exec := relayAgainst(t, func(w http.ResponseWriter, r *http.Request) {

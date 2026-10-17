@@ -442,6 +442,7 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	var hasToolCalls bool
 	var sawContent bool
 	var terminated bool
+	var terminalStopReason string
 	var upstreamSSE bytes.Buffer
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -505,7 +506,9 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 			}
 			switch delta.Type {
 			case "text_delta":
-				sawContent = true
+				if strings.TrimSpace(delta.Text) != "" {
+					sawContent = true
+				}
 				writeSSEChunk(w, types.ChatCompletionChunk{
 					ID: chunkID, Object: "chat.completion.chunk", Created: created, Model: req.Model,
 					Choices: []types.ChatCompletionChoice{{Index: 0, Delta: &types.ChatResult{Content: delta.Text}}},
@@ -538,6 +541,7 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 					StopReason string `json:"stop_reason"`
 				}
 				if json.Unmarshal(event.Delta, &delta) == nil && delta.StopReason != "" {
+					terminalStopReason = delta.StopReason
 					finishReason = mapStopReason(delta.StopReason)
 				}
 			}
@@ -555,12 +559,22 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 	// No finish_reason means the translated stream cannot be terminated. Report
 	// it here, where the chain can still fall over, rather than letting the
 	// caller discover the unusable stream after the chain has returned.
+	if e.Backend() == "relay" && (!terminated || (!sawContent && !hasToolCalls)) {
+		recordDiagnosticArtifact(ctx, "relay-request.json", body)
+		recordDiagnosticArtifact(ctx, "relay-response.sse", upstreamSSE.Bytes())
+	}
 	if !terminated {
-		if e.Backend() == "relay" {
-			recordDiagnosticArtifact(ctx, "relay-request.json", body)
-			recordDiagnosticArtifact(ctx, "relay-response.sse", upstreamSSE.Bytes())
-		}
 		return &usage, incompleteStreamError(e.Backend(), sawContent)
+	}
+	if !sawContent && !hasToolCalls {
+		if terminalStopReason == "" {
+			terminalStopReason = "unknown"
+		}
+		return &usage, &HTTPError{
+			Backend: e.Backend(),
+			Status:  http.StatusBadGateway,
+			Body:    fmt.Sprintf("anthropic stream completed with no usable assistant output (stop_reason=%s)", terminalStopReason),
+		}
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	return &usage, nil
