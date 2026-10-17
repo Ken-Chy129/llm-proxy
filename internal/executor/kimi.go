@@ -532,6 +532,17 @@ func (e *KimiExecutor) executeAnthropicChatStream(ctx context.Context, req *type
 				au.MergeNonZero(*event.Usage)
 				usage.SetBreakdown(au.Breakdown())
 			}
+			if detail, refused := anthropicStreamRefusal(event.Delta); refused {
+				if e.Backend() == "relay" {
+					recordDiagnosticArtifact(ctx, "relay-request.json", body)
+					recordDiagnosticArtifact(ctx, "relay-response.sse", upstreamSSE.Bytes())
+				}
+				return &usage, &HTTPError{
+					Backend: e.Backend(),
+					Status:  http.StatusUnprocessableEntity,
+					Body:    detail,
+				}
+			}
 			finishReason := "stop"
 			if hasToolCalls {
 				finishReason = "tool_calls"

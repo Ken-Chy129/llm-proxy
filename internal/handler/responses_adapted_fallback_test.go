@@ -169,6 +169,41 @@ func TestResponsesFallsOverWhenProviderCompletesWithoutAssistantOutput(t *testin
 	}
 }
 
+func TestResponsesReturnsDeterministicProviderRefusalWithoutFailover(t *testing.T) {
+	db, err := stats.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open stats: %v", err)
+	}
+	defer db.Close()
+
+	relay := &chatOnlyBackend{
+		name: "relay",
+		streamErr: &executor.HTTPError{
+			Backend: "relay",
+			Status:  http.StatusUnprocessableEntity,
+			Body:    "upstream refused the request under its safety policy (category=cyber)",
+		},
+	}
+	oauth := &chatOnlyBackend{name: "claude_oauth"}
+
+	r := router.New()
+	r.SetProvider("relay", relay)
+	r.SetProvider("claude_oauth", oauth)
+	r.SetRoutes([]router.Route{{Model: "claude-opus-5", Providers: []string{"relay", "claude_oauth"}}})
+
+	w := postResponses(t, NewResponsesHandler(r, db))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", w.Code, w.Body.String())
+	}
+	if oauth.served {
+		t.Error("deterministic safety refusal should not spend a second provider")
+	}
+	if !strings.Contains(w.Body.String(), "category=cyber") {
+		t.Fatalf("body = %q, want the sanitized refusal category", w.Body.String())
+	}
+}
+
 // Once the last provider fails there is nothing left to try, so the caller does
 // get an error — but it must carry the upstream's own explanation and status
 // rather than a blanket 500 about a missing finish reason.

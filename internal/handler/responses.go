@@ -177,9 +177,15 @@ func (h *ResponsesHandler) HandleResponses(c *gin.Context) {
 			status := http.StatusBadGateway
 			errorType := "server_error"
 			var httpErr *executor.HTTPError
-			if errors.As(openErr, &httpErr) && httpErr.Backend == "responses adapter" && httpErr.Status == http.StatusBadRequest {
-				status = http.StatusBadRequest
-				errorType = "invalid_request_error"
+			if errors.As(openErr, &httpErr) {
+				switch {
+				case httpErr.Backend == "responses adapter" && httpErr.Status == http.StatusBadRequest:
+					status = http.StatusBadRequest
+					errorType = "invalid_request_error"
+				case httpErr.Status == http.StatusUnprocessableEntity:
+					status = http.StatusUnprocessableEntity
+					errorType = "invalid_request_error"
+				}
 			}
 			c.JSON(status, gin.H{
 				"error": gin.H{"message": openErr.Error(), "type": errorType},

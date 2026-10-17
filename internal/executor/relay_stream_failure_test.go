@@ -141,6 +141,37 @@ func TestRelayStreamRejectsTerminatedStreamWithoutAssistantOutput(t *testing.T) 
 	}
 }
 
+func TestRelayStreamSurfacesAnthropicSafetyRefusal(t *testing.T) {
+	exec := relayAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4}}}\n\n")
+		io.WriteString(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"refusal\",\"stop_details\":{\"type\":\"refusal\",\"category\":\"cyber\",\"explanation\":\"untrusted upstream prose\"}},\"usage\":{\"output_tokens\":0}}\n\n")
+		io.WriteString(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	})
+
+	ctx := WithAttemptRecorder(context.Background())
+	var out bytes.Buffer
+	_, err := exec.ExecuteStream(ctx, streamRequest(), &out)
+	if err == nil {
+		t.Fatal("ExecuteStream() succeeded on an Anthropic safety refusal")
+	}
+	if got := StatusFromError(err); got != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422 so the same deterministic refusal is not retried", got)
+	}
+	if !strings.Contains(err.Error(), "safety policy") || !strings.Contains(err.Error(), "category=cyber") {
+		t.Fatalf("error = %q, want a clear sanitized refusal reason", err)
+	}
+	if strings.Contains(err.Error(), "untrusted upstream prose") {
+		t.Fatalf("error copied arbitrary upstream explanation: %q", err)
+	}
+	if strings.Contains(out.String(), "[DONE]") {
+		t.Error("a refused stream must not be terminated with [DONE]")
+	}
+	if got := len(DiagnosticArtifacts(ctx)); got != 2 {
+		t.Fatalf("diagnostic artifacts = %d, want request and refusal SSE", got)
+	}
+}
+
 // The happy path must stay intact: a complete stream still terminates normally.
 func TestRelayStreamStillCompletesNormally(t *testing.T) {
 	exec := relayAgainst(t, func(w http.ResponseWriter, r *http.Request) {

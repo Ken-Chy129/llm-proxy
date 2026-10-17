@@ -551,6 +551,44 @@ func anthropicStreamErrorStatus(errType string) int {
 	}
 }
 
+// anthropicStreamRefusal decodes the terminal stop_details Anthropic emits
+// when a request is blocked by its safety policy. The upstream explanation is
+// intentionally not relayed: it is arbitrary provider prose, while the
+// category is enough to make the failure actionable without treating external
+// text as a trusted error message.
+func anthropicStreamRefusal(raw json.RawMessage) (string, bool) {
+	var delta struct {
+		StopReason  string `json:"stop_reason"`
+		StopDetails struct {
+			Type     string `json:"type"`
+			Category string `json:"category"`
+		} `json:"stop_details"`
+	}
+	if json.Unmarshal(raw, &delta) != nil ||
+		(delta.StopReason != "refusal" && delta.StopDetails.Type != "refusal") {
+		return "", false
+	}
+	message := "upstream refused the request under its safety policy"
+	if category := safeRefusalCategory(delta.StopDetails.Category); category != "" {
+		message += " (category=" + category + ")"
+	}
+	return message, true
+}
+
+func safeRefusalCategory(category string) string {
+	category = strings.TrimSpace(category)
+	if category == "" || len(category) > 64 {
+		return ""
+	}
+	for _, r := range category {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') &&
+			(r < '0' || r > '9') && r != '_' && r != '-' {
+			return ""
+		}
+	}
+	return category
+}
+
 // incompleteStreamError describes a stream that ended without the terminal
 // event carrying a stop reason. Callers translate this into a Responses stream,
 // which cannot be terminated without one, so an incomplete stream has to be an
