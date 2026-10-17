@@ -840,6 +840,7 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 	textOutputIndex := -1
 	nextOutputIndex := 0
 	responseTerminated := false
+	terminalFinishReason := ""
 	var fullContent strings.Builder
 	var toolCalls []*streamedToolCall
 
@@ -1104,7 +1105,8 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 			}
 
 			if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
-				finishResponse(*choice.FinishReason)
+				terminalFinishReason = strings.TrimSpace(*choice.FinishReason)
+				finishResponse(terminalFinishReason)
 			}
 		}
 	}
@@ -1117,6 +1119,13 @@ func (h *ResponsesHandler) streamWithTranslation(ctx context.Context, exec execu
 	}
 	if !responseTerminated {
 		return usage, fmt.Errorf("chat completion stream ended without a finish reason")
+	}
+	if strings.TrimSpace(fullContent.String()) == "" && len(toolCalls) == 0 {
+		return usage, &executor.HTTPError{
+			Backend: "responses adapter",
+			Status:  http.StatusBadGateway,
+			Body:    fmt.Sprintf("chat completion stream completed with no usable assistant output (finish_reason=%s)", terminalFinishReason),
+		}
 	}
 	if _, err := io.Copy(w, &translated); err != nil {
 		return usage, err

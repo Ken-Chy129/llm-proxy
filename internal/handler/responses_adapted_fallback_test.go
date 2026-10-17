@@ -23,6 +23,7 @@ import (
 type chatOnlyBackend struct {
 	name      string
 	streamErr error
+	empty     bool
 	served    bool
 }
 
@@ -46,6 +47,11 @@ func (b *chatOnlyBackend) ExecuteStream(_ context.Context, req *types.ChatComple
 		return &types.Usage{}, b.streamErr
 	}
 	b.served = true
+	if b.empty {
+		fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		return &types.Usage{}, nil
+	}
 	fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi from "+b.name+"\"}}]}\n\n")
 	fmt.Fprint(w, "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
 	fmt.Fprint(w, "data: [DONE]\n\n")
@@ -113,6 +119,53 @@ func TestResponsesFallsOverWhenEveryProviderNeedsTheAdapter(t *testing.T) {
 	}
 	if !strings.Contains(logs[0].FailoverFrom, "claude_oauth") {
 		t.Errorf("failover_from = %q, want it to name claude_oauth", logs[0].FailoverFrom)
+	}
+}
+
+// A provider can return HTTP 200 and a syntactically complete stream that has
+// only a stop reason. Treating that as success makes Codex complete the turn
+// with last_agent_message=null, leaving the UI parked on the previous tool.
+// The empty provider must fail before any SSE reaches the client so the chain
+// can try the next provider.
+func TestResponsesFallsOverWhenProviderCompletesWithoutAssistantOutput(t *testing.T) {
+	db, err := stats.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open stats: %v", err)
+	}
+	defer db.Close()
+
+	relay := &chatOnlyBackend{name: "relay", empty: true}
+	oauth := &chatOnlyBackend{name: "claude_oauth"}
+
+	r := router.New()
+	r.SetProvider("relay", relay)
+	r.SetProvider("claude_oauth", oauth)
+	r.SetRoutes([]router.Route{{Model: "claude-opus-5", Providers: []string{"relay", "claude_oauth"}}})
+
+	w := postResponses(t, NewResponsesHandler(r, db))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 after failover; body=%s", w.Code, w.Body.String())
+	}
+	if !relay.served {
+		t.Error("relay was not tried")
+	}
+	if !oauth.served {
+		t.Error("claude_oauth was not tried after relay returned no output")
+	}
+	if !strings.Contains(w.Body.String(), "hi from claude_oauth") {
+		t.Errorf("body = %q, want the fallback provider's answer", w.Body.String())
+	}
+
+	logs, _, _ := db.QueryLogs(10, 0, false, "")
+	if len(logs) != 1 {
+		t.Fatalf("logged %d rows, want 1", len(logs))
+	}
+	if logs[0].Backend != "claude_oauth" {
+		t.Errorf("logged backend = %q, want claude_oauth", logs[0].Backend)
+	}
+	if !strings.Contains(logs[0].FailoverFrom, "relay") {
+		t.Errorf("failover_from = %q, want relay", logs[0].FailoverFrom)
 	}
 }
 
