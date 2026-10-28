@@ -29,7 +29,7 @@ func TestCodexForwardsSessionHeadersAndRecordsTurnState(t *testing.T) {
 	client := http.Header{}
 	client.Set("x-codex-turn-state", "state-from-client")
 	client.Set("x-codex-routing-hint", "hint")
-	client.Set("session_id", "sess-1")
+	client.Set("session-id", "sess-1")
 	client.Set("chatgpt-account-id", "acct-1")
 	client.Set("Authorization", "Bearer client-token") // never forwarded
 	client.Set("User-Agent", "Codex Desktop/1.0")      // proxy owns UA
@@ -48,7 +48,7 @@ func TestCodexForwardsSessionHeadersAndRecordsTurnState(t *testing.T) {
 	for name, want := range map[string]string{
 		"x-codex-turn-state":   "state-from-client",
 		"x-codex-routing-hint": "hint",
-		"session_id":           "sess-1",
+		"session-id":           "sess-1",
 		"chatgpt-account-id":   "acct-1",
 	} {
 		if got := seen.Get(name); got != want {

@@ -51,14 +51,14 @@ func TestResponsesRoundTripsCodexSessionHeaders(t *testing.T) {
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"gpt-5.5","stream":true,"input":[{"role":"user","content":"hi"}]}`))
 	c.Request.Header.Set("x-codex-turn-state", "turn-state-from-client")
-	c.Request.Header.Set("session_id", "sess-9")
+	c.Request.Header.Set("session-id", "sess-9")
 	c.Request.Header.Set("Authorization", "Bearer proxy-key")
 	h.HandleResponses(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 	}
-	if stub.seen.Get("x-codex-turn-state") != "turn-state-from-client" || stub.seen.Get("session_id") != "sess-9" {
+	if stub.seen.Get("x-codex-turn-state") != "turn-state-from-client" || stub.seen.Get("session-id") != "sess-9" {
 		t.Fatalf("client session headers did not reach the executor: %v", stub.seen)
 	}
 	if stub.seen.Get("Authorization") != "" {

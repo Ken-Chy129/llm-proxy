@@ -157,7 +157,7 @@ type testError struct{ message string }
 func (e *testError) Error() string { return e.message }
 
 // Cache-locality incidents on Codex are undiagnosable without the session
-// headers the client sends, so the bundle keeps x-codex-* and session_id while
+// headers the client sends, so the bundle keeps x-codex-* and session-id while
 // still refusing credentials and the attestation token.
 func TestSafeHeadersKeepCodexSessionHeadersButNotCredentials(t *testing.T) {
 	in := http.Header{}
@@ -166,13 +166,13 @@ func TestSafeHeadersKeepCodexSessionHeadersButNotCredentials(t *testing.T) {
 	in.Set("X-Oai-Attestation", "att")
 	in.Set("X-Codex-Turn-State", "state")
 	in.Set("X-Codex-Routing-Hint", "hint")
-	in.Set("Session_id", "sess")
+	in.Set("Session-Id", "sess")
 	in.Set("Chatgpt-Account-Id", "acct")
 	in.Set("User-Agent", "Codex Desktop")
 	in.Set("X-Random-Header", "drop")
 
 	out := safeHeaders(in)
-	for _, want := range []string{"X-Codex-Turn-State", "X-Codex-Routing-Hint", "Session_id", "Chatgpt-Account-Id", "User-Agent"} {
+	for _, want := range []string{"X-Codex-Turn-State", "X-Codex-Routing-Hint", "Session-Id", "Chatgpt-Account-Id", "User-Agent"} {
 		if out.Get(want) == "" {
 			t.Errorf("%s missing from safe headers: %v", want, out)
 		}

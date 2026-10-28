@@ -20,6 +20,7 @@ import (
 var codexForwardedHeaderPrefixes = []string{"x-codex-"}
 
 var codexForwardedHeaders = map[string]bool{
+	"session-id":          true,
 	"session_id":          true,
 	"chatgpt-account-id":  true,
 	"x-oai-attestation":   true,
