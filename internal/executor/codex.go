@@ -115,20 +115,22 @@ type CodexExecutor struct {
 	// turnStates remembers upstream's x-codex-turn-state per conversation so a
 	// turn the client sends without one still reaches its cache machine.
 	turnStates *codexTurnStateStore
-	// httpClient overrides the default fingerprinted client; tests set it to
-	// reach a plain-HTTP stub. Nil means "use the real one".
+	// httpClient is shared so requests reuse the same fingerprinted connection
+	// pool; tests replace it to reach a plain-HTTP stub.
 	httpClient *http.Client
 }
 
 func (e *CodexExecutor) client() *http.Client {
-	if e.httpClient != nil {
-		return e.httpClient
-	}
-	return internaltls.NewAnthropicHTTPClient()
+	return e.httpClient
 }
 
 func NewCodexExecutor(oauth *auth.CodexOAuth, models []string) *CodexExecutor {
-	return &CodexExecutor{oauth: oauth, models: models, turnStates: newCodexTurnStateStore()}
+	return &CodexExecutor{
+		oauth:      oauth,
+		models:     models,
+		turnStates: newCodexTurnStateStore(),
+		httpClient: internaltls.NewAnthropicHTTPClient(),
+	}
 }
 
 func (e *CodexExecutor) Models() []string {
