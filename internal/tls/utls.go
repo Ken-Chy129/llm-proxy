@@ -97,15 +97,22 @@ func (t *utlsRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 
 	resp, err := h2Conn.RoundTrip(req)
 	if err != nil {
-		t.mu.Lock()
-		if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
-			delete(t.connections, hostname)
+		// Canceling one stream does not make the shared HTTP/2 connection unhealthy.
+		if shouldEvictConnection(req) {
+			t.mu.Lock()
+			if cached, ok := t.connections[hostname]; ok && cached == h2Conn {
+				delete(t.connections, hostname)
+			}
+			t.mu.Unlock()
 		}
-		t.mu.Unlock()
 		return nil, err
 	}
 
 	return resp, nil
+}
+
+func shouldEvictConnection(req *http.Request) bool {
+	return req.Context().Err() == nil
 }
 
 func NewAnthropicHTTPClient() *http.Client {
