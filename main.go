@@ -106,6 +106,7 @@ func main() {
 	// Anthropic-compatible relay: native Messages passthrough for Claude Code,
 	// with Chat Completions/Responses translated by the shared API-key executor.
 	relayExec := executor.NewRelayExecutor(cfg.Relay)
+	magpieExec := executor.NewMagpieExecutor(cfg.Magpie)
 
 	// Both API-key upstreams publish /v1/models. Discovering their catalogs at
 	// startup is what lets the provider cards show a model the upstream gained
@@ -118,6 +119,7 @@ func main() {
 	}{
 		{"kimi", cfg.Kimi.Enabled, kimiExec},
 		{"relay", cfg.Relay.Enabled, relayExec},
+		{"magpie", cfg.Magpie.Enabled, magpieExec.KimiExecutor},
 	} {
 		if !keyed.enabled || !keyed.exec.Configured() {
 			continue
@@ -152,6 +154,7 @@ func main() {
 		Kimi:   kimiExec,
 		Relay:  relayExec,
 		AnyGen: anygenExec,
+		Magpie: magpieExec,
 	}
 	// One call installs both halves of routing: which providers exist, and which
 	// models each may serve. Every later edit goes through the same function, so
@@ -193,7 +196,7 @@ func main() {
 		}()
 	}
 
-	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec); err != nil {
+	if err := server.Run(*configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec, magpieExec); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
 }

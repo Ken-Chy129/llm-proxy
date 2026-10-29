@@ -738,6 +738,10 @@ func (e *CodexExecutor) OpenResponsesStream(ctx context.Context, body []byte) (i
 }
 
 func preflightCodexResponsesStream(body io.ReadCloser) (io.ReadCloser, error) {
+	return preflightResponsesStream(body, "codex")
+}
+
+func preflightResponsesStream(body io.ReadCloser, backend string) (io.ReadCloser, error) {
 	const maxPreflightBytes = 4 << 20
 	reader := bufio.NewReader(body)
 	var prefix bytes.Buffer
@@ -751,19 +755,19 @@ func preflightCodexResponsesStream(body io.ReadCloser) (io.ReadCloser, error) {
 				typ, _ := event["type"].(string)
 				switch typ {
 				case "response.failed", "error":
-					return nil, codexFailedEventError(event)
+					return nil, responsesFailedEventError(event, backend)
 				case "response.completed", "response.incomplete":
 					return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
-				case "response.output_text.delta", "response.function_call_arguments.delta", "response.reasoning_summary_text.delta":
+				case "response.output_text.delta", "response.function_call_arguments.delta", "response.custom_tool_call_input.delta", "response.reasoning_summary_text.delta":
 					return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
 				}
 			}
 		}
 		if err != nil {
 			if err == io.EOF {
-				return nil, &HTTPError{Backend: "codex", Status: http.StatusBadGateway, Body: "responses stream ended without a terminal event"}
+				return nil, &HTTPError{Backend: backend, Status: http.StatusBadGateway, Body: "responses stream ended without a terminal event"}
 			}
-			return nil, fmt.Errorf("read codex responses stream: %w", err)
+			return nil, fmt.Errorf("read %s responses stream: %w", backend, err)
 		}
 	}
 	return &prefixedReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: body}, nil
@@ -774,14 +778,14 @@ type prefixedReadCloser struct {
 	io.Closer
 }
 
-func codexFailedEventError(event map[string]interface{}) error {
+func responsesFailedEventError(event map[string]interface{}, backend string) error {
 	message, code := responsesFailureDetail(event)
 	status := http.StatusBadGateway
 	lower := strings.ToLower(code + " " + message)
 	if strings.Contains(lower, "capacity") || strings.Contains(lower, "overload") || strings.Contains(lower, "rate_limit") {
 		status = http.StatusTooManyRequests
 	}
-	return &HTTPError{Backend: "codex", Status: status, Body: message}
+	return &HTTPError{Backend: backend, Status: status, Body: message}
 }
 
 func responsesFailureDetail(event map[string]interface{}) (message, code string) {

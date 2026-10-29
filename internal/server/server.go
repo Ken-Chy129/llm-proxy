@@ -22,14 +22,14 @@ func Run(configPath string, cfg *config.Config, r *router.Router, tokenStore *au
 	claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth,
 	claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor,
 	vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor,
-	anygenExec *executor.AnyGenExecutor) error {
+	anygenExec *executor.AnyGenExecutor, magpieExec *executor.MagpieExecutor) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	engine := gin.New()
 	engine.Use(gin.Recovery())
 
 	chatHandler := handler.NewChatHandler(r, statsDB)
-	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec)
+	adminHandler := handler.NewAdminHandler(configPath, cfg, r, tokenStore, keyStore, statsDB, claudeOAuth, codexOAuth, claudeExec, codexExec, vertexExec, kimiExec, relayExec, anygenExec, magpieExec)
 	// The probe path lets the dashboard chat tab try a provider's unpublished
 	// catalog models, which is how an operator confirms reachability before
 	// deciding to publish. Wired here because the catalog lives on the admin

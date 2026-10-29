@@ -32,10 +32,11 @@ type AdminHandler struct {
 	kimiExec    *executor.KimiExecutor
 	relayExec   *executor.KimiExecutor
 	anygenExec  *executor.AnyGenExecutor
+	magpieExec  *executor.MagpieExecutor
 }
 
-func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor) *AdminHandler {
-	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, relayExec: relayExec, anygenExec: anygenExec}
+func NewAdminHandler(configPath string, cfg *config.Config, r *router.Router, store *auth.TokenStore, keyStore *auth.KeyStore, db *stats.DB, claudeOAuth *auth.ClaudeOAuth, codexOAuth *auth.CodexOAuth, claudeExec *executor.ClaudeOAuthExecutor, codexExec *executor.CodexExecutor, vertexExec *executor.VertexExecutor, kimiExec *executor.KimiExecutor, relayExec *executor.KimiExecutor, anygenExec *executor.AnyGenExecutor, magpieExec *executor.MagpieExecutor) *AdminHandler {
+	return &AdminHandler{configPath: configPath, cfg: cfg, router: r, tokenStore: store, keyStore: keyStore, statsDB: db, claudeOAuth: claudeOAuth, codexOAuth: codexOAuth, claudeExec: claudeExec, codexExec: codexExec, vertexExec: vertexExec, kimiExec: kimiExec, relayExec: relayExec, anygenExec: anygenExec, magpieExec: magpieExec}
 }
 
 // applyRouting re-runs the shared routing installer after a config edit, so a
@@ -48,6 +49,7 @@ func (h *AdminHandler) applyRouting() {
 		Kimi:   h.kimiExec,
 		Relay:  h.relayExec,
 		AnyGen: h.anygenExec,
+		Magpie: h.magpieExec,
 	})
 }
 
@@ -298,6 +300,23 @@ func (h *AdminHandler) Status(c *gin.Context) {
 			"info":     info,
 			"models":   h.router.ModelsByBackend("relay"),
 			"catalog":  h.catalogView("relay"),
+		})
+	}
+
+	if h.magpieExec != nil && h.cfg.Magpie.Enabled {
+		disabled := h.tokenStore.IsBackendDisabled("magpie")
+		status := "not_authenticated"
+		info := "Missing environment variable " + h.magpieExec.APIKeyEnv()
+		if h.magpieExec.Configured() {
+			status = "active"
+			info = h.magpieExec.BaseURL() + " · native Responses / Messages · key: " + h.magpieExec.APIKeyEnv()
+		}
+		if disabled {
+			status = "disabled"
+		}
+		backends = append(backends, gin.H{
+			"name": "magpie", "status": status, "disabled": disabled, "info": info,
+			"models": h.router.ModelsByBackend("magpie"), "catalog": h.catalogView("magpie"),
 		})
 	}
 
@@ -745,6 +764,10 @@ func (h *AdminHandler) providerCatalog(name string) []string {
 		return pinned
 	}
 	switch name {
+	case "magpie":
+		if h.magpieExec != nil {
+			return h.magpieExec.Catalog()
+		}
 	case "anygen":
 		if h.anygenExec != nil {
 			return h.anygenExec.Catalog()
@@ -842,6 +865,8 @@ func (h *AdminHandler) providerAvailable(name string) bool {
 		return h.relayExec != nil && h.relayExec.Configured()
 	case "anygen":
 		return h.anygenExec != nil && h.anygenExec.Configured()
+	case "magpie":
+		return h.magpieExec != nil && h.magpieExec.Configured()
 	}
 	return false
 }
@@ -991,6 +1016,14 @@ func (h *AdminHandler) SyncModels(c *gin.Context) {
 			results["anygen"] = gin.H{"error": err.Error()}
 		} else {
 			results["anygen"] = gin.H{"models": models, "count": len(models)}
+		}
+	}
+	if h.magpieExec != nil && h.cfg.Magpie.Enabled && h.magpieExec.Configured() {
+		models, err := h.magpieExec.SyncModels(c.Request.Context())
+		if err != nil {
+			results["magpie"] = gin.H{"error": err.Error()}
+		} else {
+			results["magpie"] = gin.H{"models": models, "count": len(models)}
 		}
 	}
 	// The API-key upstreams answer /v1/models too, so they are discoverable on

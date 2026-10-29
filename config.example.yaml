@@ -79,6 +79,13 @@ anygen:
   base_url: "https://www.anygen.io/v1/openapi/anyclaw/app/YOUR_PUBLICATION_REF/api/v1"
   api_key_env: "ANYGEN_LLM_KEY"
 
+# Magpie offers native Responses (including custom tools) and Messages.
+# Store MAGPIE_API_KEY in the process environment or the ignored Compose .env.
+magpie:
+  enabled: false
+  base_url: "https://axon.ponte.sh/v1"
+  api_key_env: "MAGPIE_API_KEY"
+
 # --- Series defaults -------------------------------------------------------
 # The provider order a model gets when it names none of its own. A model's
 # series comes from its name prefix (claude-*, gpt-*, gemini-*, kimi-*,
@@ -101,6 +108,8 @@ series:
 models:
   - name: "claude-opus-5-5"
     providers: [claude_oauth, relay]
+    # To prefer Magpie while retaining the old fallback chain:
+    # providers: [{magpie: "claude/claude-opus-5-5"}, claude_oauth, relay]
   - name: "claude-opus-5"
   - name: "claude-sonnet-4-6"
   - name: "claude-haiku-4-5"

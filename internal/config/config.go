@@ -17,6 +17,7 @@ type Config struct {
 	Kimi           KimiConfig           `yaml:"kimi"`
 	Relay          RelayConfig          `yaml:"relay"`
 	AnyGen         AnyGenConfig         `yaml:"anygen"`
+	Magpie         MagpieConfig         `yaml:"magpie"`
 	FailureCapture FailureCaptureConfig `yaml:"failure_capture"`
 	// Series holds the default provider order per model family, and Models the
 	// per-model overrides. Together they replace the old per-provider model
@@ -141,10 +142,18 @@ type AnyGenConfig struct {
 	Models    []string `yaml:"models,omitempty"`
 }
 
+// MagpieConfig keeps the gateway credential out of config and dashboard saves.
+type MagpieConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	BaseURL   string   `yaml:"base_url"`
+	APIKeyEnv string   `yaml:"api_key_env"`
+	Models    []string `yaml:"models,omitempty"`
+}
+
 // KnownProviders is every provider this proxy can route to. A provider is a
 // place a request can be sent; what it is allowed to serve is decided entirely
 // by the model routes below.
-var KnownProviders = []string{"claude_oauth", "codex", "vertex", "kimi", "relay", "anygen"}
+var KnownProviders = []string{"claude_oauth", "codex", "vertex", "kimi", "relay", "anygen", "magpie"}
 
 var knownProviders = func() map[string]bool {
 	m := make(map[string]bool, len(KnownProviders))
@@ -403,6 +412,8 @@ func (c *Config) ProviderEnabled(provider string) bool {
 		return c.Relay.Enabled
 	case "anygen":
 		return c.AnyGen.Enabled
+	case "magpie":
+		return c.Magpie.Enabled
 	default:
 		return false
 	}
@@ -435,6 +446,8 @@ func (c *Config) ProviderModels(provider string) []string {
 		models = c.Relay.Models
 	case "anygen":
 		models = c.AnyGen.Models
+	case "magpie":
+		models = c.Magpie.Models
 	default:
 		return nil
 	}

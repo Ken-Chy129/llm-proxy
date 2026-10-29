@@ -152,6 +152,37 @@ models:
 
 Claude Code 的 `/v1/messages` 请求会原生透传；OpenAI Chat Completions 和 Responses 请求由代理做协议转换。上述五个模型均已实际验证可调用。该上游的 `/v1/models` 列表并不完整，`claude-opus-5` 和 `claude-fable-5` 虽未列出，但直接调用可用。
 
+### 通过代理使用 Magpie
+
+在服务器进程环境或被 Git 忽略的 Compose `.env` 中设置 `MAGPIE_API_KEY`，
+不要把实际 Key 放进配置文件、客户端或提交记录。启用并单独映射所需模型：
+
+```yaml
+magpie:
+  enabled: true
+  base_url: "https://axon.ponte.sh/v1"
+  api_key_env: "MAGPIE_API_KEY"
+
+models:
+  - name: "claude-opus-5-5"
+    providers:
+      - magpie: "claude/claude-opus-5-5"
+      - claude_oauth
+      - relay
+```
+
+对外模型名不变。`/v1/responses` 使用网关原生流式接口，保留工具定义、
+custom tool 调用及结果历史，不经过本代理的 Responses→Chat 转换；
+`/v1/messages` 使用原生 Messages，Chat Completions 则复用 Messages 适配。
+本代理生成的可移植压缩摘要会展开成文本后发送。网关的 Responses 非流式
+能力不在此保证范围内；Codex 应使用流式。
+
+模型目录可在 Dashboard 同步，但不会自动发布整个上游目录。
+仅对上面这一模型修改优先级，其他模型不变。可用
+`claude-opus-5-5@magpie` 强制验证；认证、限流和服务端错误按现有回退规则处理。
+回退提供方未必支持全部 Responses 专属工具，因此不能保证任意工具请求均可回退。
+网关请求带 `User-Agent: llm-proxy/1.0`，并拒绝跟随重定向，避免凭据被转发到其他位置。
+
 ### 通过代理使用 AnyGen
 
 需要创建自己的 AnyGen API？见[provision 创建命令、完整流程和 Skill](docs/anygen-proxy.md)。自动创建 Agent、部署固定 App、建立 publication 并授权，交付可直连的 URL + Key；不依赖启动本代理，也不会修改其配置。默认只预览，线上创建和一次付费验收需显式开启。

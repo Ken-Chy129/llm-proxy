@@ -17,6 +17,7 @@ type Providers struct {
 	Kimi   *executor.KimiExecutor
 	Relay  *executor.KimiExecutor
 	AnyGen *executor.AnyGenExecutor
+	Magpie *executor.MagpieExecutor
 }
 
 // Apply makes the config's routing table the live one.
@@ -53,6 +54,9 @@ func Apply(r *Router, cfg *config.Config, p *Providers) {
 	if p.AnyGen != nil {
 		p.AnyGen.SetModels(byProvider["anygen"])
 	}
+	if p.Magpie != nil {
+		p.Magpie.SetModels(byProvider["magpie"])
+	}
 
 	setProvider(r, "claude_oauth", p.Claude, cfg.ClaudeOAuth.Enabled && p.Claude != nil)
 	setProvider(r, "codex", p.Codex, cfg.Codex.Enabled && p.Codex != nil)
@@ -60,6 +64,7 @@ func Apply(r *Router, cfg *config.Config, p *Providers) {
 	setProvider(r, "kimi", p.Kimi, cfg.Kimi.Enabled && p.Kimi != nil)
 	setProvider(r, "relay", p.Relay, cfg.Relay.Enabled && p.Relay != nil)
 	setProvider(r, "anygen", p.AnyGen, cfg.AnyGen.Enabled && p.AnyGen != nil)
+	setProvider(r, "magpie", p.Magpie, cfg.Magpie.Enabled && p.Magpie != nil)
 
 	r.SetRoutes(RoutesFrom(routes))
 }

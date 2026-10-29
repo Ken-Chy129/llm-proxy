@@ -1380,6 +1380,7 @@ const PROVIDER_LABELS = {
   kimi: 'Kimi',
   relay: 'Relay',
   anygen: 'AnyGen',
+  magpie: 'Magpie',
 };
 
 // Mirrors config.SeriesOf. A series only supplies the starting chain for a newly
